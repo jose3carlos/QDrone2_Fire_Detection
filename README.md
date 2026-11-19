@@ -5,7 +5,7 @@ MATLAB and Simulink on **Windows x64**. The selected export is
 `models/fire_hazard-cpp-mcu-v7-impulse-#1.zip`: **180 × 180 grayscale**, one
 foreground class (`Fire`). RGB images are converted automatically.
 
-The working project layout and inference code are preserved. Native libraries
+Native libraries
 and MEX files are built on each computer; they are not shipped in Git.
 
 ## 1. Get the project
