@@ -1,0 +1,26 @@
+# Local builds, compiler downloads and automatic model backups
+/build/
+/backups/
+/tools/mingw64/
+/tools/*.7z
+transfer_backups/
+
+# MATLAB / Simulink generated files (at any depth)
+slprj/
+*_ert_rtw/
+*_grt_rtw/
+*.slxc
+*.mex*
+*.asv
+*.autosave
+*.slx.bak
+*.mdl.bak
+matlab_crash_dump*
+java.log*
+
+# Local editor and operating system files
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+desktop.ini

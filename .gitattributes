@@ -1,0 +1,8 @@
+# Preserve the working snapshot's source bytes and existing line endings.
+* -text
+# Models and archives must never receive text conversions or text diffs.
+*.slx binary
+*.zip binary
+*.mat binary
+*.png binary
+*.jpg binary
