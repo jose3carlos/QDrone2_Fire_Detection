@@ -17,13 +17,10 @@ donde se probó. En otra computadora, elige tu cámara con doble clic en
 1. **Compilador MinGW-w64.** Instala el add-on *MATLAB Support for MinGW-w64 C/C++/Fortran
    Compiler* y ejecuta `mex -setup C++` y `mex -setup C` eligiendo **MinGW64**. Con Visual
    C++ el SDK de Edge Impulse no compila: usa `INCBIN`, `#warning` y `__attribute__` de GCC.
-2. **CMake 3.20 o más nuevo.** R2023a trae CMake 3.19.7, que no sirve. En esta rama,
-   `config.m` usa automáticamente el CMake 3.27 de **Visual Studio 2022 Community** cuando
-   MATLAB es anterior a R2023b y ese archivo existe. Con otra edición de Visual Studio o con
-   CMake instalado aparte, pon la ruta en `cfg.cmake`:
-   ```matlab
-   cfg.cmake = 'C:\ruta\a\cmake.exe';
-   ```
+2. **CMake 3.20 o más nuevo.** R2023a trae CMake 3.19.7, que no sirve. `instalar` lo
+   resuelve solo: busca uno en el PATH, en cualquier Visual Studio y en `C:\Program Files\CMake`,
+   y si no encuentra ninguno lo descarga. Guarda la ruta en `tools\cmake_path.txt`, que es
+   local y no se sube a git, y `config.m` la lee de ahí.
 3. **Ruta corta y sin espacios**, por ejemplo `C:\QDrone2_Fire_Detection`. Con rutas largas
    la compilación de TensorFlow Lite pasa el límite de 260 caracteres de Windows.
 4. Solo para la webcam: el support package *Image Acquisition Toolbox Support Package for
@@ -34,7 +31,25 @@ un mensaje que explica qué corregir, sin dejar la compilación a medias.
 
 ## Uso rápido (MATLAB Command Window, en la carpeta del proyecto)
 
-Con el modelo que ya trae esta rama:
+```matlab
+instalar
+open_system('Trayectory_Model')
+```
+
+`instalar` hace todo en orden:
+1. Revisa la carpeta.
+2. Selecciona MinGW64.
+3. Busca un CMake 3.20 o más nuevo. Si no hay, descarga el 3.27.9 oficial (44 MB),
+   verifica su SHA-256 y lo deja en `tools\cmake`.
+4. Compila el detector y lo prueba.
+5. Enlaza `Trayectory_Model` y prepara la visualización. Si tu MATLAB es más viejo que el
+   del modelo, lo reconstruye.
+
+Se puede correr otra vez sin problema. Se probó en R2023a simulando una PC nueva (Visual C++
+seleccionado, sin `build`, modelo guardado en R2023b), con CMake de Visual Studio y con CMake
+descargado.
+
+A mano, sin `instalar`:
 
 ```matlab
 setup_custom_model('Trayectory_Model')   % compila el detector y lo enlaza en ESTA PC

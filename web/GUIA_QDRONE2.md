@@ -57,6 +57,9 @@ Y un quinto punto: en el original, el `Trigger` de *Image Batch Capture* es una 
 
 ### A2. Compilar y probar el detector (MATLAB)
 
+**Atajo (rama `Quique`):** en la carpeta del proyecto, `instalar` hace A2 y A3 de una vez:
+selecciona MinGW, consigue CMake, compila, prueba y enlaza el modelo.
+
 En la *Command Window*, con *Current Folder* = la carpeta del proyecto:
 
 ```matlab

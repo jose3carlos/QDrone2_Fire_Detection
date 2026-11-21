@@ -3,6 +3,8 @@
 /backups/
 /tools/mingw64/
 /tools/*.7z
+/tools/cmake/
+/tools/cmake_path.txt
 transfer_backups/
 
 # MATLAB / Simulink generated files (at any depth)
