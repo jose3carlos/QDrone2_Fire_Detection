@@ -1,0 +1,341 @@
+<!doctype html>
+<html lang="es">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>QDrone2 Fire Detection</title>
+<style>
+  :root {
+    --bg: #f4f5f7; --panel: #ffffff; --ink: #1b1f24; --muted: #5d6673; --line: #dfe3e8;
+    --accent: #d9480f; --accent-ink: #ffffff; --ok: #2b8a3e; --warn: #e67700; --bad: #c92a2a;
+    --chip: #eef1f4; --map-bg: #fafbfc; --grid: #e6e9ee;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #111418; --panel: #1a1f25; --ink: #e8ebef; --muted: #9aa4b1; --line: #2c333c;
+      --accent: #ff6b2c; --accent-ink: #111418; --ok: #51cf66; --warn: #fcc419; --bad: #ff6b6b;
+      --chip: #232a32; --map-bg: #151a1f; --grid: #232a32;
+    }
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--bg); color: var(--ink);
+         font: 14px/1.45 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif; }
+  header { display: flex; flex-wrap: wrap; gap: 12px; align-items: center; justify-content: space-between;
+           padding: 14px 20px; border-bottom: 1px solid var(--line); background: var(--panel); }
+  h1 { font-size: 17px; margin: 0; font-weight: 650; letter-spacing: .2px; }
+  h1 span { color: var(--accent); }
+  h2 { font-size: 13px; text-transform: uppercase; letter-spacing: .6px; color: var(--muted); margin: 0 0 10px; font-weight: 600; }
+  .chips { display: flex; flex-wrap: wrap; gap: 8px; }
+  .chip { display: inline-flex; align-items: center; gap: 6px; background: var(--chip); border-radius: 999px;
+          padding: 4px 10px; font-size: 12px; color: var(--muted); }
+  .dot { width: 8px; height: 8px; border-radius: 50%; background: var(--muted); }
+  .dot.ok { background: var(--ok); } .dot.bad { background: var(--bad); } .dot.warn { background: var(--warn); }
+  main { display: grid; gap: 16px; padding: 16px 20px 40px; grid-template-columns: minmax(0, 1.25fr) minmax(0, 1fr);
+         max-width: 1500px; margin: 0 auto; }
+  @media (max-width: 980px) { main { grid-template-columns: 1fr; padding: 12px 16px 32px; } }
+  .panel { background: var(--panel); border: 1px solid var(--line); border-radius: 12px; padding: 16px; min-width: 0; }
+  .stack { display: grid; gap: 16px; align-content: start; min-width: 0; }
+  .video { width: 100%; aspect-ratio: 4/3; background: #000; border-radius: 8px; object-fit: contain; display: block; }
+  .row { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
+  button { font: inherit; border: 1px solid var(--line); background: var(--chip); color: var(--ink);
+           padding: 8px 14px; border-radius: 8px; cursor: pointer; }
+  button:hover { border-color: var(--muted); }
+  button.primary { background: var(--accent); color: var(--accent-ink); border-color: var(--accent); font-weight: 600; }
+  button.danger { color: var(--bad); }
+  button:disabled { opacity: .5; cursor: default; }
+  label.toggle { display: inline-flex; gap: 8px; align-items: center; cursor: pointer; color: var(--muted); }
+  .kv { display: grid; grid-template-columns: auto 1fr; gap: 4px 14px; font-variant-numeric: tabular-nums; }
+  .kv dt { color: var(--muted); } .kv dd { margin: 0; }
+  .state { font-size: 22px; font-weight: 700; letter-spacing: .5px; }
+  .bar { height: 8px; background: var(--chip); border-radius: 99px; overflow: hidden; }
+  .bar > i { display: block; height: 100%; width: 0; background: var(--accent); transition: width .2s; }
+  canvas { width: 100%; aspect-ratio: 1; display: block; background: var(--map-bg); border-radius: 8px; }
+  table { width: 100%; border-collapse: collapse; font-variant-numeric: tabular-nums; }
+  th, td { text-align: left; padding: 6px 6px; border-bottom: 1px solid var(--line); vertical-align: middle; }
+  th { color: var(--muted); font-weight: 600; font-size: 12px; }
+  td input { width: 100%; min-width: 56px; font: inherit; background: var(--bg); color: var(--ink);
+             border: 1px solid var(--line); border-radius: 6px; padding: 4px 6px; }
+  .tablewrap { overflow-x: auto; }
+  .fire { color: var(--bad); font-weight: 700; } .nofire { color: var(--ok); }
+  .thumb { width: 120px; border-radius: 6px; display: block; }
+  .detect-out { display: grid; grid-template-columns: 180px 1fr; gap: 12px; align-items: start; margin-top: 12px; }
+  .detect-out[hidden] { display: none; }
+  @media (max-width: 520px) { .detect-out { grid-template-columns: 1fr; } }
+  .detect-out img { width: 180px; image-rendering: pixelated; border-radius: 6px; background: #000; }
+  .muted { color: var(--muted); } .err { color: var(--bad); white-space: pre-wrap; }
+  details summary { cursor: pointer; color: var(--muted); }
+  code, pre { font-family: ui-monospace, "Cascadia Code", Consolas, monospace; font-size: 12px; }
+  pre { background: var(--chip); padding: 8px; border-radius: 6px; overflow-x: auto; max-height: 180px; }
+  .inline-inputs { display: flex; flex-wrap: wrap; gap: 10px; margin: 8px 0; }
+  .inline-inputs label { display: grid; gap: 2px; color: var(--muted); font-size: 12px; }
+  .inline-inputs input { width: 110px; font: inherit; background: var(--bg); color: var(--ink);
+                         border: 1px solid var(--line); border-radius: 6px; padding: 4px 6px; }
+</style>
+</head>
+<body>
+<header>
+  <h1>QDrone2 <span>Fire Detection</span></h1>
+  <div class="chips">
+    <span class="chip"><i class="dot" id="dotCam"></i><span id="chipCam">Cámara</span></span>
+    <span class="chip"><i class="dot" id="dotPose"></i><span id="chipPose">Pose</span></span>
+    <span class="chip"><i class="dot ok"></i><span id="chipModel">Modelo</span></span>
+    <span class="chip"><i class="dot" id="dotSp"></i><span id="chipSp">Setpoint</span></span>
+  </div>
+</header>
+
+<main>
+  <div class="stack">
+    <section class="panel">
+      <h2>Cámara en vivo</h2>
+      <img class="video" src="/video.mjpg" alt="Video de la cámara">
+      <div class="row" style="margin-top:12px">
+        <button class="primary" id="btnDetect">Detectar ahora</button>
+        <label class="toggle"><input type="checkbox" id="chkLive"> Detección en vivo</label>
+        <button id="btnUpload">Probar con una imagen…</button>
+        <input type="file" id="fileInput" accept="image/*" hidden>
+        <span class="muted" id="liveInfo"></span>
+      </div>
+      <div class="detect-out" id="detectOut" hidden>
+        <img id="detectImg" alt="Imagen 180×180 que ve el modelo">
+        <div>
+          <div id="detectVerdict" class="state"></div>
+          <dl class="kv" id="detectKv"></dl>
+          <p class="muted" style="margin:8px 0 0">Recuadros naranjas: celdas FOMO ≥ umbral exportado. Rojo: la detección elegida (confianza ≥ mínimo configurado).</p>
+        </div>
+      </div>
+    </section>
+
+    <section class="panel">
+      <h2>Resultados por waypoint</h2>
+      <div class="tablewrap">
+        <table>
+          <thead><tr><th>#</th><th>Waypoint</th><th>Fuego</th><th>Conf. prom.</th><th>Positivas</th><th>Mejor foto</th><th>Hora</th></tr></thead>
+          <tbody id="resultsBody"><tr><td colspan="7" class="muted">Aún no hay capturas.</td></tr></tbody>
+        </table>
+      </div>
+    </section>
+  </div>
+
+  <div class="stack">
+    <section class="panel">
+      <h2>Misión</h2>
+      <div class="row" style="justify-content:space-between">
+        <div class="state" id="smState">—</div>
+        <div class="muted" id="smWp"></div>
+      </div>
+      <div style="margin:12px 0 6px" class="muted" id="phaseLabel">Estabilización / captura</div>
+      <div class="bar"><i id="phaseBar"></i></div>
+      <dl class="kv" style="margin-top:12px">
+        <dt>Posición</dt><dd id="kvPos">—</dd>
+        <dt>Setpoint</dt><dd id="kvSp">—</dd>
+        <dt>Cámara</dt><dd id="kvCap">—</dd>
+      </dl>
+      <div class="row" style="margin-top:14px">
+        <button class="primary" id="btnStart">Iniciar misión</button>
+        <button class="danger" id="btnHome">Abortar → Home</button>
+        <button id="btnReset">Reiniciar</button>
+      </div>
+      <p class="err" id="missionErr"></p>
+    </section>
+
+    <section class="panel">
+      <h2>Mapa (vista superior)</h2>
+      <canvas id="map" width="600" height="600"></canvas>
+      <p class="muted" style="margin:8px 0 0">● Dron &nbsp; ✕ Setpoint &nbsp; ○ Waypoints &nbsp; <span class="fire">●</span> Fuego confirmado</p>
+    </section>
+
+    <section class="panel">
+      <h2>Waypoints</h2>
+      <div class="inline-inputs">
+        <label>Fotos por waypoint (N)<input type="number" id="inN" min="1" step="1"></label>
+        <label>Duración de captura (s)<input type="number" id="inSec" min="0.1" step="0.1"></label>
+      </div>
+      <div class="tablewrap">
+        <table>
+          <thead><tr><th>#</th><th>X (m)</th><th>Y (m)</th><th>Z (m)</th><th>Yaw (rad)</th><th></th></tr></thead>
+          <tbody id="wpBody"></tbody>
+        </table>
+      </div>
+      <div class="row" style="margin-top:10px">
+        <button id="btnAddWp">Agregar</button>
+        <button class="primary" id="btnSaveWp">Guardar waypoints</button>
+        <span class="muted" id="wpMsg"></span>
+      </div>
+      <p class="muted" style="margin:8px 0 0">La FSM fuerza Z y Yaw a los valores de <code>config.json</code> y limita X, Y al área de trabajo, igual que el bloque Trayectory SM.</p>
+    </section>
+
+    <section class="panel">
+      <details>
+        <summary>Diagnóstico (vector crudo de pose, modelo, errores)</summary>
+        <pre id="diag"></pre>
+      </details>
+    </section>
+  </div>
+</main>
+
+<script>
+const $ = (id) => document.getElementById(id);
+let lastState = null, wpDirty = false;
+
+function fmt(v, d = 2) { return (v === null || v === undefined) ? "—" : Number(v).toFixed(d); }
+function vec(a) { return a ? `[${a.map(v => fmt(v)).join(", ")}]` : "—"; }
+async function post(url, body) {
+  const r = await fetch(url, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body || {}) });
+  const j = await r.json().catch(() => ({}));
+  if (!r.ok || j.ok === false) throw new Error(j.error || r.statusText);
+  return j;
+}
+function setDot(el, cls) { el.className = "dot " + (cls || ""); }
+
+function renderWaypoints(wps) {
+  const body = $("wpBody"); body.innerHTML = "";
+  wps.forEach((w, i) => {
+    const tr = document.createElement("tr");
+    tr.innerHTML = `<td>${i + 1}</td>` + w.map(v => `<td><input type="number" step="0.1" value="${v}"></td>`).join("") +
+      `<td><button title="Quitar">✕</button></td>`;
+    tr.querySelector("button").onclick = () => { tr.remove(); wpDirty = true; renumber(); };
+    tr.querySelectorAll("input").forEach(inp => inp.oninput = () => wpDirty = true);
+    body.appendChild(tr);
+  });
+}
+function renumber() { [...$("wpBody").rows].forEach((r, i) => r.cells[0].textContent = i + 1); }
+function readWaypoints() { return [...$("wpBody").rows].map(r => [...r.querySelectorAll("input")].map(i => parseFloat(i.value))); }
+
+function drawMap(s) {
+  const c = $("map"), g = c.getContext("2d");
+  const css = getComputedStyle(document.documentElement);
+  const col = (n) => css.getPropertyValue(n).trim();
+  const W = c.width, H = c.height, pad = 40;
+  const xl = s.limits.x, yl = s.limits.y;
+  const span = Math.max(xl[1] - xl[0], yl[1] - yl[0]) * 1.15;
+  const cx = (xl[0] + xl[1]) / 2, cy = (yl[0] + yl[1]) / 2;
+  const sc = (W - 2 * pad) / span;
+  const P = (x, y) => [W / 2 + (x - cx) * sc, H / 2 - (y - cy) * sc];
+  g.clearRect(0, 0, W, H);
+  g.strokeStyle = col("--grid"); g.lineWidth = 1;
+  for (let v = Math.ceil(cx - span / 2); v <= cx + span / 2; v += 0.5) {
+    let [a] = P(v, 0); g.beginPath(); g.moveTo(a, 0); g.lineTo(a, H); g.stroke();
+    let [, b] = P(0, v); g.beginPath(); g.moveTo(0, b); g.lineTo(W, b); g.stroke();
+  }
+  const [x0, y0] = P(xl[0], yl[1]), [x1, y1] = P(xl[1], yl[0]);
+  g.strokeStyle = col("--muted"); g.setLineDash([6, 4]); g.strokeRect(x0, y0, x1 - x0, y1 - y0); g.setLineDash([]);
+  g.fillStyle = col("--muted"); g.font = "12px system-ui";
+  g.fillText("X →", W - pad, H - 10); g.fillText("Y ↑", 8, pad - 14);
+  // ruta
+  g.strokeStyle = col("--line"); g.lineWidth = 2; g.beginPath();
+  s.waypoints.forEach((w, i) => { const [a, b] = P(w[0], w[1]); i ? g.lineTo(a, b) : g.moveTo(a, b); }); g.stroke();
+  const fires = s.results.filter(r => r.objectDetected).map(r => r.waypointIndex);
+  const done = s.results.map(r => r.waypointIndex);
+  s.waypoints.forEach((w, i) => {
+    const [a, b] = P(w[0], w[1]);
+    g.beginPath(); g.arc(a, b, 11, 0, 7);
+    if (fires.includes(i + 1)) { g.fillStyle = col("--bad"); g.fill(); }
+    else if (done.includes(i + 1)) { g.fillStyle = col("--ok"); g.globalAlpha = .35; g.fill(); g.globalAlpha = 1; }
+    g.strokeStyle = (i + 1 === s.waypointIndex && s.state !== "IDLE" && s.state !== "COMPLETE") ? col("--accent") : col("--muted");
+    g.lineWidth = 2; g.stroke();
+    g.fillStyle = col("--ink"); g.fillText(String(i + 1), a - 4, b + 4);
+  });
+  if (s.setpoint) {
+    const [a, b] = P(s.setpoint[0], s.setpoint[1]);
+    g.strokeStyle = col("--accent"); g.lineWidth = 2.5; g.beginPath();
+    g.moveTo(a - 7, b - 7); g.lineTo(a + 7, b + 7); g.moveTo(a + 7, b - 7); g.lineTo(a - 7, b + 7); g.stroke();
+  }
+  const p = s.position;
+  if (p && p[0] !== null) {
+    const [a, b] = P(p[0], p[1]);
+    g.fillStyle = col("--ink"); g.beginPath(); g.arc(a, b, 7, 0, 7); g.fill();
+    const yaw = p[3] || 0; g.strokeStyle = col("--ink"); g.lineWidth = 2; g.beginPath();
+    g.moveTo(a, b); g.lineTo(a + 18 * Math.cos(yaw), b - 18 * Math.sin(yaw)); g.stroke();
+  }
+}
+
+function render(s) {
+  lastState = s;
+  const cam = s.camera;
+  setDot($("dotCam"), cam.connected ? (cam.fps > 0 ? "ok" : "warn") : "bad");
+  $("chipCam").textContent = `Cámara: ${cam.source}${cam.connected ? ` · ${cam.fps} fps` : " · sin conexión"}`;
+  const pose = s.pose, posOk = s.position && s.position[0] !== null;
+  setDot($("dotPose"), posOk ? "ok" : (pose.connected ? "warn" : "bad"));
+  $("chipPose").textContent = `Pose: ${pose.source}${posOk ? "" : " · sin datos válidos"}`;
+  $("chipModel").textContent = `${s.model.project} v${s.model.deploy_version} · ${s.model.width}×${s.model.height} · ${s.model.runtime}`;
+  const sp = s.setpointOutput;
+  setDot($("dotSp"), sp.enabled ? (sp.error ? "bad" : (sp.clients ? "ok" : "warn")) : "");
+  $("chipSp").textContent = sp.enabled ? `Setpoint: ${sp.clients} cliente(s)` : "Setpoint: desactivado";
+
+  $("smState").textContent = s.state;
+  $("smWp").textContent = s.state === "IDLE" ? `${s.waypoints.length} waypoints` :
+    `Waypoint ${Math.min(s.waypointIndex, s.waypoints.length)} / ${s.waypoints.length}`;
+  let prog = 0, label = "Esperando inicio";
+  if (s.state === "MOVE") { label = "Moviéndose al waypoint"; }
+  if (s.state === "VERIFY") { prog = s.verifyProgress; label = "Verificando estabilidad (3 s)"; }
+  if (s.state === "CAMERA" || s.capture.status === 1) { prog = s.capture.count / s.capture.n; label = `Capturando fotos ${s.capture.count}/${s.capture.n}`; }
+  if (s.state === "COMPLETE") { prog = 1; label = "Misión completa → Home"; }
+  $("phaseLabel").textContent = label; $("phaseBar").style.width = (prog * 100).toFixed(0) + "%";
+  $("kvPos").textContent = vec(s.position);
+  $("kvSp").textContent = vec(s.setpoint) + (s.homeToggle ? "" : "  (Home)");
+  $("kvCap").textContent = { 0: "inactiva", 1: "capturando", 2: "lote completo", "-2": "error: frame faltante", "-3": "error" }[s.capture.status] +
+    (s.capture.error ? ` — ${s.capture.error}` : "");
+  $("btnStart").disabled = s.state !== "IDLE" && s.state !== "COMPLETE";
+
+  if (!wpDirty && document.activeElement?.tagName !== "INPUT") {
+    renderWaypoints(s.waypoints);
+    $("inN").value = s.capture.n; $("inSec").value = s.capture.seconds;
+  }
+
+  const rb = $("resultsBody");
+  if (s.results.length) {
+    rb.innerHTML = s.results.map((r, i) => `<tr>
+      <td>${r.waypointIndex}</td><td>${vec(r.waypoint.slice(0, 2))}</td>
+      <td class="${r.objectDetected ? "fire" : "nofire"}">${r.objectDetected ? "SÍ" : "no"}</td>
+      <td>${fmt(r.confidenceAverage)}</td><td>${r.positives}/${r.n}</td>
+      <td><img class="thumb" loading="lazy" src="/api/results/${i}.jpg?t=${r.time}" alt="Mejor foto del waypoint ${r.waypointIndex}"></td>
+      <td>${r.time}</td></tr>`).join("");
+  } else rb.innerHTML = `<tr><td colspan="7" class="muted">Aún no hay capturas.</td></tr>`;
+
+  const lv = s.live;
+  $("liveInfo").textContent = lv.enabled ? (lv.result ? (lv.result.detected ? `🔥 ${lv.result.confidence.toFixed(0)}% · ${lv.fps} inf/s` : `sin fuego · ${lv.fps} inf/s`) : "…") : "";
+  $("diag").textContent = JSON.stringify({ camera: cam, pose: s.pose, setpointOutput: sp, model: s.model, loopOverruns: s.loopOverruns }, null, 2);
+  drawMap(s);
+}
+
+async function poll() {
+  try { render(await (await fetch("/api/state")).json()); $("missionErr").textContent = ""; }
+  catch (e) { $("missionErr").textContent = "Sin conexión con el servidor: " + e.message; }
+  setTimeout(poll, 250);
+}
+
+function showDetection(j) {
+  const r = j.result;
+  $("detectOut").hidden = false; $("detectImg").src = j.image;
+  $("detectVerdict").innerHTML = r.detected ? `<span class="fire">🔥 Fuego detectado</span>` : `<span class="nofire">Sin fuego</span>`;
+  $("detectKv").innerHTML = `<dt>status</dt><dd>${r.status}</dd><dt>confidence</dt><dd>${r.confidence.toFixed(1)} %</dd>` +
+    `<dt>boundingBox</dt><dd>[${r.box.join(", ")}]</dd><dt>celdas FOMO</dt><dd>${r.detections.length}</dd>` +
+    `<dt>elapsedMs</dt><dd>${r.elapsedMs}</dd><dt>resultID</dt><dd>${r.resultID}</dd>`;
+}
+$("btnDetect").onclick = async () => { try { showDetection(await post("/api/detect")); } catch (e) { alert(e.message); } };
+$("chkLive").onchange = (e) => post("/api/live", { enabled: e.target.checked });
+$("btnUpload").onclick = () => $("fileInput").click();
+$("fileInput").onchange = async (e) => {
+  const f = e.target.files[0]; if (!f) return;
+  const fd = new FormData(); fd.append("image", f);
+  const r = await fetch("/api/infer", { method: "POST", body: fd }); const j = await r.json();
+  if (!j.ok) return alert(j.error); showDetection(j); e.target.value = "";
+};
+$("btnStart").onclick = () => post("/api/mission/start").catch(e => $("missionErr").textContent = e.message);
+$("btnHome").onclick = () => post("/api/mission/home").catch(e => $("missionErr").textContent = e.message);
+$("btnReset").onclick = () => post("/api/mission/reset").catch(e => $("missionErr").textContent = e.message);
+$("btnAddWp").onclick = () => {
+  const wps = readWaypoints(); const last = wps[wps.length - 1] || [0, 0, 1, 0];
+  wps.push([...last]); renderWaypoints(wps); wpDirty = true;
+};
+$("btnSaveWp").onclick = async () => {
+  try {
+    await post("/api/mission/waypoints", { waypoints: readWaypoints(), batchImages: +$("inN").value, captureSeconds: +$("inSec").value });
+    wpDirty = false; $("wpMsg").textContent = "Guardado ✓"; setTimeout(() => $("wpMsg").textContent = "", 2000);
+  } catch (e) { $("wpMsg").textContent = e.message; }
+};
+["inN", "inSec"].forEach(id => $(id).oninput = () => wpDirty = true);
+poll();
+</script>
+</body>
+</html>

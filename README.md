@@ -1,5 +1,13 @@
 # QDrone2 Fire Detection — MATLAB R2023b
 
+> **Rama `Quique`:** agrega compatibilidad con **MATLAB R2023a** y una **versión web sin
+> MATLAB**.
+> - `Trayectory_Model.slx` está guardado en R2023a (abre en R2023a y R2023b). Se regenera con
+>   `rebuild_trayectory_model.m`. Requisitos y pruebas en [LEEME_R2023a.md](LEEME_R2023a.md).
+> - [web/](web/) es la versión en Python con el SDK de Quanser y una página web: detector FOMO
+>   con LiteRT, la misma máquina de estados de waypoints y la captura por lotes. Guía paso a
+>   paso para el QDrone2 en [web/GUIA_QDRONE2.md](web/GUIA_QDRONE2.md).
+
 Fire detection for the QDrone2 project using an Edge Impulse FOMO detector,
 MATLAB and Simulink on **Windows x64**. The selected export is
 `models/fire_hazard-cpp-mcu-v7-impulse-#1.zip`: **180 × 180 grayscale**, one

@@ -18,6 +18,11 @@ slprj/
 matlab_crash_dump*
 java.log*
 
+# Web version (Python): local virtual environment and caches
+web/.venv/
+__pycache__/
+*.pyc
+
 # Local editor and operating system files
 .vscode/
 .idea/

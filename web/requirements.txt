@@ -1,0 +1,6 @@
+flask>=3.0
+numpy>=1.24
+opencv-python>=4.8
+ai-edge-litert>=1.2
+# SDK de Quanser: lo instala iniciar_web.bat desde %QUARC_DIR%\python
+# (quanser_api, quanser_communications, quanser_multimedia, ...).

@@ -1,0 +1,59 @@
+{
+  "server": { "host": "127.0.0.1", "port": 8080 },
+
+  "model": {
+    "path": "../models/fire_hazard-cpp-mcu-v7-impulse-#1.zip",
+    "min_confidence": 0.5
+  },
+
+  "camera": {
+    "source": "synthetic",
+    "width": 640,
+    "height": 480,
+    "fps": 30,
+    "opencv_index": 0,
+    "quanser_video_id": "0",
+    "realsense_device": "0",
+    "remote_uri": "tcpip://192.168.2.15:18800",
+    "folder": "test_images",
+    "folder_seconds_per_image": 2.0
+  },
+
+  "pose": {
+    "source": "sim",
+    "sim_start": [0.0, 0.0, 1.0, 0.0],
+    "sim_speed": 0.5,
+    "qdrone2_ip": "192.168.2.15",
+    "qdrone2_port": 18491,
+    "qdrone2_indices": null,
+    "qdrone2_yaw_scale": 1.0,
+    "stream_uri": "tcpip://localhost:18700"
+  },
+
+  "setpoint_output": {
+    "enabled": false,
+    "uri": "tcpip://localhost:18600"
+  },
+
+  "mission": {
+    "Ts": 0.05,
+    "settling_time": 3.0,
+    "x_limits": [-1.5, 1.5],
+    "y_limits": [-1.5, 1.5],
+    "z": 1.0,
+    "yaw": 0.0,
+    "tol_mean": [0.10, 0.10, 0.10, 5.0],
+    "tol_instant": [0.15, 0.15, 0.15, 8.0],
+    "home": [0.0, 0.0, 1.0, 0.0],
+    "batch_images": 25,
+    "capture_seconds": 3.0,
+    "waypoints": [
+      [-1.5, -1.5, 1.0, 0.0],
+      [-0.5, -1.5, 1.0, 0.0],
+      [ 0.5, -1.5, 1.0, 0.0],
+      [ 1.5, -1.5, 1.0, 0.0],
+      [ 1.5,  0.0, 1.0, 0.0],
+      [ 1.5,  1.5, 1.0, 0.0]
+    ]
+  }
+}
