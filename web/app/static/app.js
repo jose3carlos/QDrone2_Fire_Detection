@@ -206,6 +206,7 @@ function renderTargets(s) {
     <td><span class="origen ${t.origen === 'simulink' ? 'simulink' : ''}"${t.alias_de ? ` title="En Simulink es el objetivo #${t.alias_de}: guardó el id #${t.id} de la estación como alias (mismo lugar)"` : ''}>${ORIGEN[t.origen] || esc(t.origen)}${t.alias_de ? ` (= #${t.alias_de})` : ''}</span></td></tr>`).join('');
   const v = s.vision || {};
   const last = v.ultimo || {};
+  const desc = v.descartadas || {};
   $('vision-info').innerHTML = `
     <span>Detector</span><b>${esc(v.detector)}</b>
     ${v.detector_error ? `<span>Errores</span><b>${esc(v.detector_error)}</b>` : ''}
@@ -213,6 +214,7 @@ function renderTargets(s) {
     <span>Frames</span><b>${v.frames ?? 0}</b>
     <span>Observaciones</span><b>${v.observaciones ?? 0}</b>
     <span>Candidatos</span><b>${v.candidatos ?? 0} (requieren ${cfg?.vision?.min_observaciones ?? 3} obs.)</b>
+    <span title="Filtros físicos de la estación (vision.tam_max_m, vision.dist_max_tubo_toma_m…): no entran al cluster">Descartadas</span><b>${desc.total ?? 0} (tamaño ${desc['tamaño'] ?? 0}, tubo ${desc['lejos del tubo'] ?? 0})</b>
     <span>Último frame</span><b>${(last.dets || []).length} cajas · ${last.ms ?? 0} ms</b>
     ${v.error ? `<span>Error</span><b>${esc(v.error)}</b>` : ''}`;
 }

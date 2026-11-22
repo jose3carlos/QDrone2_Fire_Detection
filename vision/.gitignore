@@ -4,6 +4,8 @@ runs/
 modelos/**/*.pt
 modelos/*.onnx
 modelos/*.engine
+# Candidatos de un entrenamiento (pesos, .onnx.json, métricas y curvas): no van a git; sólo el modelo vigente
+modelos/*candidato*
 datos_reales/**/*.jpg
 datos_reales/**/*.png
 datos_reales/**/*.txt

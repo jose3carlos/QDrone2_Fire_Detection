@@ -40,6 +40,36 @@ WEB_DEFAULTS = {
     "puerto_ext_mode": 17001,
 }
 
+# Filtros físicos de la estación sobre las detecciones (vision_service.VisionService.process).
+# Clave ausente -> este valor; clave presente con null (o <= 0) -> filtro desactivado.
+VISION_FILTROS_DEFAULTS = {
+    "tam_max_m": 0.35,              # caja proyectada al piso más grande que esto: no es una pieza (cara, persona)
+    "tam_min_m": 0.0,               # 0 = desactivado
+    "dist_max_tubo_toma_m": 0.25,   # una toma va abrazada al tubo: más lejos de la polilínea pista.vertices se descarta
+    "dist_max_tubo_fuego_m": None,  # null = desactivado (un fuego puede estar fuera del tubo)
+}
+
+
+def filtros_vision(cfg):
+    """Umbrales de los filtros físicos leídos de ``cfg['vision']`` (estacion.json completo, ya decodificado).
+
+    Devuelve ``{clave: float o None}``; ``None`` = filtro desactivado. Un valor que no es número
+    (texto, lista, bool) se ignora y se usa el valor por defecto, para que un error de captura en el
+    JSON no apague un filtro sin querer ni tumbe el hilo de visión.
+    """
+    vis = cfg.get("vision") if isinstance(cfg, dict) else None
+    vis = vis if isinstance(vis, dict) else {}
+    out = {}
+    for k, dflt in VISION_FILTROS_DEFAULTS.items():
+        v = vis.get(k, dflt)
+        if v is not None:
+            if isinstance(v, bool) or not isinstance(v, (int, float)):
+                v = dflt
+            elif not math.isfinite(float(v)) or float(v) <= 0:
+                v = None
+        out[k] = float(v) if v is not None else None
+    return out
+
 
 class _Num(float):
     """float que recuerda cómo estaba escrito en el archivo (para no cambiar 0.20 por 0.2)."""

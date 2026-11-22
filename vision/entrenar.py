@@ -146,6 +146,9 @@ def main():
     ap.add_argument("--incluir_sin_revisar", action="store_true",
                     help="usar también fotos reales pre-etiquetadas que nadie revisó (NO recomendado)")
     ap.add_argument("--forzar", action="store_true", help="reentrenar aunque ya exista mejor.pt")
+    ap.add_argument("--lr0", type=float, default=None, help="tasa de aprendizaje inicial (afinar: ~0.002; por defecto la de ultralytics)")
+    ap.add_argument("--warmup", type=float, default=None, help="épocas de calentamiento (por defecto las de ultralytics)")
+    ap.add_argument("--guardar_cada", type=int, default=-1, help="guardar pesos cada N épocas en runs/<nombre>/weights (-1 = no)")
     ap.add_argument("--salida", default=os.path.join(DIR_MODELOS, "mejor.pt"))
     a = ap.parse_args()
 
@@ -217,7 +220,8 @@ def main():
         project=DIR_RUNS, name=nombre, exist_ok=True, patience=a.paciencia, seed=0, plots=True,
         # vista cenital: los volteos vertical y horizontal son válidos; la rotación libre ya viene en los datos
         fliplr=0.5, flipud=0.5, degrees=0.0, scale=0.5, translate=0.1, mosaic=1.0, close_mosaic=5,
-        hsv_h=0.015, hsv_s=0.6, hsv_v=0.4,
+        hsv_h=0.015, hsv_s=0.6, hsv_v=0.4, save_period=a.guardar_cada,
+        **({"lr0": a.lr0, "optimizer": "SGD"} if a.lr0 is not None else {}), **({"warmup_epochs": a.warmup} if a.warmup is not None else {}),
     )
     t_ent = time.time() - t0
     best = os.path.join(dir_run, "weights", "best.pt")
@@ -235,6 +239,9 @@ def main():
         "datos_train": train, "datos_val": val,
         "fotos_reales": {"train": len(rtr), "val": len(rva)},
         "epocas": a.epocas, "imgsz": a.imgsz, "batch": a.batch, "base": a.base,
+        # lo que de verdad usó ultralytics (con optimizer=auto elige optimizador y lr0 él mismo)
+        "optimizador": {k: getattr(modelo.trainer.args, k, None) if getattr(modelo, "trainer", None) else None
+                        for k in ("optimizer", "lr0", "lrf", "momentum", "warmup_epochs", "warmup_bias_lr")},
         "minutos_entrenamiento": round(t_ent / 60, 1),
         "mAP50": round(float(r.box.map50), 4), "mAP50_95": round(float(r.box.map), 4),
         "precision": round(float(r.box.mp), 4), "recall": round(float(r.box.mr), 4),

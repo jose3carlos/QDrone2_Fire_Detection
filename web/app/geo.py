@@ -180,6 +180,28 @@ class CameraModel:
         return out
 
 
+def dist_polilinea(x, y, vertices):
+    """Distancia horizontal (m) del punto (x, y) a la polilínea ``vertices`` (en el orden dado,
+    segmentos consecutivos, como ``densify`` de mock_sim y ``path_points`` de mock_world).
+    None si hay menos de 2 vértices válidos."""
+    V = []
+    for v in vertices or []:
+        try:
+            V.append((float(v[0]), float(v[1])))
+        except (TypeError, ValueError, IndexError):
+            continue
+    if len(V) < 2:
+        return None
+    best = None
+    for (ax, ay), (bx, by) in zip(V[:-1], V[1:]):
+        dx, dy = bx - ax, by - ay
+        L = dx * dx + dy * dy
+        t = 0.0 if L < 1e-12 else min(1.0, max(0.0, ((x - ax) * dx + (y - ay) * dy) / L))
+        d = math.hypot(ax + t * dx - x, ay + t * dy - y)
+        best = d if best is None or d < best else best
+    return best
+
+
 class Clusterer:
     """Agrupa observaciones (clase, x, y, conf) por radio; confirma con un mínimo de observaciones."""
 

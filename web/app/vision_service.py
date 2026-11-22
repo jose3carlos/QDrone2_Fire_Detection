@@ -10,6 +10,12 @@ Flujo por frame: detector → centro de cada caja → rayo de cámara (intrínse
 montaje hacia abajo + ``rotacion_montaje`` + ``offset_camara_m``) → rotado por la pose OptiTrack
 del explorador (yaw y altura; roll y pitch ≈ 0) → intersección con z = 0.02 m → cluster por radio
 → con ``min_observaciones`` se publica como objetivo por el puente.
+
+Filtros físicos (independientes del modelo; ``vision.tam_max_m``, ``tam_min_m``,
+``dist_max_tubo_toma_m``, ``dist_max_tubo_fuego_m``, leídos en cada frame): antes del cluster se
+proyectan al suelo los puntos medios de los 4 lados de la caja y se descarta lo que mide más que una
+pieza real (caras, personas) y las tomas lejos de la tubería ``pista.vertices``. Las descartadas no
+llegan al Clusterer, pero quedan en ``last["dets"]`` con ``descartada`` = motivo para la UI.
 """
 from __future__ import annotations
 
@@ -23,7 +29,8 @@ import threading
 import time
 
 from . import protocol as P
-from .geo import CameraModel, Clusterer
+from .config import filtros_vision
+from .geo import CameraModel, Clusterer, dist_polilinea
 
 try:
     import cv2
@@ -31,6 +38,9 @@ except Exception:  # pragma: no cover
     cv2 = None
 
 Z_PLANE = 0.02
+MOTIVO_TAMANO = "tamaño"
+MOTIVO_TUBO = "lejos del tubo"
+MOTIVOS = (MOTIVO_TAMANO, MOTIVO_TUBO)
 
 
 # ---------------------------------------------------------------------------- detectores
@@ -149,6 +159,8 @@ class VisionService(threading.Thread):
         self._stop = threading.Event()
         self.last = {"frame_id": 0, "stamp": 0.0, "dets": [], "ms": 0.0, "pose": None}
         self.n_frames = self.n_obs = 0
+        self.descartadas = {m: 0 for m in MOTIVOS}   # observaciones filtradas desde el último reset
+        self.filtros = filtros_vision(cfg_fn())
         self.error = ""
         self.cam_info = {}
 
@@ -171,12 +183,47 @@ class VisionService(threading.Thread):
                          "aviso": cam.aviso}
         return cam
 
+    # -------------------------------------------------------------- filtros físicos
+    @staticmethod
+    def medir_caja(cam, pose, x1, y1, x2, y2):
+        """(ancho_m, alto_m) de la caja sobre el piso: distancia entre las proyecciones de los puntos
+        medios de los lados izquierdo/derecho y arriba/abajo (plano Z_PLANE). None si alguno no corta el piso."""
+        um, vm = (x1 + x2) / 2.0, (y1 + y2) / 2.0
+        pts = [cam.pixel_to_ground(u, v, *pose, z_plane=Z_PLANE) for u, v in ((x1, vm), (x2, vm), (um, y1), (um, y2))]
+        if any(p is None for p in pts):
+            return None
+        izq, der, arr, aba = pts
+        return math.hypot(der[0] - izq[0], der[1] - izq[1]), math.hypot(aba[0] - arr[0], aba[1] - arr[1])
+
+    def filtrar(self, cam, pose, cls, box, g, filtros, vertices):
+        """Aplica los filtros a una detección ya geolocalizada en ``g`` = (x, y).
+        Devuelve (motivo o None, tamaño en m o None, distancia al tubo en m o None)."""
+        med = self.medir_caja(cam, pose, *box)
+        filtro_tam = filtros["tam_max_m"] is not None or filtros["tam_min_m"] is not None
+        if med is None and filtro_tam:
+            # un lado de la caja no corta el piso: no se puede medir, así que no se puede validar
+            # (con los dos filtros de tamaño desactivados no se descarta por esto)
+            return MOTIVO_TAMANO, None, None
+        tam = max(med) if med is not None else None
+        if tam is not None:
+            if filtros["tam_max_m"] is not None and tam > filtros["tam_max_m"]:
+                return MOTIVO_TAMANO, tam, None
+            if filtros["tam_min_m"] is not None and tam < filtros["tam_min_m"]:
+                return MOTIVO_TAMANO, tam, None
+        dist = dist_polilinea(g[0], g[1], vertices)
+        lim = filtros["dist_max_tubo_toma_m"] if cls == 1 else filtros["dist_max_tubo_fuego_m"] if cls == 0 else None
+        if dist is not None and lim is not None and dist > lim:
+            return MOTIVO_TUBO, tam, dist
+        return None, tam, dist
+
     # -------------------------------------------------------------- procesamiento
     def process(self, frame, stamp, pose=None):
         """Procesa un frame (lo llama el hilo; también se usa directo en las pruebas)."""
         cfg = self.cfg_fn()
         vis = cfg.get("vision", {})
         conf_min = float(vis.get("confianza_min", 0.5))
+        filtros = self.filtros = filtros_vision(cfg)         # en cada frame: se pueden cambiar en caliente
+        vertices = (cfg.get("pista") or {}).get("vertices") or []
         latency = 0.0 if self.synthetic_fn() else float(cfg.get("web", {}).get("camara_latencia_s", 0.12))
         if pose is None:
             pose = self.poses.at(stamp - latency)
@@ -188,12 +235,21 @@ class VisionService(threading.Thread):
         gate = self.gate_fn() and pose is not None
         for cls, conf, x1, y1, x2, y2 in raw:
             cls, conf = int(cls), float(conf)
-            d = {"cls": cls, "conf": round(conf, 3), "box": [int(x1), int(y1), int(x2), int(y2)], "xy": None}
+            d = {"cls": cls, "conf": round(conf, 3), "box": [int(x1), int(y1), int(x2), int(y2)], "xy": None,
+                 "descartada": None, "tam_m": None, "dist_tubo_m": None}
             if conf >= conf_min and pose is not None:
                 g = cam.pixel_to_ground((x1 + x2) / 2.0, (y1 + y2) / 2.0, *pose, z_plane=Z_PLANE)
                 if g is not None:
                     d["xy"] = [round(g[0], 3), round(g[1], 3)]
-                    if gate:
+                    motivo, tam, dist = self.filtrar(cam, pose, cls, (x1, y1, x2, y2), g, filtros, vertices)
+                    d["tam_m"] = round(tam, 3) if tam is not None else None
+                    d["dist_tubo_m"] = round(dist, 3) if dist is not None else None
+                    if motivo:
+                        d["descartada"] = motivo
+                        if gate:            # se cuentan como las observaciones: solo lo que habría entrado al cluster
+                            with self.lock:
+                                self.descartadas[motivo] += 1
+                    elif gate:
                         with self.lock:
                             self.clusters.add(cls, g[0], g[1], conf)
                         self.n_obs += 1
@@ -218,6 +274,7 @@ class VisionService(threading.Thread):
     def reset(self, next_id=1):
         with self.lock:
             self.clusters.reset(next_id)
+            self.descartadas = {m: 0 for m in MOTIVOS}
         self.publish()
 
     def ensure_next_id(self, floor):
@@ -268,10 +325,12 @@ class VisionService(threading.Thread):
             last = dict(self.last)
             n_t = len(self.clusters.targets())
             n_p = len(self.clusters.pending())
+            desc = dict(self.descartadas)
+        desc["total"] = sum(desc[m] for m in MOTIVOS)
         return {"detector": self.detector_name, "detector_error": self.detector_error, "error": self.error,
                 "frames": self.n_frames, "observaciones": self.n_obs, "objetivos": n_t, "candidatos": n_p,
                 "ultimo": last, "activo": bool(self.gate_fn()),
-                "camara_modelo": self.cam_info}
+                "camara_modelo": self.cam_info, "descartadas": desc, "filtros": dict(self.filtros)}
 
     # -------------------------------------------------------------- dibujo
     def annotate(self, frame):
@@ -281,11 +340,22 @@ class VisionService(threading.Thread):
         if time.time() - last["stamp"] > 1.5:
             return img
         for d in last["dets"]:
-            color = (0, 90, 255) if d["cls"] == 0 else (255, 160, 40)
             x1, y1, x2, y2 = d["box"]
-            cv2.rectangle(img, (x1, y1), (x2, y2), color, 2)
             label = f"{P.CLASSES.get(d['cls'], d['cls'])} {d['conf']:.2f}"
-            if d["xy"]:
-                label += f" ({d['xy'][0]:+.2f}, {d['xy'][1]:+.2f})"
+            if d.get("descartada"):
+                # descartada por los filtros físicos: gris, línea delgada y el motivo
+                color = (150, 150, 150)
+                cv2.rectangle(img, (x1, y1), (x2, y2), color, 1)
+                # cv2.putText (Hershey) no dibuja la ñ
+                label += f" DESCARTADA: {d['descartada'].replace('ñ', 'n')}"
+                if d["descartada"] == MOTIVO_TUBO and d.get("dist_tubo_m") is not None:
+                    label += f" a {d['dist_tubo_m']:.2f} m"
+                elif d.get("tam_m") is not None:
+                    label += f" {d['tam_m']:.2f} m"
+            else:
+                color = (0, 90, 255) if d["cls"] == 0 else (255, 160, 40)
+                cv2.rectangle(img, (x1, y1), (x2, y2), color, 2)
+                if d["xy"]:
+                    label += f" ({d['xy'][0]:+.2f}, {d['xy'][1]:+.2f})"
             cv2.putText(img, label, (x1, max(14, y1 - 5)), cv2.FONT_HERSHEY_SIMPLEX, 0.45, color, 1, cv2.LINE_AA)
         return img

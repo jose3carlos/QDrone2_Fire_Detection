@@ -80,6 +80,7 @@ Tiempo total estimado en el laboratorio: **6–7 h** (las fotos reales van en pa
 - [ ] Cada dron en el piso marca **z = 0 ± 0.02 m**: el autoland a bordo exige z ≤ 0.05 m. Si no, corregir `optitrack.bias_z_dronN` en `estacion.json`.
 - [ ] Mover cada dron a mano hacia +x y hacia +y: la UI lo sigue en el mismo sentido y el yaw ≈ 0 cuando mira a +x.
 - [ ] **Pista:** con la tubería ya fija, poner un dron sobre cada extremo de tubo → **Capturar vértice** → Guardar (máx. 16 vértices, dentro de ±1.5 m).
+- [ ] **Vértices medidos ANTES de cualquier vuelo con anomalías.** Hoy `pista.vertices` es una estimación desde fotos. La estación descarta toda toma a más de `vision.dist_max_tubo_toma_m` (0.25 m) de esa polilínea ("lejos del tubo"): con vértices mal puestos se descartarían las tomas reales. Comprobar en la pestaña **Pista** que los vértices guardados están en el orden del recorrido de la N y que en el mapa 2D la N cae sobre el tubo real (error < 0.05 m en cada extremo). Vértices medidos: ______________________.
 - [ ] **Stop** del modelo de tierra (ningún dron vuela) → **Build de nuevo**: la pista y el bias se leen **al compilar**. Connect → Start.
 
 **SEGUIR si:** los dos rigid bodies se rastrean sin cortes en toda la arena, z ≈ 0 en el piso y los ejes cuadran. **NO SEGUIR si:** un dron se pierde en alguna zona de la arena, o los ejes o el yaw están invertidos (revisar la orientación con que se creó el rigid body).
@@ -210,5 +211,5 @@ No hay misión con un solo dron. Se usa el modo MANUAL original: Command Source 
 - Que el `InitFcn` escriba las rutas de Motive **durante el build QUARC** (sí funciona en Update Diagram).
 - MPC real: falsos "enlace perdido", el escape a 1.5 m/s, el downwash real (en la simulación `F0` = 5.9 N es un supuesto), el LAND ALL apilado.
 - Un solo binario MPC con un solo "Drone Weight" para los dos drones, aunque el explorador pesa más.
-- YOLO sin fotos reales hasta la etapa 5b.
+- YOLO sin fotos reales **cenitales** hasta la etapa 5b: solo vio fotos de Blender, negativos de COCO y capturas de webcam de frente (ya no confunde caras con tomas, pero falta validarlo desde el dron).
 - El modo MANUAL en tierra MPC solo se probó como lógica (`qd2_probar_operador`), nunca en vuelo.

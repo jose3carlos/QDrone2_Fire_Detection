@@ -242,6 +242,10 @@ def _main():
     ap.add_argument("--camara", type=int, default=None)
     ap.add_argument("--salida", default=DIR_SALIDA_DET,
                     help="carpeta para las imágenes con cajas (por defecto vision/runs/detector)")
+    ap.add_argument("--guardar_cada", type=float, default=0,
+                    help="con --camara: guardar una captura con cajas cada N segundos (0 = solo con la tecla s)")
+    ap.add_argument("--duracion", type=float, default=0,
+                    help="con --camara: cerrar solo después de N segundos (0 = hasta q)")
     a = ap.parse_args()
     det = Detector(a.modelo, a.conf, a.device, backend=a.backend)
     print("modelo:", det.model_path, "| motor:", det.backend, "| dispositivo:", det.device, "| conf:", det.conf)
@@ -264,17 +268,87 @@ def _main():
     if rutas:
         print("imágenes con cajas en", os.path.abspath(a.salida))
     if a.camara is not None:
-        cap = cv2.VideoCapture(a.camara, cv2.CAP_DSHOW if os.name == "nt" else cv2.CAP_ANY)
+        _camara_en_vivo(cv2, det, a)
+
+
+def _camara_en_vivo(cv2, det, a):
+    """Webcam con cajas, FPS y resumen. s = guardar captura, q/ESC = salir.
+    Todo va a <salida>/webcam_<fecha>/: detecciones.log (una línea por segundo con lo detectado y el resumen)
+    y las capturas (tNNNN.N_k.jpg sin cajas + _det.jpg con cajas). Con --guardar_cada S guarda además una
+    captura cada S segundos (para revisarlas después)."""
+    cap = cv2.VideoCapture(a.camara, cv2.CAP_DSHOW if os.name == "nt" else cv2.CAP_ANY)
+    cap.set(cv2.CAP_PROP_FRAME_WIDTH, 640)
+    cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 480)
+    if not cap.isOpened():
+        print("no se pudo abrir la cámara", a.camara)
+        return
+    sesion = time.strftime("webcam_%Y%m%d_%H%M%S")
+    carpeta = os.path.join(a.salida, sesion)
+    os.makedirs(carpeta, exist_ok=True)
+    log = open(os.path.join(carpeta, "detecciones.log"), "w", encoding="utf-8")
+    print("capturas y registro en", os.path.abspath(carpeta), flush=True)
+    t0 = time.time()
+    t_guardado = t_log = t0
+    n_cuadros = n_con_det = n_guardadas = 0
+    max_por_clase = {0: 0, 1: 0}
+    conf_max = {0: 0.0, 1: 0.0}
+    fps = 0.0
+    t_prev = time.perf_counter()
+    try:
         while True:
             ok, img = cap.read()
             if not ok:
+                print("la cámara dejó de entregar cuadros")
                 break
             d = det.detect(img)
-            cv2.imshow("detector (q = salir)", det.dibujar(img, d))
-            if cv2.waitKey(1) & 0xFF == ord("q"):
+            ahora_pc = time.perf_counter()
+            fps = 0.9 * fps + 0.1 * (1.0 / max(ahora_pc - t_prev, 1e-6)) if fps else 1.0 / max(ahora_pc - t_prev, 1e-6)
+            t_prev = ahora_pc
+            n_cuadros += 1
+            n_con_det += bool(d)
+            for c in (0, 1):
+                dc = [x for x in d if int(x[0]) == c]
+                max_por_clase[c] = max(max_por_clase[c], len(dc))
+                if dc:
+                    conf_max[c] = max(conf_max[c], max(float(x[1]) for x in dc))
+            vis = det.dibujar(img, d)
+            nf = sum(1 for x in d if int(x[0]) == 0)
+            nt = sum(1 for x in d if int(x[0]) == 1)
+            txt = "%.1f FPS | fuegos: %d | tomas: %d | s=guardar q=salir" % (fps, nf, nt)
+            cv2.rectangle(vis, (0, 0), (vis.shape[1], 24), (0, 0, 0), -1)
+            cv2.putText(vis, txt, (6, 17), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 255), 1, cv2.LINE_AA)
+            cv2.imshow("detector (q = salir)", vis)
+            ahora = time.time()
+            if ahora - t_log >= 1.0:
+                t_log = ahora
+                desc = ", ".join("%s %.2f" % (NOMBRES.get(int(c), c), cf) for c, cf, *_ in d) or "nada"
+                log.write("%7.1f s  %4.1f FPS  %s\n" % (ahora - t0, fps, desc))
+                log.flush()
+            guardar = a.guardar_cada and ahora - t_guardado >= a.guardar_cada
+            k = cv2.waitKey(1) & 0xFF
+            if k == ord("s"):
+                guardar = True
+            if guardar:
+                t_guardado = ahora
+                n_guardadas += 1   # el contador evita sobrescribir si se pulsa s dos veces en < 0.1 s
+                base = os.path.join(carpeta, "t%06.1f_%d" % (ahora - t0, n_guardadas))
+                cv2.imwrite(base + "_det.jpg", vis)
+                cv2.imwrite(base + ".jpg", img)   # sin cajas: sirve después para etiquetar
+            if k in (ord("q"), 27) or cv2.getWindowProperty("detector (q = salir)", cv2.WND_PROP_VISIBLE) < 1:
                 break
+            if a.duracion and ahora - t0 >= a.duracion:
+                break
+    finally:
         cap.release()
         cv2.destroyAllWindows()
+        dur = time.time() - t0
+        resumen = ("RESUMEN: %d cuadros en %.1f s, %.1f FPS promedio (%.1f al final), %d cuadros con detección; "
+                   "máx. simultáneos fuego=%d toma=%d; conf. máx fuego=%.2f toma=%.2f; %d capturas"
+                   % (n_cuadros, dur, n_cuadros / max(dur, 1e-6), fps, n_con_det, max_por_clase[0],
+                      max_por_clase[1], conf_max[0], conf_max[1], n_guardadas))
+        log.write(resumen + "\n")
+        log.close()
+        print(resumen, flush=True)
 
 
 if __name__ == "__main__":

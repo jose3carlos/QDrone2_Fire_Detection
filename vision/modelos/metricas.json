@@ -1,39 +1,78 @@
 {
-  "fecha": "2026-11-22T07:37:31",
-  "run": "C:\\Users\\ezequ\\OneDrive\\Escritorio\\QDrone2_Deteccion_Tomas_Pemex\\vision\\runs\\yolo11n_20261122_0545",
+  "fecha": "2026-11-22T14:16:58",
+  "run": "C:\\Users\\ezequ\\OneDrive\\Escritorio\\QDrone2_Deteccion_Tomas_Pemex\\vision\\runs\\ft_negativos_v2_20261122",
   "datos_train": [
     "C:/Users/ezequ/datasets/qdrone2_vision/sintetico_10k\\images\\train",
-    "C:\\Users\\ezequ\\OneDrive\\Escritorio\\QDrone2_Deteccion_Tomas_Pemex\\vision\\datos\\sintetico_smoke\\images\\train"
+    "C:\\Users\\ezequ\\OneDrive\\Escritorio\\QDrone2_Deteccion_Tomas_Pemex\\vision\\datos\\sintetico_smoke\\images\\train",
+    "C:/Users/ezequ/datasets/qdrone2_vision/coco_negativos\\images\\train",
+    "C:\\Users\\ezequ\\OneDrive\\Escritorio\\QDrone2_Deteccion_Tomas_Pemex\\vision\\runs\\ft_negativos_v2_20261122\\reales_train.txt"
   ],
   "datos_val": [
     "C:/Users/ezequ/datasets/qdrone2_vision/sintetico_10k\\images\\val",
-    "C:\\Users\\ezequ\\OneDrive\\Escritorio\\QDrone2_Deteccion_Tomas_Pemex\\vision\\datos\\sintetico_smoke\\images\\val"
+    "C:\\Users\\ezequ\\OneDrive\\Escritorio\\QDrone2_Deteccion_Tomas_Pemex\\vision\\datos\\sintetico_smoke\\images\\val",
+    "C:/Users/ezequ/datasets/qdrone2_vision/coco_negativos\\images\\val",
+    "C:\\Users\\ezequ\\OneDrive\\Escritorio\\QDrone2_Deteccion_Tomas_Pemex\\vision\\runs\\ft_negativos_v2_20261122\\reales_val.txt"
   ],
   "fotos_reales": {
-    "train": 0,
-    "val": 0
+    "train": 98,
+    "val": 53
   },
-  "epocas": 80,
+  "epocas": 25,
   "imgsz": 640,
   "batch": 16,
-  "base": "yolo11n.pt",
-  "minutos_entrenamiento": 111.6,
-  "mAP50": 0.9947,
-  "mAP50_95": 0.9366,
-  "precision": 0.9923,
-  "recall": 0.9847,
+  "base": "modelo anterior, respaldado como vision/modelos/mejor_20261122_134604.pt",
+  "minutos_entrenamiento": 44.2,
+  "mAP50": 0.9945,
+  "mAP50_95": 0.9375,
+  "precision": 0.9914,
+  "recall": 0.9835,
   "por_clase": {
     "fuego": {
-      "AP50": 0.9946,
-      "AP50_95": 0.95,
-      "P": 0.9901,
+      "AP50": 0.9945,
+      "AP50_95": 0.9498,
+      "P": 0.9913,
       "R": 0.9841
     },
     "toma": {
-      "AP50": 0.9948,
-      "AP50_95": 0.9232,
-      "P": 0.9945,
-      "R": 0.9854
+      "AP50": 0.9946,
+      "AP50_95": 0.9253,
+      "P": 0.9916,
+      "R": 0.9828
+    }
+  },
+  "checkpoint": "last.pt (época 25 de 25) de vision/runs/ft_negativos_v2_20261122",
+  "optimizador": "SGD lr0=0.002, warmup 1 época, 25 épocas",
+  "negativos": "1500 fotos COCO val2017 (1000 con personas; sin 'fire hydrant') + 82 capturas de webcam sin piezas (x3); validación: 100 COCO + 50 capturas",
+  "evaluacion_externa": {
+    "nota": "Cifras con ultralytics (.pt). recall = fotos con >=1 fuego a conf>=0.5 (56 fotos de webcam con fuego, de frente y en la mano; 22 son de la misma sesión que las fotos de train y 3 están en la validación del afinado); fp = fracción de fotos con >=1 detección a conf>=0.5 (500 COCO apartadas, nunca usadas; 50 capturas de webcam con cara y sin piezas = validación del afinado, no usadas para gradientes). Ver vision/README.md §3.",
+    "anterior": {
+      "modelo": "mejor_20261122_134604.pt",
+      "recall_fuego_webcam": "51/56",
+      "fp_toma_coco": 0.276,
+      "fp_fuego_coco": 0.112,
+      "fp_caras_webcam": "45/50"
+    },
+    "nuevo": {
+      "modelo": "mejor.pt",
+      "recall_fuego_webcam": "49/56",
+      "fp_toma_coco": 0.0,
+      "fp_fuego_coco": 0.0,
+      "fp_caras_webcam": "0/50"
+    },
+    "motor_estacion_opencv_onnx": {
+      "anterior": {
+        "recall_fuego_webcam": "50/56",
+        "fp_toma_coco": 0.288,
+        "fp_fuego_coco": 0.122,
+        "fp_caras_webcam": "44/50"
+      },
+      "nuevo": {
+        "recall_fuego_webcam": "47/56",
+        "fp_toma_coco": 0.0,
+        "fp_fuego_coco": 0.004,
+        "fp_caras_webcam": "0/50"
+      },
+      "nota": "la diferencia con ultralytics viene del relleno a 640x640 del backend opencv, no del .onnx"
     }
   }
 }

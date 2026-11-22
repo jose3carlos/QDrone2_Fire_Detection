@@ -1,8 +1,8 @@
 # Visión: YOLO11n para fuegos y tomas clandestinas
 
 Detector de 2 clases para la cámara cenital del dron EXPLORADOR: **0 = fuego**, **1 = toma** (válvula
-abrazada al tubo). Se entrena una vez con datos sintéticos de Blender (más fotos reales cuando existan) y la
-estación web sólo carga `vision/modelos/mejor.pt` (o `mejor.onnx`). **No se reentrena** salvo que se pida con `--forzar`.
+abrazada al tubo). Se entrenó con datos sintéticos de Blender y se afinó con negativos (fotos sin piezas de COCO
+y de webcam) contra falsos positivos; faltan las fotos reales del laboratorio (§4). La estación web sólo carga `vision/modelos/mejor.pt` (o `mejor.onnx`). **No se reentrena** salvo que se pida con `--forzar`.
 
 | Archivo | Qué hace |
 |---|---|
@@ -12,18 +12,21 @@ estación web sólo carga `vision/modelos/mejor.pt` (o `mejor.onnx`). **No se re
 | `evaluar.py` | mAP por clase, P/R con la confianza de operación, velocidad (ms/imagen) de cada motor |
 | `detector.py` | `Detector(model_path, conf).detect(frame_bgr) -> [(cls, conf, x1, y1, x2, y2), ...]` (lo usa `web/`) |
 | `exportar_onnx.py` | `mejor.pt` → `mejor.onnx` para correr sin torch (cv2.dnn) |
+| `negativos_coco.py` | Arma las fotos negativas de COCO val2017 (sin piezas, etiqueta vacía) para entrenar y para medir falsos positivos |
 | `capturar_fotos.py` | Captura fotos reales desde el stream QDF1 del dron (:18800) o una webcam |
 | `etiquetar.py` | Pre-etiqueta fotos reales con el modelo y abre un editor OpenCV para corregirlas |
 | `paquete.py` | Lleva modelo + fotos etiquetadas de una PC a otra en un .zip (no van a git) |
 | `requirements.txt` | Versiones exactas probadas |
 | `instalar_en_web.bat` | OPCIONAL: torch + ultralytics en el venv de la estación (para usar la GPU) |
 
-Los datasets (`datos/`), los pesos (`*.pt`, `*.onnx`), las fotos reales y las corridas (`runs/`) **no van a git**
-(`vision/.gitignore`). Las métricas (`modelos/metricas*.json`, `modelos/evaluacion_*.json`) sí.
+Los datasets (`datos/`, `%USERPROFILE%\datasets\...`), los pesos (`*.pt`, `*.onnx`), las fotos reales y las corridas (`runs/`)
+**no van a git** (`vision/.gitignore`), salvo el modelo vigente `modelos/mejor.pt` + `mejor.onnx` (+ `mejor.onnx.json`).
+Las métricas (`modelos/metricas*.json`, `modelos/evaluacion_*.json`) sí, menos las de los candidatos (`modelos/*candidato*`).
 
 ## 0. Lo mínimo para el laboratorio (estación web)
 
-1. **Copiar el modelo a la PC del laboratorio.** `mejor.pt` y `mejor.onnx` no están en git. En la laptop:
+1. **Copiar el modelo a la PC del laboratorio.** `mejor.pt`, `mejor.onnx` y `mejor.onnx.json` van en git: con el repo al
+   día basta. Si no se puede hacer `git pull`, en la laptop:
    `%PY% vision\paquete.py exportar --sin_fotos --salida E:\` (USB) y en la PC del lab:
    `python vision\paquete.py importar E:\paquete_vision_<fecha>_solo_modelo.zip` (sólo usa la biblioteca
    estándar, sirve cualquier Python 3.10+). También se puede copiar a mano `vision\modelos\mejor.pt`,
@@ -93,15 +96,32 @@ Velocidad medida (Cycles + OptiX, 24 muestras con denoiser, RTX 4060 Laptop): ~1
 - `detector.py` guarda las imágenes con cajas en `vision\runs\detector\` (nunca dentro de la carpeta de datos) e ignora los `*_det.jpg`.
 - `evaluar.py` necesita `images/val` (o la estructura de `datos_reales`); nunca evalúa sobre todas las imágenes.
 
-### Resultados del modelo actual `mejor.pt` / `mejor.onnx` (22-nov-2026, laptop RTX 4060)
+### Resultados del modelo actual `mejor.pt` / `mejor.onnx` (22-nov-2026, afinado con negativos)
 
-- **Entrenamiento** (`modelos/metricas.json`, corrida `runs/yolo11n_20261122_0545`): `entrenar.py --forzar --datos C:\Users\ezequ\datasets\qdrone2_vision\sintetico_10k vision\datos\sintetico_smoke --epocas 80`. 80 épocas, imgsz 640, batch 16, desde `yolo11n.pt` de COCO, 111.6 min. Train: 8 610 + 534 imágenes sintéticas; val: 1 390 + 66. **0 fotos reales.**
-- **Validación sintética:** **mAP50 = 0.995**, mAP50-95 = 0.937 (P = 0.992, R = 0.985); fuego AP50 = 0.995 (P 0.990 / R 0.984), toma AP50 = 0.995 (P 0.995 / R 0.985).
-  **Ojo:** es validación sintética (mismo generador que el train): **no dice nada de fotos reales** (para eso, §4).
-- **Comprobación con el motor de la estación** (OpenCV-ONNX en CPU, venv `qd2_web`, confianza de operación 0.5, IoU ≥ 0.5, 200 imágenes val de `sintetico_10k` tomadas cada 6.ª, 22-nov-2026): 253 aciertos, 6 falsos positivos y 2 no detectados → **P = 0.977, R = 0.992**.
-- **Velocidad de `Detector.detect()` con OpenCV-ONNX en CPU** (lo que usa la estación sin torch; incluye pre y post): 100 imágenes de 640×480, media 40 ms, mediana 36 ms, p90 52 ms, medido con la CPU compartida con otras sesiones de MATLAB, así que es una cota pesimista. Las cifras de ultralytics GPU/CPU de abajo son del modelo anterior (misma arquitectura YOLO11n, mismo costo).
-- `mejor.onnx.json` guarda el md5 del `mejor.pt` del que salió (`144d00b2…`); `detector.py` avisa si el `.onnx` quedó desactualizado.
-- **Modelo anterior** (respaldado como `modelos/mejor_20261122_073731.pt` y `metricas_20261122_073731.json`): sólo `sintetico_smoke` (600 imágenes, 30 épocas, 3.7 min), mAP50 = 0.960 sobre 66 imágenes val. Velocidad medida entonces (`modelos/evaluacion_sintetico_smoke.json`, 640×480, GPU compartida con Blender): ultralytics GPU media 21–26 ms (17–19 ms con la GPU libre); ultralytics CPU (Ryzen 9 8945HS) media 39 ms; OpenCV-ONNX CPU media 32–43 ms.
+- **Qué es:** el modelo sintético de 80 épocas (respaldado como `modelos/mejor_20261122_134604.pt`) **afinado 25 épocas con negativos**: 1 500 fotos de COCO sin piezas y 82 capturas de webcam sin piezas, más 16 capturas de webcam con fuego (las 98 capturas ×3), junto con todo el sintético. Corrida `runs/ft_negativos_v2_20261122`, 44.2 min en la RTX 4060. `mejor.pt` es el **`last.pt` de la época 25**, no el `best.pt`. Comando, datos y por qué: sección **Negativos** (abajo).
+- **Evaluación externa** (confianza ≥ 0.5; cuenta fotos con al menos una detección). Cifras con el **motor de la estación** (OpenCV-ONNX en CPU, venv `qd2_web`); entre paréntesis, con ultralytics y el `.pt` (son las que guarda `metricas.json → evaluacion_externa`). "Anterior" = `mejor_20261122_134604`.
+
+  | Fotos | Qué se cuenta | Anterior | Actual |
+  |---|---|---|---|
+  | 500 de COCO apartadas (`coco_negativos_eval`, ninguna se usó al entrenar) | con "toma" falsa | 28.8 % (27.6 %) | **0 %** (0 %) |
+  | las mismas 500 | con "fuego" falso | 12.2 % (11.2 %) | **0.4 % = 2/500** (0 %) |
+  | 50 capturas de webcam con la cara y sin piezas | con cualquier detección | 44/50 (45/50) | **0/50** (0/50) |
+  | 56 capturas de webcam con fuego (de frente, en la mano) | con el fuego detectado (recall) | 50/56 (51/56) | **47/56** (49/56) |
+  | las mismas 56 | con "toma" falsa | 41/56 | **0/56** |
+
+- **Ojo, no es la prueba del laboratorio:** son fotos de webcam en interiores, de frente, no la cámara cenital del dron sobre el tapete; lo que decide es `evaluar.py` con fotos del laboratorio (§4). Además no son del todo independientes del entrenamiento:
+  - las 50 caras son exactamente la validación del afinado (`datos_reales/images/val`): no dieron gradientes, pero se vigilaron época por época;
+  - 3 de las 56 fotos de fuego también están en esa validación;
+  - 22 de las 56 son de la sesión `webcam_20261122_120648`, de la que salen las 98 capturas de train (fotogramas a ~2 s entre sí, muy parecidos). Sólo con la otra sesión (`120159`, 34 fotos, ninguna en train): 30 → 28 con OpenCV, 31 → 30 con ultralytics;
+  - las 500 COCO apartadas no coinciden con las de train/val ni por nombre ni por contenido (md5).
+- **Fuegos que el actual no detecta** (9 de 56 con OpenCV, 7 con ultralytics): 5 son puntas o trozos cortados por el borde de la imagen (4 de ellos tampoco los detectaba el anterior); 2 son fuegos cortados abajo que sólo se pierden con OpenCV; y **2 son fallos claros**: un fuego grande y bien visible con la base cortada por el borde (`webcam_20261122_120159/t0090.8`, `webcam_20261122_120648/t0074.7`), que el actual no detecta ni a 0.25. Parece que el afinado lo volvió más conservador con fuegos muy cerca y recortados: hay que vigilarlo en el laboratorio.
+- **Por qué OpenCV y ultralytics no dan lo mismo:** no es el `.onnx`. Con la misma entrada de 640×640, `.onnx` y `.pt` dan los mismos scores (diferencia ≤ 1.3e-5, en el actual y en el anterior). Cambia el preprocesado: ultralytics infiere una imagen de 640×480 a 640×480 sin relleno y `detector.py` con OpenCV la rellena a 640×640 con bandas grises. Se podría igualar exportando el ONNX a 480×640 (o con forma dinámica) y adaptando el letterbox de `_MotorOpenCV`; no está hecho.
+- **Validación del entrenamiento** (`modelos/metricas.json`, ultralytics, val completo de 1 609 imágenes: 1 456 sintéticas + 100 COCO + 53 webcam): mAP50 = 0.9945, mAP50-95 = 0.9375 (P = 0.991, R = 0.984); fuego AP50 = 0.9945, toma AP50 = 0.9946. Sólo las 1 456 sintéticas, con OpenCV: mAP50 0.9946 (anterior) → 0.9944 (actual), es decir, el afinado no empeoró lo sintético. Esta validación está saturada y no mide falsos positivos: para eso está la tabla de arriba.
+- **Velocidad:** misma arquitectura y mismo costo que el anterior. `Detector.detect()` con OpenCV-ONNX en CPU, 640×480: mediana ~38 ms con 16 hilos (~26 FPS); sólo la red con 1 hilo, 144 ms. Las cifras de ultralytics GPU/CPU son las del modelo de `sintetico_smoke` (abajo; misma arquitectura).
+- `mejor.onnx.json` guarda el md5 del `mejor.pt` del que salió (`92e8dec0…`); `detector.py` avisa si el `.onnx` quedó desactualizado.
+- **Modelos anteriores** (los pesos sólo están en esta laptop, no van a git; las métricas sí):
+  - `modelos/mejor_20261122_134604.pt` / `.onnx` + `metricas_20261122_134604.json` (el que se afinó): `entrenar.py --forzar --datos C:\Users\ezequ\datasets\qdrone2_vision\sintetico_10k vision\datos\sintetico_smoke --epocas 80`, corrida `runs/yolo11n_20261122_0545`, desde `yolo11n.pt` de COCO, 111.6 min. Train: 8 610 + 534 imágenes sintéticas; val: 1 390 + 66. **0 fotos reales.** Validación sintética: mAP50 = 0.995, mAP50-95 = 0.937 (P = 0.992, R = 0.985). Con OpenCV-ONNX (conf 0.5, IoU ≥ 0.5, 200 imágenes val de `sintetico_10k`): P = 0.977, R = 0.992. Con la webcam confundía caras y objetos con "toma" (tabla de arriba).
+  - `modelos/mejor_20261122_073731.pt` + `metricas_20261122_073731.json`: sólo `sintetico_smoke` (600 imágenes, 30 épocas, 3.7 min), mAP50 = 0.960 sobre 66 imágenes val. Velocidad medida entonces (`modelos/evaluacion_sintetico_smoke.json`, 640×480, GPU compartida con Blender): ultralytics GPU media 21–26 ms (17–19 ms con la GPU libre); ultralytics CPU (Ryzen 9 8945HS) media 39 ms; OpenCV-ONNX CPU media 32–43 ms.
 - **Dataset grande:** 10 000 imágenes (semilla 202) en `C:\Users\ezequ\datasets\qdrone2_vision\sintetico_10k` (fuera de OneDrive), log en `...\sintetico_10k_log2.txt`. Para reanudarlo, el mismo comando:
   ```bat
   "C:\Program Files\Blender Foundation\Blender 5.3\blender.exe" -b -P vision\sintetico\generar_blender.py -- --salida C:\Users\ezequ\datasets\qdrone2_vision\sintetico_10k --n 10000 --vistas 6 --semilla 202
@@ -109,7 +129,7 @@ Velocidad medida (Cycles + OptiX, 24 muestras con denoiser, RTX 4060 Laptop): ~1
 
 ## 4. Fotos reales en el laboratorio (lo más importante para que funcione de verdad)
 
-El modelo sintético es un punto de partida. El salto sintético → real se cierra con **unas 300–500 fotos reales etiquetadas**.
+El modelo actual (sintético + negativos de COCO y webcam) es un punto de partida. El salto sintético → real se cierra con **unas 300–500 fotos reales etiquetadas**.
 
 ### Captura (~30 min)
 
@@ -188,6 +208,98 @@ La PC del laboratorio no tiene el venv `qdrone2_vision` (torch + GPU). Se captur
 Estructura de `datos_reales/`: `crudas/<sesion>/*.jpg` (sin etiquetar); `images/*.jpg` + `labels/*.txt`
 (partición 80/20 fija por md5 del nombre, la misma en entrenar y evaluar); `images/val/` + `labels/val/`
 (sesión reservada para validar); `revisadas.txt`.
+
+## Falsos positivos: filtros de la estación
+
+Con la webcam el modelo sólo-sintético confundía caras y personas con "toma" (conf 0.5–0.9). El modelo actual se
+reentrenó con negativos (sección siguiente) y en las capturas de webcam ya no lo hace, pero la estación
+(`web/app/vision_service.py`) sigue filtrando por física, sin tocar el modelo, como segunda barrera:
+
+- **Tamaño real:** proyecta al piso los puntos medios de los lados de la caja y descarta lo que mida más de
+  `vision.tam_max_m` (0.35 m). Una pieza mide 0.07–0.14 m de base (~40 px a 1.5 m), pero mide más en el piso en las orillas de la
+  imagen por su altura (0.125–0.137 m): hasta ~0.24 m con caja holgada; una cara, varios decímetros.
+- **Toma cerca del tubo:** descarta las tomas a más de `vision.dist_max_tubo_toma_m` (0.25 m) de la polilínea
+  `pista.vertices`. Para fuegos está desactivado (`vision.dist_max_tubo_fuego_m = null`).
+- Las descartadas no llegan al cluster; en la cámara de la estación salen en gris con el motivo.
+
+Esto **no sustituye** entrenar con negativas: sólo funciona con la cámara cenital del dron y la pose de
+OptiTrack (con `detector.py --camara 0` no hay filtro). Detalle y parámetros: `web/README.md`, "Filtros físicos de la estación".
+
+## Negativos: cómo se reentrenó contra falsos positivos
+
+El modelo sólo-sintético nunca había visto caras, personas ni cuartos: con la webcam marcaba caras y objetos como
+"toma" (conf 0.5–0.9) y a veces como "fuego". Se afinó con fotos **sin piezas y con etiqueta vacía** ("aquí no hay
+nada"). Pasos para repetirlo (22-nov-2026, laptop RTX 4060; resultados en §3, "Resultados del modelo actual"):
+
+1. **Negativos de COCO** (no van a git; viven en `%USERPROFILE%\datasets\qdrone2_vision`). Descarga de
+   images.cocodataset.org `zips/val2017.zip` (~0.8 GB) y `annotations/annotations_trainval2017.zip`, y descomprímelos en
+   `%USERPROFILE%\datasets\coco` (quedan `val2017\` y `annotations\instances_val2017.json`). Luego:
+   ```bat
+   %PY% vision\negativos_coco.py
+   REM sin copiar nada: la selección debe ser igual a coco_negativos\seleccion.json
+   %PY% vision\negativos_coco.py --comprobar
+   ```
+   Crea `coco_negativos\images\train` (1 500 = 1 000 con personas + 500 sin) y `images\val` (70 + 30), con etiquetas
+   vacías, y `coco_negativos_eval\images` (300 + 200), que **no se entrena**: sirve para medir falsos positivos. La
+   selección es fija (orden por md5 del nombre) y deja fuera las fotos con "fire hydrant" (parece una válvula). Sólo usa la
+   biblioteca estándar; `--coco`, `--salida` y `--salida_eval` cambian las carpetas.
+2. **Capturas de webcam** (no van a git; se mueven con `paquete.py`). Se tomaron con `detector.py --camara 0` (quedan en
+   `vision\runs\detector\webcam_<fecha>\`): 204 fotos en dos sesiones, con la cara y el cuarto, con y sin un fuego impreso
+   en la mano. Se pre-etiquetaron con el modelo anterior (conf 0.25) y se quedaron las 151 en las que coincidieron los dos
+   revisores (132 sin piezas y 19 con fuego; 53 descartadas por duda):
+   - `datos_reales\images\train`: sesión `webcam_20261122_120648`, 98 fotos (82 sin piezas + 16 con fuego);
+   - `datos_reales\images\val`: sesión `webcam_20261122_120159`, 53 fotos (50 sin piezas + 3 con fuego).
+
+   Todas están en `revisadas.txt`, así que `entrenar.py` las mezcla solas (×3). Detalle en
+   `datos_reales\webcam_20261122_LEEME.txt`.
+
+   > **Aviso: estas 151 capturas NO las revisó una persona.** Las revisaron dos revisores automáticos independientes
+   > (Claude, mirando cada imagen) y sólo se guardaron las fotos en las que los dos coincidieron. Antes de confiar en
+   > ellas, revísalas a mano con el editor de §4:
+   > ```bat
+   > REM las 151 (train y val)
+   > %PY% vision\etiquetar.py revisar
+   > REM sólo la validación
+   > %PY% vision\etiquetar.py revisar --carpeta vision\datos_reales\images\val
+   > ```
+   > Como ya están todas marcadas, el editor abre en la primera: `d`/ESPACIO guarda y pasa a la siguiente, `a` regresa,
+   > `x` deja la foto sin cajas (negativo). Una foto que no sirva se borra de `images\` y `labels\` (o se quita de
+   > `revisadas.txt` para que no se use).
+3. **Afinar** partiendo del modelo sintético, con una salida nueva para no pisar `mejor.pt` (~44 min):
+   ```bat
+   %PY% vision/entrenar.py --base vision/modelos/mejor.pt --datos C:/Users/ezequ/datasets/qdrone2_vision/sintetico_10k vision/datos/sintetico_smoke C:/Users/ezequ/datasets/qdrone2_vision/coco_negativos --epocas 25 --paciencia 100 --lr0 0.002 --warmup 1 --guardar_cada 1 --nombre ft_negativos_v2_20261122 --salida vision/modelos/candidato_negativos_v2.pt
+   ```
+   - Se mezcla todo el sintético para no olvidar las piezas; las capturas de `datos_reales` entran solas.
+   - `--lr0 0.002` (tasa baja, de afinado) hace que `entrenar.py` use SGD: con `optimizer=auto`, ultralytics ignora `lr0`.
+     `--warmup 1` = 1 época de calentamiento.
+   - `--paciencia 100` = sin parada temprana; `--guardar_cada 1` deja `weights\epoch<N>.pt` para comparar épocas.
+   - Ojo: con SGD, ultralytics deja `warmup_bias_lr = 0.1` (50 veces `lr0`) para los sesgos durante la época de
+     calentamiento. `mejor.pt` se entrenó así; para el siguiente afinado conviene 0.0 (`entrenar.py` aún no tiene opción
+     para eso). Desde ahora `metricas*.json` guarda lo que de verdad usó ultralytics en la clave `optimizador`.
+   - Una primera corrida (`candidato_negativos.pt`, `runs/ft_negativos_20261122`) no se usó.
+4. **Elegir el checkpoint.** `entrenar.py` copia `best.pt` a `--salida` (`candidato_negativos_v2.pt`), pero `best.pt` lo
+   elige ultralytics por el mAP de la validación, que en este afinado estuvo saturado (mAP50 entre 0.9942 y 0.9947 en las
+   25 épocas) y no mide falsos positivos. Se usó **`last.pt` (época 25)**. Para ponerlo como modelo vigente (a mano):
+   ```bat
+   REM respaldo: mejor.pt, mejor.onnx y metricas.json -> mejor_<fecha>.pt, mejor_<fecha>.onnx, metricas_<fecha>.json
+   copy vision\runs\ft_negativos_v2_20261122\weights\last.pt vision\modelos\mejor.pt
+   REM nuevo mejor.onnx + mejor.onnx.json con el md5 del .pt
+   %PY% vision\exportar_onnx.py
+   ```
+   `metricas.json` se rehízo validando `mejor.pt` sobre `runs\ft_negativos_v2_20261122\data_combinada.yaml`, y se le
+   agregaron a mano `checkpoint`, `optimizador`, `negativos` y `evaluacion_externa`.
+5. **Evaluación externa.** Fotos con alguna detección a conf ≥ 0.5, con el motor de la estación (desde la raíz del repo;
+   el 1.er argumento es la carpeta y el 2.º, opcional, el modelo):
+   ```bat
+   %USERPROFILE%\.venvs\qd2_web\Scripts\python.exe -c "import glob,sys,cv2; sys.path.insert(0,'.'); from vision.detector import Detector; d=Detector(sys.argv[2] if len(sys.argv)>2 else 'vision/modelos/mejor.pt',conf=0.5); fs=sorted(glob.glob(sys.argv[1]+'/*.jpg')); r=[{int(x[0]) for x in d.detect(cv2.imread(f))} for f in fs]; print(len(fs),'fotos | con fuego:',sum(0 in s for s in r),'| con toma:',sum(1 in s for s in r))" %USERPROFILE%\datasets\qdrone2_vision\coco_negativos_eval\images
+   ```
+   Da `500 fotos | con fuego: 2 | con toma: 0` (con `vision/modelos/mejor_20261122_134604.pt` como 2.º argumento: 61 y
+   144). Con `vision\datos_reales\images\val`: 53 fotos, 3 con fuego (las 3 que tienen fuego) y 0 con toma (el anterior,
+   47 con toma). Las 56 fotos de fuego son las capturas de `vision\runs\detector\webcam_20261122_*` con fuego visible
+   según los dos revisores que no entraron al train (3 de val + descartadas por duda); la lista no está en el repo.
+
+Para el próximo afinado (p. ej. con fotos del laboratorio, §4) conviene incluir `coco_negativos` en `--datos`: afinando
+sólo con fotos reales se puede perder lo aprendido contra falsos positivos.
 
 ## 5. Notas técnicas
 

@@ -116,7 +116,7 @@ Todo lo que sigue se probó **en software (SIL) en la laptop de desarrollo, con 
 | Simulador 3D: 13/13 pruebas sin capturas | `simulador3d/README.md`, `PRUEBA_E2E.md` §5.3 |
 | Estación web: 122 pruebas (pytest) | `web/README.md` |
 | E2E en tiempo real con la estación real: `QD2_Sim_Dual` PID, MPC y MPC con falla a bordo; simulador 3D PID y MPC (todas PASA) | `PRUEBA_E2E.md` §5 |
-| YOLO11n: 10 000 imágenes sintéticas, mAP50 = 0.995 en validación sintética; la estación lo carga con OpenCV-ONNX en CPU | `vision/README.md` §3 |
+| YOLO11n: 10 000 imágenes sintéticas, afinado con negativos (COCO y capturas de webcam sin piezas). Con OpenCV-ONNX (conf 0.5): fotos de COCO apartadas con "toma" falsa 28.8 % → 0 %, capturas de la cara sin piezas con detección 44/50 → 0/50, fuego detectado en capturas de webcam 50/56 → 47/56; la estación lo carga con OpenCV-ONNX en CPU | `vision/README.md` §3 y "Negativos" |
 
 **Falta (hardware y laboratorio)**
 
@@ -125,7 +125,7 @@ Todo lo que sigue se probó **en software (SIL) en la laptop de desarrollo, con 
 - **OptiTrack con 2 rigid bodies, los Stream Servers reales y los drones**: nada del enlace real está probado (loopback, `Communication_Status`, respuesta de 8 doubles con la etiqueta y(8) = 2, falsos "enlace perdido").
 - **MPC real**: el escape a 1.5 m/s, el vuelo apilado y el LAND ALL apilado con drones reales; medir la fuerza de downwash (en la simulación es un supuesto, `F0` = 5.9 N) y el pivot del rigid body (el autoland exige z ≤ 0.05 m).
 - **Cámara real**: intrínsecos de la D435i (`camara.intrinsecos`), `rotacion_montaje` y offset del soporte.
-- **YOLO con fotos reales**: 0 fotos reales en el entrenamiento; la E2E usó la cámara sintética con el detector falso, no YOLO. Hace falta capturar y etiquetar ~300–500 fotos del laboratorio (`vision/README.md` §4).
+- **YOLO con fotos reales**: ninguna foto del laboratorio (cámara del dron sobre el tapete) en el entrenamiento; sólo 151 capturas de webcam (caras y cuarto, 19 con fuego), revisadas por dos revisores automáticos (Claude) y no por una persona. La E2E usó la cámara sintética con el detector falso, no YOLO. Hace falta capturar y etiquetar ~300–500 fotos del laboratorio (`vision/README.md` §4).
 - **`quarc_run`**: los comandos de Conexiones usan `-r`, que según la documentación local de QUARC descarga y ejecuta (`-D` solo descarga y es una alternativa excluyente). La ayuda corta es `quarc_run -?`, no `-h`.
 - **Abrir `QD2_Sim_Dual` en R2022a**: `qd2_e2e_web`/`qd2_correr_sim` cargan los `.slx` de R2025a. En R2022a hay que abrir `versiones/R2022a/QD2_Sim_Dual.slx` con esa carpeta como carpeta actual (`PRUEBA_E2E.md` §7).
 - **Vuelo de cada dron por separado**: no hay modo de misión con un solo dron. Se usa el modo MANUAL del Equipo2 (Command Source = 1, solo dron 1); para el dron 2 hay que intercambiar rigid bodies e IPs y recompilar (checklist, etapa 7).
