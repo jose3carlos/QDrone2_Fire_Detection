@@ -1,0 +1,14 @@
+# Visión (YOLO11n fuego/toma): versiones probadas en la laptop (Python 3.10, RTX 4060, 22-nov-2026).
+# Instalar en un venv FUERA de OneDrive:
+#   python -m venv %USERPROFILE%\.venvs\qdrone2_vision
+#   %USERPROFILE%\.venvs\qdrone2_vision\Scripts\python.exe -m pip install -r vision\requirements.txt
+# torch con CUDA 12.8 (sirve para RTX 40xx y 50xx); en una PC sin NVIDIA también funciona en CPU.
+--extra-index-url https://download.pytorch.org/whl/cu128
+torch==2.11.0+cu128
+torchvision==0.26.0+cu128
+ultralytics==8.4.216
+opencv-python==5.1.0.95
+numpy==2.2.6
+# sólo para exportar mejor.pt -> mejor.onnx (vision/exportar_onnx.py)
+onnx==1.23.2
+onnxslim==0.1.99

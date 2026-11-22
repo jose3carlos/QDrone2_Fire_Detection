@@ -1,3 +1,5 @@
+> **Nota (versión 2 drones):** esta guía describe la estación anterior de **un solo dron** (Trayectory_Model, misión en Python). La estación actual de 2 drones se explica en `web/README.md` y `docs/ARQUITECTURA.md`. Se conserva como referencia histórica (Parte A y el streamer QDF1).
+
 # QDrone2 Fire Detection — guía paso a paso
 
 Esta guía tiene dos partes:

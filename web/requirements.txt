@@ -1,6 +1,13 @@
-flask>=3.0
+# Estación web 2x QDrone 2 (Python 3.10+)
+fastapi>=0.110
+uvicorn[standard]>=0.27
 numpy>=1.24
 opencv-python>=4.8
+psutil>=5.9
+python-multipart>=0.0.9
+# Respaldo: detector FOMO original (solo fuego). El detector principal es vision/detector.py (YOLO11n),
+# que necesita además: pip install ultralytics  (y torch con CUDA, ver vision/README.md).
 ai-edge-litert>=1.2
-# SDK de Quanser: lo instala iniciar_web.bat desde %QUARC_DIR%\python
-# (quanser_api, quanser_communications, quanser_multimedia, ...).
+# Pruebas
+pytest>=7
+httpx>=0.25

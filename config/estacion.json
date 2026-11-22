@@ -1,0 +1,59 @@
+{
+  "version_control": "PID",
+  "red": {
+    "ip_pc": "",
+    "interfaz_preferida": "Wi-Fi 2",
+    "ip_dron1": "",
+    "ip_dron2": "",
+    "puerto_dron1": 18001,
+    "puerto_dron2": 18002,
+    "puerto_puente": 18700,
+    "puerto_video": 18800,
+    "puerto_web": 8080
+  },
+  "optitrack": {
+    "carpeta": "C:\\Users\\user\\Documents\\OptiTrack",
+    "archivo_cal": "",
+    "archivo_motive": "",
+    "rigid_body_dron1": 1,
+    "rigid_body_dron2": 2,
+    "bias_z_dron1": -0.07,
+    "bias_z_dron2": -0.07
+  },
+  "mision": {
+    "z_explorador": 1.5,
+    "z_respondedor": 0.5,
+    "t_mark": 3.0,
+    "d_min_h": 0.9,
+    "dz_min": 0.8,
+    "espaciado_waypoints": 0.25,
+    "tol_xy": 0.12,
+    "tol_z": 0.12,
+    "auto_land": false,
+    "limites_xy": [-1.5, 1.5]
+  },
+  "pista": {
+    "nota": "Estimación inicial desde fotos; medir en laboratorio con 'capturar vértice'",
+    "vertices": [[-1.2, 1.2], [1.2, 1.2], [-1.2, -1.2], [1.2, -1.2]]
+  },
+  "camara": {
+    "fuente": "dron",
+    "resolucion": [640, 480],
+    "hfov_deg": 69.4,
+    "vfov_deg": 42.5,
+    "rotacion_montaje": 0,
+    "offset_camara_m": [0.20, 0.0, -0.05]
+  },
+  "vision": {
+    "modelo": "vision/modelos/mejor.pt",
+    "confianza_min": 0.5,
+    "backend": "auto",
+    "radio_cluster_m": 0.25,
+    "min_observaciones": 3,
+    "intrinsecos_nominales": {
+      "nota": "Nominales de la D435i color a partir de VFOV 42.5 grados. En 640x480 el sensor recorta los lados: HFOV real ~55 grados, no 69.4 (69.4 es para 16:9). Sustituir por los de rs2 get_intrinsics() del dron real.",
+      "640x480": {"fx": 617.1, "fy": 617.1, "cx": 320.0, "cy": 240.0},
+      "1280x720": {"fx": 925.6, "fy": 925.6, "cx": 640.0, "cy": 360.0}
+    }
+  }
+}

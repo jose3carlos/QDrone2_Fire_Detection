@@ -1,0 +1,19 @@
+# Datasets, pesos y resultados de entrenamiento: NO van a git (se regeneran o se copian aparte)
+datos/
+runs/
+modelos/**/*.pt
+modelos/*.onnx
+modelos/*.engine
+datos_reales/**/*.jpg
+datos_reales/**/*.png
+datos_reales/**/*.txt
+!datos_reales/README.md
+*.blend
+*.blend1
+_tmp_render_*.png
+__pycache__/
+_tmp_*.jpg
+*.cache
+# El modelo final SÍ va a git (5 MB + 10 MB) para no reentrenar en cada PC
+!modelos/mejor.pt
+!modelos/mejor.onnx

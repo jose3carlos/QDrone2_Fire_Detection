@@ -3,339 +3,296 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>QDrone2 Fire Detection</title>
-<style>
-  :root {
-    --bg: #f4f5f7; --panel: #ffffff; --ink: #1b1f24; --muted: #5d6673; --line: #dfe3e8;
-    --accent: #d9480f; --accent-ink: #ffffff; --ok: #2b8a3e; --warn: #e67700; --bad: #c92a2a;
-    --chip: #eef1f4; --map-bg: #fafbfc; --grid: #e6e9ee;
+<title>Estación QDrone 2</title>
+<link rel="stylesheet" href="/static/style.css">
+<script type="importmap">
+{
+  "imports": {
+    "three": "https://cdn.jsdelivr.net/npm/three@0.160.0/build/three.module.js",
+    "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.160.0/examples/jsm/"
   }
-  @media (prefers-color-scheme: dark) {
-    :root {
-      --bg: #111418; --panel: #1a1f25; --ink: #e8ebef; --muted: #9aa4b1; --line: #2c333c;
-      --accent: #ff6b2c; --accent-ink: #111418; --ok: #51cf66; --warn: #fcc419; --bad: #ff6b6b;
-      --chip: #232a32; --map-bg: #151a1f; --grid: #232a32;
-    }
-  }
-  * { box-sizing: border-box; }
-  body { margin: 0; background: var(--bg); color: var(--ink);
-         font: 14px/1.45 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif; }
-  header { display: flex; flex-wrap: wrap; gap: 12px; align-items: center; justify-content: space-between;
-           padding: 14px 20px; border-bottom: 1px solid var(--line); background: var(--panel); }
-  h1 { font-size: 17px; margin: 0; font-weight: 650; letter-spacing: .2px; }
-  h1 span { color: var(--accent); }
-  h2 { font-size: 13px; text-transform: uppercase; letter-spacing: .6px; color: var(--muted); margin: 0 0 10px; font-weight: 600; }
-  .chips { display: flex; flex-wrap: wrap; gap: 8px; }
-  .chip { display: inline-flex; align-items: center; gap: 6px; background: var(--chip); border-radius: 999px;
-          padding: 4px 10px; font-size: 12px; color: var(--muted); }
-  .dot { width: 8px; height: 8px; border-radius: 50%; background: var(--muted); }
-  .dot.ok { background: var(--ok); } .dot.bad { background: var(--bad); } .dot.warn { background: var(--warn); }
-  main { display: grid; gap: 16px; padding: 16px 20px 40px; grid-template-columns: minmax(0, 1.25fr) minmax(0, 1fr);
-         max-width: 1500px; margin: 0 auto; }
-  @media (max-width: 980px) { main { grid-template-columns: 1fr; padding: 12px 16px 32px; } }
-  .panel { background: var(--panel); border: 1px solid var(--line); border-radius: 12px; padding: 16px; min-width: 0; }
-  .stack { display: grid; gap: 16px; align-content: start; min-width: 0; }
-  .video { width: 100%; aspect-ratio: 4/3; background: #000; border-radius: 8px; object-fit: contain; display: block; }
-  .row { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
-  button { font: inherit; border: 1px solid var(--line); background: var(--chip); color: var(--ink);
-           padding: 8px 14px; border-radius: 8px; cursor: pointer; }
-  button:hover { border-color: var(--muted); }
-  button.primary { background: var(--accent); color: var(--accent-ink); border-color: var(--accent); font-weight: 600; }
-  button.danger { color: var(--bad); }
-  button:disabled { opacity: .5; cursor: default; }
-  label.toggle { display: inline-flex; gap: 8px; align-items: center; cursor: pointer; color: var(--muted); }
-  .kv { display: grid; grid-template-columns: auto 1fr; gap: 4px 14px; font-variant-numeric: tabular-nums; }
-  .kv dt { color: var(--muted); } .kv dd { margin: 0; }
-  .state { font-size: 22px; font-weight: 700; letter-spacing: .5px; }
-  .bar { height: 8px; background: var(--chip); border-radius: 99px; overflow: hidden; }
-  .bar > i { display: block; height: 100%; width: 0; background: var(--accent); transition: width .2s; }
-  canvas { width: 100%; aspect-ratio: 1; display: block; background: var(--map-bg); border-radius: 8px; }
-  table { width: 100%; border-collapse: collapse; font-variant-numeric: tabular-nums; }
-  th, td { text-align: left; padding: 6px 6px; border-bottom: 1px solid var(--line); vertical-align: middle; }
-  th { color: var(--muted); font-weight: 600; font-size: 12px; }
-  td input { width: 100%; min-width: 56px; font: inherit; background: var(--bg); color: var(--ink);
-             border: 1px solid var(--line); border-radius: 6px; padding: 4px 6px; }
-  .tablewrap { overflow-x: auto; }
-  .fire { color: var(--bad); font-weight: 700; } .nofire { color: var(--ok); }
-  .thumb { width: 120px; border-radius: 6px; display: block; }
-  .detect-out { display: grid; grid-template-columns: 180px 1fr; gap: 12px; align-items: start; margin-top: 12px; }
-  .detect-out[hidden] { display: none; }
-  @media (max-width: 520px) { .detect-out { grid-template-columns: 1fr; } }
-  .detect-out img { width: 180px; image-rendering: pixelated; border-radius: 6px; background: #000; }
-  .muted { color: var(--muted); } .err { color: var(--bad); white-space: pre-wrap; }
-  details summary { cursor: pointer; color: var(--muted); }
-  code, pre { font-family: ui-monospace, "Cascadia Code", Consolas, monospace; font-size: 12px; }
-  pre { background: var(--chip); padding: 8px; border-radius: 6px; overflow-x: auto; max-height: 180px; }
-  .inline-inputs { display: flex; flex-wrap: wrap; gap: 10px; margin: 8px 0; }
-  .inline-inputs label { display: grid; gap: 2px; color: var(--muted); font-size: 12px; }
-  .inline-inputs input { width: 110px; font: inherit; background: var(--bg); color: var(--ink);
-                         border: 1px solid var(--line); border-radius: 6px; padding: 4px 6px; }
-</style>
+}
+</script>
 </head>
 <body>
-<header>
-  <h1>QDrone2 <span>Fire Detection</span></h1>
-  <div class="chips">
-    <span class="chip"><i class="dot" id="dotCam"></i><span id="chipCam">Cámara</span></span>
-    <span class="chip"><i class="dot" id="dotPose"></i><span id="chipPose">Pose</span></span>
-    <span class="chip"><i class="dot ok"></i><span id="chipModel">Modelo</span></span>
-    <span class="chip"><i class="dot" id="dotSp"></i><span id="chipSp">Setpoint</span></span>
+<header class="topbar">
+  <div class="brand">
+    <span class="logo" aria-hidden="true"></span>
+    <div>
+      <div class="title">Estación QDrone 2</div>
+      <div class="subtitle">Detección de tomas clandestinas y fuegos · 2 drones</div>
+    </div>
   </div>
+  <div class="state-block">
+    <span class="label">Misión</span>
+    <span id="mstate" class="mstate">—</span>
+  </div>
+  <div class="chips">
+    <span class="chip" id="chip-ws" title="Conexión navegador ⇄ estación">Web</span>
+    <span class="chip" id="chip-bridge" title="Puente :18700 con Simulink / simulador">Puente</span>
+    <span class="chip" id="chip-cam" title="Video del explorador">Video</span>
+    <span class="chip" id="chip-vision" title="Detector">Visión</span>
+    <span class="chip neutral" id="chip-version" title="Versión del modelo que está corriendo">—</span>
+  </div>
+  <label class="source">Fuente
+    <select id="sel-fuente">
+      <option value="mock">mock (sin MATLAB)</option>
+      <option value="simulink">simulink :18700</option>
+      <option value="sim3d">simulador MATLAB 3D</option>
+    </select>
+  </label>
 </header>
 
-<main>
-  <div class="stack">
-    <section class="panel">
-      <h2>Cámara en vivo</h2>
-      <img class="video" src="/video.mjpg" alt="Video de la cámara">
-      <div class="row" style="margin-top:12px">
-        <button class="primary" id="btnDetect">Detectar ahora</button>
-        <label class="toggle"><input type="checkbox" id="chkLive"> Detección en vivo</label>
-        <button id="btnUpload">Probar con una imagen…</button>
-        <input type="file" id="fileInput" accept="image/*" hidden>
-        <span class="muted" id="liveInfo"></span>
-      </div>
-      <div class="detect-out" id="detectOut" hidden>
-        <img id="detectImg" alt="Imagen 180×180 que ve el modelo">
-        <div>
-          <div id="detectVerdict" class="state"></div>
-          <dl class="kv" id="detectKv"></dl>
-          <p class="muted" style="margin:8px 0 0">Recuadros naranjas: celdas FOMO ≥ umbral exportado. Rojo: la detección elegida (confianza ≥ mínimo configurado).</p>
+<div class="avisos" id="avisos" role="alert"></div>
+<div class="alerta" id="alerta" role="alert" hidden></div>
+<nav class="controls" aria-label="Controles de misión">
+  <button class="btn start" data-cmd="START" data-confirm="¿Iniciar la misión? Los dos drones se arman y despegan.">START</button>
+  <button class="btn" data-cmd="PAUSE">PAUSE</button>
+  <button class="btn" data-cmd="RESUME">RESUME</button>
+  <button class="btn warn" data-cmd="ABORT" data-confirm="¿Abortar? Ambos drones regresan a su home y quedan en hover.">ABORT / RTH</button>
+  <button class="btn danger" data-cmd="LAND_ALL" data-confirm="¿Aterrizar los dos drones donde están?">LAND ALL</button>
+  <span class="cmdinfo" id="cmdinfo">cmd_seq 0 · ack —</span>
+  <span class="spacer"></span>
+  <span class="metric"><span class="label">t</span> <b id="m-t">—</b></span>
+  <span class="metric"><span class="label">Δh E–R</span> <b id="m-dh">—</b></span>
+  <span class="metric"><span class="label">Δz E–R</span> <b id="m-dz">—</b></span>
+  <span class="guard" id="guard">GUARD —</span>
+</nav>
+
+<main class="layout">
+  <section class="viewport">
+    <div class="row1">
+      <div class="panel view3d">
+        <div class="panel-head">
+          <h2>Vista 3D</h2>
+          <div class="seg" role="group" aria-label="Cámara 3D">
+            <button data-view="persp" class="on">Perspectiva</button>
+            <button data-view="top">Cenital</button>
+            <button data-view="follow">Seguir E</button>
+          </div>
+        </div>
+        <div id="three-host" class="three-host"><div class="msg" id="three-msg">Cargando vista 3D…</div></div>
+        <div class="legend">
+          <span><i class="sw e"></i>Explorador</span><span><i class="sw r"></i>Respondedor</span>
+          <span><i class="sw st-det"></i>Detectada</span><span><i class="sw st-asig"></i>Asignada</span><span><i class="sw st-vis"></i>Visitada</span>
+          <span>◇ consigna · ▢ home · línea = estela</span>
         </div>
       </div>
+      <div class="panel map2d">
+        <div class="panel-head">
+          <h2>Mapa 2D</h2>
+          <span class="hint" id="map-hint">x → derecha · y ↑</span>
+        </div>
+        <canvas id="map" width="560" height="560"></canvas>
+      </div>
+    </div>
+    <div class="row2">
+      <div class="panel cam">
+        <div class="panel-head">
+          <h2>Cámara del explorador</h2>
+          <span class="hint" id="cam-info">—</span>
+        </div>
+        <div class="camwrap"><img id="video" alt="Video de la cámara del explorador" src="/video.mjpg"></div>
+      </div>
+      <div class="panel dronespanel">
+        <div class="panel-head"><h2>Drones</h2></div>
+        <div class="drones" id="drones"></div>
+      </div>
+    </div>
+  </section>
+
+  <aside class="sidebar">
+    <div class="tabs" role="tablist">
+      <button class="tab on" data-tab="mision">Misión</button>
+      <button class="tab" data-tab="anomalias">Anomalías <span class="count" id="tab-count">0</span></button>
+      <button class="tab" data-tab="conexiones">Conexiones</button>
+      <button class="tab" data-tab="motive">Motive</button>
+      <button class="tab" data-tab="pista">Pista</button>
+      <button class="tab" data-tab="eventos">Eventos</button>
+    </div>
+
+    <!-- MISIÓN -->
+    <section class="tabpane on" id="tab-mision">
+      <div class="kv-grid">
+        <div class="kv"><span>Explorador</span><b id="k-e">—</b></div>
+        <div class="kv"><span>Respondedor</span><b id="k-r">—</b></div>
+        <div class="kv"><span>Objetivos conocidos</span><b id="k-known">—</b></div>
+        <div class="kv"><span>Visitados</span><b id="k-vis">—</b></div>
+        <div class="kv"><span>En cola</span><b id="k-queue">—</b></div>
+        <div class="kv"><span>R atiende</span><b id="k-rt">—</b></div>
+      </div>
+      <div class="bar-block">
+        <div class="bar-label"><span>Recorrido de la N (E)</span><b id="k-wp">—</b></div>
+        <div class="bar"><i id="bar-wp"></i></div>
+      </div>
+      <div class="bar-block">
+        <div class="bar-label"><span>Marcando (R)</span><b id="k-mark">—</b></div>
+        <div class="bar mark"><i id="bar-mark"></i></div>
+      </div>
+      <div class="sep-block" id="sep-block">
+        <div class="sep-title">Separación</div>
+        <div class="sep-row"><span>Horizontal</span><b id="s-dh">—</b><small id="s-dh-th"></small></div>
+        <div class="sep-row"><span>Vertical</span><b id="s-dz">—</b><small id="s-dz-th"></small></div>
+        <div class="sep-note" id="s-note"></div>
+      </div>
+      <div class="ver-block">
+        <label>Versión en <code>estacion.json</code>
+          <select id="sel-version"><option>PID</option><option>MPC</option></select>
+        </label>
+        <small>Solo informativa: la versión real la define el modelo que esté corriendo (se muestra arriba).</small>
+      </div>
     </section>
 
-    <section class="panel">
-      <h2>Resultados por waypoint</h2>
-      <div class="tablewrap">
-        <table>
-          <thead><tr><th>#</th><th>Waypoint</th><th>Fuego</th><th>Conf. prom.</th><th>Positivas</th><th>Mejor foto</th><th>Hora</th></tr></thead>
-          <tbody id="resultsBody"><tr><td colspan="7" class="muted">Aún no hay capturas.</td></tr></tbody>
-        </table>
+    <!-- ANOMALÍAS -->
+    <section class="tabpane" id="tab-anomalias">
+      <table class="tbl" id="tbl-targets">
+        <thead><tr><th>#</th><th>Clase</th><th>x (m)</th><th>y (m)</th><th>Conf.</th><th>Obs.</th><th>Estado</th><th>Origen</th></tr></thead>
+        <tbody></tbody>
+      </table>
+      <p class="empty" id="targets-empty">Sin anomalías publicadas todavía.</p>
+      <small id="targets-note">Origen: <b>estación</b> = publicada por esta estación; <b>Simulink</b> = la reporta Simulink
+        en y(56:60) (p. ej. el detector interno del simulador 3D); <b>ambos</b> = publicada aquí y confirmada por Simulink.</small>
+      <div class="card">
+        <div class="card-title">Agregar anomalía manual (prueba)</div>
+        <div class="row-inline">
+          <select id="man-cls"><option value="0">fuego</option><option value="1">toma</option></select>
+          <button class="btn sm" id="btn-man">Clic en el mapa 2D…</button>
+          <button class="btn sm ghost" id="btn-reset-targets">Reiniciar lista</button>
+        </div>
+        <small>Se publica de inmediato por el puente (ranuras rotativas, máx. 32).</small>
       </div>
-    </section>
-  </div>
-
-  <div class="stack">
-    <section class="panel">
-      <h2>Misión</h2>
-      <div class="row" style="justify-content:space-between">
-        <div class="state" id="smState">—</div>
-        <div class="muted" id="smWp"></div>
+      <div class="card" id="card-mock" hidden>
+        <div class="card-title">Pruebas con el mock</div>
+        <div class="row-inline">
+          <select id="mock-alerta" aria-label="Alerta y(55) forzada">
+            <option value="">y(55) real del mock</option>
+            <option value="0">0 · nada</option>
+            <option value="1">1 · homes demasiado cerca</option>
+            <option value="2">2 · pérdida de rastreo</option>
+            <option value="3">3 · timeout de despegue</option>
+            <option value="4">4 · timeout de aterrizaje</option>
+            <option value="5">5 · E-stop del operador</option>
+            <option value="6">6 · Takeoff abajo (operador)</option>
+            <option value="7">7 · Arm abajo (operador)</option>
+            <option value="8">8 · respaldo del operador</option>
+            <option value="9">9 · falla a bordo (MPC)</option>
+            <option value="10">10 · protocolo MPC incorrecto</option>
+          </select>
+          <button class="btn sm" id="btn-mock-alerta">Forzar alerta</button>
+        </div>
+        <small id="mock-alerta-actual"></small>
+        <div class="row-inline" style="margin-top:6px">
+          <button class="btn sm" id="btn-mock-obj">Objetivo de Simulink: clic en el mapa 2D…</button>
+        </div>
+        <small>Solo con la fuente mock. El objetivo "de Simulink" entra a la tabla del mock y llega por y(56:60),
+          como uno del detector interno del simulador 3D.</small>
       </div>
-      <div style="margin:12px 0 6px" class="muted" id="phaseLabel">Estabilización / captura</div>
-      <div class="bar"><i id="phaseBar"></i></div>
-      <dl class="kv" style="margin-top:12px">
-        <dt>Posición</dt><dd id="kvPos">—</dd>
-        <dt>Setpoint</dt><dd id="kvSp">—</dd>
-        <dt>Cámara</dt><dd id="kvCap">—</dd>
-      </dl>
-      <div class="row" style="margin-top:14px">
-        <button class="primary" id="btnStart">Iniciar misión</button>
-        <button class="danger" id="btnHome">Abortar → Home</button>
-        <button id="btnReset">Reiniciar</button>
+      <div class="card">
+        <div class="card-title">Visión</div>
+        <div class="kv-list" id="vision-info"></div>
       </div>
-      <p class="err" id="missionErr"></p>
-    </section>
-
-    <section class="panel">
-      <h2>Mapa (vista superior)</h2>
-      <canvas id="map" width="600" height="600"></canvas>
-      <p class="muted" style="margin:8px 0 0">● Dron &nbsp; ✕ Setpoint &nbsp; ○ Waypoints &nbsp; <span class="fire">●</span> Fuego confirmado</p>
-    </section>
-
-    <section class="panel">
-      <h2>Waypoints</h2>
-      <div class="inline-inputs">
-        <label>Fotos por waypoint (N)<input type="number" id="inN" min="1" step="1"></label>
-        <label>Duración de captura (s)<input type="number" id="inSec" min="0.1" step="0.1"></label>
-      </div>
-      <div class="tablewrap">
-        <table>
-          <thead><tr><th>#</th><th>X (m)</th><th>Y (m)</th><th>Z (m)</th><th>Yaw (rad)</th><th></th></tr></thead>
-          <tbody id="wpBody"></tbody>
-        </table>
-      </div>
-      <div class="row" style="margin-top:10px">
-        <button id="btnAddWp">Agregar</button>
-        <button class="primary" id="btnSaveWp">Guardar waypoints</button>
-        <span class="muted" id="wpMsg"></span>
-      </div>
-      <p class="muted" style="margin:8px 0 0">La FSM fuerza Z y Yaw a los valores de <code>config.json</code> y limita X, Y al área de trabajo, igual que el bloque Trayectory SM.</p>
     </section>
 
-    <section class="panel">
-      <details>
-        <summary>Diagnóstico (vector crudo de pose, modelo, errores)</summary>
-        <pre id="diag"></pre>
-      </details>
+    <!-- CONEXIONES -->
+    <section class="tabpane" id="tab-conexiones">
+      <div class="card">
+        <div class="card-title">IP de esta PC por interfaz <button class="btn sm ghost" id="btn-net">Actualizar</button></div>
+        <table class="tbl" id="tbl-net"><thead><tr><th>Interfaz</th><th>IP</th><th></th></tr></thead><tbody></tbody></table>
+        <small>Se recomienda la antena Alfa (<b>Wi-Fi 2</b>, Realtek RTL8811AU) conectada a la red de los drones.</small>
+        <label class="field">IP de la PC para los comandos
+          <select id="sel-ippc"></select>
+        </label>
+      </div>
+      <div class="card">
+        <div class="card-title">Drones</div>
+        <div class="ipform" data-dron="1">
+          <label>Dron 1 <span class="pend" id="pend-1">pendiente</span>
+            <input id="ip-1" placeholder="192.168.2.x" inputmode="decimal"></label>
+          <button class="btn sm" data-save-ip="1">Guardar</button>
+          <button class="btn sm ghost" data-copy-from="ip-1">Copiar</button>
+        </div>
+        <div class="ipform" data-dron="2">
+          <label>Dron 2 <span class="pend" id="pend-2">pendiente</span>
+            <input id="ip-2" placeholder="192.168.2.x" inputmode="decimal"></label>
+          <button class="btn sm" data-save-ip="2">Guardar</button>
+          <button class="btn sm ghost" data-copy-from="ip-2">Copiar</button>
+        </div>
+        <small>Se guardan en <code>config/estacion.json</code> (red.ip_dron1 / red.ip_dron2).</small>
+      </div>
+      <div class="card">
+        <div class="card-title">Comandos para lanzar cada dron</div>
+        <div id="cmds"></div>
+        <small>Orden: 1) correr el modelo de tierra (Simulink) 2) lanzar cada dron. Verifica las opciones con <code>quarc_run -h</code> en la PC del laboratorio.</small>
+      </div>
+      <div class="card">
+        <div class="card-title">Puente y video</div>
+        <div class="kv-list" id="bridge-info"></div>
+      </div>
     </section>
-  </div>
+
+    <!-- MOTIVE -->
+    <section class="tabpane" id="tab-motive">
+      <div class="card">
+        <div class="card-title">Carpeta de OptiTrack</div>
+        <div class="row-inline">
+          <input id="ot-folder" class="grow" placeholder="C:\Users\user\Documents\OptiTrack">
+          <button class="btn sm" id="btn-ot-list">Listar</button>
+        </div>
+        <small id="ot-msg"></small>
+      </div>
+      <div class="card">
+        <div class="card-title">Calibración (.cal)</div>
+        <div class="filelist" id="ot-cal"></div>
+        <div class="card-title">Rigid bodies (.motive)</div>
+        <div class="filelist" id="ot-motive"></div>
+        <label class="field">…o sube un archivo <input type="file" id="ot-upload" accept=".cal,.motive"></label>
+      </div>
+      <div class="card">
+        <div class="card-title">Selección actual</div>
+        <label class="field">Archivo .cal <input id="ot-cal-path" class="mono"></label>
+        <label class="field">Archivo .motive <input id="ot-motive-path" class="mono"></label>
+        <div class="row-inline">
+          <label class="field small">Rigid body del dron 1 <input id="ot-rb1" type="number" min="1" step="1"></label>
+          <label class="field small">Rigid body del dron 2 <input id="ot-rb2" type="number" min="1" step="1"></label>
+        </div>
+        <button class="btn" id="btn-ot-save">Guardar en estacion.json</button>
+        <small>Simulink lo lee con <code>qd2_cargar_config.m</code> al construir/arrancar el modelo de tierra.</small>
+      </div>
+    </section>
+
+    <!-- PISTA -->
+    <section class="tabpane" id="tab-pista">
+      <div class="card">
+        <div class="card-title">Vértices de la N (m, marco OptiTrack)</div>
+        <small class="note">Máximo 16 vértices (límite de Simulink). Simulink lee la pista al compilar / iniciar el
+          modelo (InitFcn): después de guardar, vuelve a correr el modelo de tierra o el simulador para que la N que
+          vuela sea la misma que ves aquí.</small>
+        <table class="tbl" id="tbl-verts"><thead><tr><th>#</th><th>x</th><th>y</th><th></th></tr></thead><tbody></tbody></table>
+        <div class="row-inline">
+          <button class="btn sm ghost" id="btn-v-add">+ vértice</button>
+          <button class="btn sm ghost" id="btn-v-reload">Restaurar</button>
+          <span class="spacer"></span>
+          <button class="btn sm" id="btn-v-save">Guardar pista</button>
+        </div>
+      </div>
+      <div class="card">
+        <div class="card-title">Capturar vértice desde OptiTrack</div>
+        <div class="row-inline">
+          <select id="cap-dron"><option value="1">Dron 1</option><option value="2">Dron 2</option></select>
+          <select id="cap-target"><option value="-1">agregar al final</option></select>
+          <button class="btn sm" id="btn-cap">Capturar vértice</button>
+        </div>
+        <small id="cap-msg">Coloca el dron (apagado) sobre cada extremo del tubo y captura. Requiere telemetría del puente.</small>
+      </div>
+    </section>
+
+    <!-- EVENTOS -->
+    <section class="tabpane" id="tab-eventos">
+      <ul class="events" id="events"></ul>
+    </section>
+  </aside>
 </main>
-
-<script>
-const $ = (id) => document.getElementById(id);
-let lastState = null, wpDirty = false;
-
-function fmt(v, d = 2) { return (v === null || v === undefined) ? "—" : Number(v).toFixed(d); }
-function vec(a) { return a ? `[${a.map(v => fmt(v)).join(", ")}]` : "—"; }
-async function post(url, body) {
-  const r = await fetch(url, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body || {}) });
-  const j = await r.json().catch(() => ({}));
-  if (!r.ok || j.ok === false) throw new Error(j.error || r.statusText);
-  return j;
-}
-function setDot(el, cls) { el.className = "dot " + (cls || ""); }
-
-function renderWaypoints(wps) {
-  const body = $("wpBody"); body.innerHTML = "";
-  wps.forEach((w, i) => {
-    const tr = document.createElement("tr");
-    tr.innerHTML = `<td>${i + 1}</td>` + w.map(v => `<td><input type="number" step="0.1" value="${v}"></td>`).join("") +
-      `<td><button title="Quitar">✕</button></td>`;
-    tr.querySelector("button").onclick = () => { tr.remove(); wpDirty = true; renumber(); };
-    tr.querySelectorAll("input").forEach(inp => inp.oninput = () => wpDirty = true);
-    body.appendChild(tr);
-  });
-}
-function renumber() { [...$("wpBody").rows].forEach((r, i) => r.cells[0].textContent = i + 1); }
-function readWaypoints() { return [...$("wpBody").rows].map(r => [...r.querySelectorAll("input")].map(i => parseFloat(i.value))); }
-
-function drawMap(s) {
-  const c = $("map"), g = c.getContext("2d");
-  const css = getComputedStyle(document.documentElement);
-  const col = (n) => css.getPropertyValue(n).trim();
-  const W = c.width, H = c.height, pad = 40;
-  const xl = s.limits.x, yl = s.limits.y;
-  const span = Math.max(xl[1] - xl[0], yl[1] - yl[0]) * 1.15;
-  const cx = (xl[0] + xl[1]) / 2, cy = (yl[0] + yl[1]) / 2;
-  const sc = (W - 2 * pad) / span;
-  const P = (x, y) => [W / 2 + (x - cx) * sc, H / 2 - (y - cy) * sc];
-  g.clearRect(0, 0, W, H);
-  g.strokeStyle = col("--grid"); g.lineWidth = 1;
-  for (let v = Math.ceil(cx - span / 2); v <= cx + span / 2; v += 0.5) {
-    let [a] = P(v, 0); g.beginPath(); g.moveTo(a, 0); g.lineTo(a, H); g.stroke();
-    let [, b] = P(0, v); g.beginPath(); g.moveTo(0, b); g.lineTo(W, b); g.stroke();
-  }
-  const [x0, y0] = P(xl[0], yl[1]), [x1, y1] = P(xl[1], yl[0]);
-  g.strokeStyle = col("--muted"); g.setLineDash([6, 4]); g.strokeRect(x0, y0, x1 - x0, y1 - y0); g.setLineDash([]);
-  g.fillStyle = col("--muted"); g.font = "12px system-ui";
-  g.fillText("X →", W - pad, H - 10); g.fillText("Y ↑", 8, pad - 14);
-  // ruta
-  g.strokeStyle = col("--line"); g.lineWidth = 2; g.beginPath();
-  s.waypoints.forEach((w, i) => { const [a, b] = P(w[0], w[1]); i ? g.lineTo(a, b) : g.moveTo(a, b); }); g.stroke();
-  const fires = s.results.filter(r => r.objectDetected).map(r => r.waypointIndex);
-  const done = s.results.map(r => r.waypointIndex);
-  s.waypoints.forEach((w, i) => {
-    const [a, b] = P(w[0], w[1]);
-    g.beginPath(); g.arc(a, b, 11, 0, 7);
-    if (fires.includes(i + 1)) { g.fillStyle = col("--bad"); g.fill(); }
-    else if (done.includes(i + 1)) { g.fillStyle = col("--ok"); g.globalAlpha = .35; g.fill(); g.globalAlpha = 1; }
-    g.strokeStyle = (i + 1 === s.waypointIndex && s.state !== "IDLE" && s.state !== "COMPLETE") ? col("--accent") : col("--muted");
-    g.lineWidth = 2; g.stroke();
-    g.fillStyle = col("--ink"); g.fillText(String(i + 1), a - 4, b + 4);
-  });
-  if (s.setpoint) {
-    const [a, b] = P(s.setpoint[0], s.setpoint[1]);
-    g.strokeStyle = col("--accent"); g.lineWidth = 2.5; g.beginPath();
-    g.moveTo(a - 7, b - 7); g.lineTo(a + 7, b + 7); g.moveTo(a + 7, b - 7); g.lineTo(a - 7, b + 7); g.stroke();
-  }
-  const p = s.position;
-  if (p && p[0] !== null) {
-    const [a, b] = P(p[0], p[1]);
-    g.fillStyle = col("--ink"); g.beginPath(); g.arc(a, b, 7, 0, 7); g.fill();
-    const yaw = p[3] || 0; g.strokeStyle = col("--ink"); g.lineWidth = 2; g.beginPath();
-    g.moveTo(a, b); g.lineTo(a + 18 * Math.cos(yaw), b - 18 * Math.sin(yaw)); g.stroke();
-  }
-}
-
-function render(s) {
-  lastState = s;
-  const cam = s.camera;
-  setDot($("dotCam"), cam.connected ? (cam.fps > 0 ? "ok" : "warn") : "bad");
-  $("chipCam").textContent = `Cámara: ${cam.source}${cam.connected ? ` · ${cam.fps} fps` : " · sin conexión"}`;
-  const pose = s.pose, posOk = s.position && s.position[0] !== null;
-  setDot($("dotPose"), posOk ? "ok" : (pose.connected ? "warn" : "bad"));
-  $("chipPose").textContent = `Pose: ${pose.source}${posOk ? "" : " · sin datos válidos"}`;
-  $("chipModel").textContent = `${s.model.project} v${s.model.deploy_version} · ${s.model.width}×${s.model.height} · ${s.model.runtime}`;
-  const sp = s.setpointOutput;
-  setDot($("dotSp"), sp.enabled ? (sp.error ? "bad" : (sp.clients ? "ok" : "warn")) : "");
-  $("chipSp").textContent = sp.enabled ? `Setpoint: ${sp.clients} cliente(s)` : "Setpoint: desactivado";
-
-  $("smState").textContent = s.state;
-  $("smWp").textContent = s.state === "IDLE" ? `${s.waypoints.length} waypoints` :
-    `Waypoint ${Math.min(s.waypointIndex, s.waypoints.length)} / ${s.waypoints.length}`;
-  let prog = 0, label = "Esperando inicio";
-  if (s.state === "MOVE") { label = "Moviéndose al waypoint"; }
-  if (s.state === "VERIFY") { prog = s.verifyProgress; label = "Verificando estabilidad (3 s)"; }
-  if (s.state === "CAMERA" || s.capture.status === 1) { prog = s.capture.count / s.capture.n; label = `Capturando fotos ${s.capture.count}/${s.capture.n}`; }
-  if (s.state === "COMPLETE") { prog = 1; label = "Misión completa → Home"; }
-  $("phaseLabel").textContent = label; $("phaseBar").style.width = (prog * 100).toFixed(0) + "%";
-  $("kvPos").textContent = vec(s.position);
-  $("kvSp").textContent = vec(s.setpoint) + (s.homeToggle ? "" : "  (Home)");
-  $("kvCap").textContent = { 0: "inactiva", 1: "capturando", 2: "lote completo", "-2": "error: frame faltante", "-3": "error" }[s.capture.status] +
-    (s.capture.error ? ` — ${s.capture.error}` : "");
-  $("btnStart").disabled = s.state !== "IDLE" && s.state !== "COMPLETE";
-
-  if (!wpDirty && document.activeElement?.tagName !== "INPUT") {
-    renderWaypoints(s.waypoints);
-    $("inN").value = s.capture.n; $("inSec").value = s.capture.seconds;
-  }
-
-  const rb = $("resultsBody");
-  if (s.results.length) {
-    rb.innerHTML = s.results.map((r, i) => `<tr>
-      <td>${r.waypointIndex}</td><td>${vec(r.waypoint.slice(0, 2))}</td>
-      <td class="${r.objectDetected ? "fire" : "nofire"}">${r.objectDetected ? "SÍ" : "no"}</td>
-      <td>${fmt(r.confidenceAverage)}</td><td>${r.positives}/${r.n}</td>
-      <td><img class="thumb" loading="lazy" src="/api/results/${i}.jpg?t=${r.time}" alt="Mejor foto del waypoint ${r.waypointIndex}"></td>
-      <td>${r.time}</td></tr>`).join("");
-  } else rb.innerHTML = `<tr><td colspan="7" class="muted">Aún no hay capturas.</td></tr>`;
-
-  const lv = s.live;
-  $("liveInfo").textContent = lv.enabled ? (lv.result ? (lv.result.detected ? `🔥 ${lv.result.confidence.toFixed(0)}% · ${lv.fps} inf/s` : `sin fuego · ${lv.fps} inf/s`) : "…") : "";
-  $("diag").textContent = JSON.stringify({ camera: cam, pose: s.pose, setpointOutput: sp, model: s.model, loopOverruns: s.loopOverruns }, null, 2);
-  drawMap(s);
-}
-
-async function poll() {
-  try { render(await (await fetch("/api/state")).json()); $("missionErr").textContent = ""; }
-  catch (e) { $("missionErr").textContent = "Sin conexión con el servidor: " + e.message; }
-  setTimeout(poll, 250);
-}
-
-function showDetection(j) {
-  const r = j.result;
-  $("detectOut").hidden = false; $("detectImg").src = j.image;
-  $("detectVerdict").innerHTML = r.detected ? `<span class="fire">🔥 Fuego detectado</span>` : `<span class="nofire">Sin fuego</span>`;
-  $("detectKv").innerHTML = `<dt>status</dt><dd>${r.status}</dd><dt>confidence</dt><dd>${r.confidence.toFixed(1)} %</dd>` +
-    `<dt>boundingBox</dt><dd>[${r.box.join(", ")}]</dd><dt>celdas FOMO</dt><dd>${r.detections.length}</dd>` +
-    `<dt>elapsedMs</dt><dd>${r.elapsedMs}</dd><dt>resultID</dt><dd>${r.resultID}</dd>`;
-}
-$("btnDetect").onclick = async () => { try { showDetection(await post("/api/detect")); } catch (e) { alert(e.message); } };
-$("chkLive").onchange = (e) => post("/api/live", { enabled: e.target.checked });
-$("btnUpload").onclick = () => $("fileInput").click();
-$("fileInput").onchange = async (e) => {
-  const f = e.target.files[0]; if (!f) return;
-  const fd = new FormData(); fd.append("image", f);
-  const r = await fetch("/api/infer", { method: "POST", body: fd }); const j = await r.json();
-  if (!j.ok) return alert(j.error); showDetection(j); e.target.value = "";
-};
-$("btnStart").onclick = () => post("/api/mission/start").catch(e => $("missionErr").textContent = e.message);
-$("btnHome").onclick = () => post("/api/mission/home").catch(e => $("missionErr").textContent = e.message);
-$("btnReset").onclick = () => post("/api/mission/reset").catch(e => $("missionErr").textContent = e.message);
-$("btnAddWp").onclick = () => {
-  const wps = readWaypoints(); const last = wps[wps.length - 1] || [0, 0, 1, 0];
-  wps.push([...last]); renderWaypoints(wps); wpDirty = true;
-};
-$("btnSaveWp").onclick = async () => {
-  try {
-    await post("/api/mission/waypoints", { waypoints: readWaypoints(), batchImages: +$("inN").value, captureSeconds: +$("inSec").value });
-    wpDirty = false; $("wpMsg").textContent = "Guardado ✓"; setTimeout(() => $("wpMsg").textContent = "", 2000);
-  } catch (e) { $("wpMsg").textContent = e.message; }
-};
-["inN", "inSec"].forEach(id => $(id).oninput = () => wpDirty = true);
-poll();
-</script>
+<div class="toast" id="toast" role="status" aria-live="polite"></div>
+<script type="module" src="/static/app.js"></script>
 </body>
 </html>

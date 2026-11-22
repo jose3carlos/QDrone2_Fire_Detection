@@ -31,3 +31,14 @@ __pycache__/
 .DS_Store
 Thumbs.db
 desktop.ini
+
+# --- Proyecto 2x QDrone 2 (Pemex): no subir ---
+# Notas internas, transcripción del audio y PDFs con copyright de Quanser
+/contexto/
+/referencias/quanser/
+# Logs de vuelo del Equipo2 (285 MB) y logs de simulación
+/simulink_qdrone2/equipo2_original/saved_data/
+/simulink_qdrone2/saved_data/*.mat
+# Caches de pruebas y mallas
+.pytest_cache/
+/simulador3d/*_mallas*.mat

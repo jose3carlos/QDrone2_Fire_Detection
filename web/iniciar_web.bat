@@ -1,39 +1,44 @@
 @echo off
-REM QDrone2 Fire Detection - interfaz web (sin MATLAB)
-REM Primera vez: crea .venv e instala dependencias. Luego solo arranca el servidor.
+REM Estacion web 2x QDrone 2 (deteccion de tomas clandestinas y fuegos)
+REM Uso:  iniciar_web.bat                      (fuente segun config\estacion.json -> web.fuente)
+REM       iniciar_web.bat --fuente mock        (simulacion interna, sin MATLAB)
+REM       iniciar_web.bat --fuente simulink    (modelo de tierra o QD2_Sim_Dual en tcpip://127.0.0.1:18700)
+REM       iniciar_web.bat --fuente sim3d       (simulador MATLAB 3D, mismo puerto 18700)
+REM El entorno virtual se crea FUERA de OneDrive: %USERPROFILE%\.venvs\qd2_web
 setlocal
 cd /d "%~dp0"
+set "VENV=%USERPROFILE%\.venvs\qd2_web"
+set "PY=%VENV%\Scripts\python.exe"
 
-if exist ".venv\Scripts\python.exe" goto run
+if exist "%PY%" goto check
 
 set "PYEXE="
 where py >nul 2>nul && (py -3.11 -c "import sys" >nul 2>nul && set "PYEXE=py -3.11")
+if not defined PYEXE (where py >nul 2>nul && (py -3.10 -c "import sys" >nul 2>nul && set "PYEXE=py -3.10"))
 if not defined PYEXE (where py >nul 2>nul && set "PYEXE=py -3")
 if not defined PYEXE (python -c "import sys; assert sys.version_info>=(3,10)" >nul 2>nul && set "PYEXE=python")
 if not defined PYEXE (
   echo No se encontro Python 3.10 o superior. Instalalo desde https://www.python.org/downloads/
-  echo ^(recomendado 3.11, marcando "Add python.exe to PATH"^) y vuelve a ejecutar este archivo.
+  echo ^(marca "Add python.exe to PATH"^) y vuelve a ejecutar este archivo.
   pause
   exit /b 1
 )
+echo Creando entorno virtual en %VENV% con %PYEXE% ...
+if not exist "%USERPROFILE%\.venvs" mkdir "%USERPROFILE%\.venvs"
+%PYEXE% -m venv "%VENV%" || goto fail
 
-echo Creando entorno virtual con %PYEXE% ...
-%PYEXE% -m venv .venv || goto fail
-".venv\Scripts\python.exe" -m pip install --upgrade pip || goto fail
-".venv\Scripts\python.exe" -m pip install -r requirements.txt || goto fail
-
-if defined QUARC_DIR (
-  if exist "%QUARC_DIR%python" (
-    echo Instalando el SDK de Quanser desde "%QUARC_DIR%python" ...
-    ".venv\Scripts\python.exe" -m pip install --find-links "%QUARC_DIR%python" quanser-api || echo AVISO: no se pudo instalar quanser-api; solo funcionaran las fuentes synthetic/folder/opencv.
-  )
-) else (
-  echo AVISO: QUARC no esta instalado ^(QUARC_DIR vacio^). Solo funcionaran las fuentes synthetic/folder/opencv.
-)
+:check
+"%PY%" -c "import fastapi, uvicorn, cv2, numpy, psutil, multipart" >nul 2>nul && goto run
+echo Instalando dependencias (solo la primera vez) ...
+"%PY%" -m pip install --upgrade pip || goto fail
+"%PY%" -m pip install -r requirements.txt || goto fail
 
 :run
-start "" http://127.0.0.1:8080
-".venv\Scripts\python.exe" -m app.server %*
+REM QD2_NO_BROWSER=1 evita abrir el navegador. El puerto sale de red.puerto_web de config\estacion.json
+set "PORT=8080"
+for /f %%P in ('"%PY%" -m app.server --imprimir-puerto %* 2^>nul') do set "PORT=%%P"
+if not defined QD2_NO_BROWSER start "" cmd /c "timeout /t 4 >nul & start http://127.0.0.1:%PORT%"
+"%PY%" -m app.server %*
 goto :eof
 
 :fail

@@ -1,0 +1,22 @@
+5G Toolbox|Communications Toolbox
+Control System Toolbox|DSP System Toolbox
+MATLAB|MATLAB Report Generator
+Model Predictive Control Toolbox|Optimization Toolbox
+Quanser HIL MATLAB API|Quanser Real-Time Control (QUARC)
+Robotics System Toolbox|Signal Processing Toolbox
+Simscape|Simscape Multibody
+Simulink|Simulink Control Design
+Simulink Design Optimization|Simulink Report Generator
+Simulink Test|Symbolic Math Toolbox
+System Identification Toolbox|25.1
+25.1|25.1
+25.1|25.1
+25.1|25.1
+25.1|26.0.5256
+26.0.5256|25.1
+25.1|25.1
+25.1|25.1
+25.1|25.1
+25.1|25.1
+25.1|25.1
+Unrecognized function or variable 'quarc_version'.

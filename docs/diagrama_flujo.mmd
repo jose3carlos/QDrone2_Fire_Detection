@@ -1,0 +1,111 @@
+flowchart TD
+INI([Inicio: modelo de tierra QD2_MissionCtrl_Dual PID o MPC + estacion web]) --> CFG[Cargar config/estacion.json: IPs, Motive, pista N, alturas]
+CFG --> TRK{Ambos drones rastreados por OptiTrack 1 s seguidos?}
+TRK -- No --> TRK
+TRK -- Si --> ROL[ASSIGN_ROLES: menor x = EXPLORADOR, mayor x = RESPONDEDOR. Home = posicion x y actual. Se reevalua hasta START]
+ROL --> CMD{START desde la UI?}
+CMD -- No --> ROL
+CMD -- Si --> PRIM{Llego en el primer paquete de la estacion?}
+PRIM -- Si --> ACK0[Solo se confirma con cmd_seq_ack, no se ejecuta]
+ACK0 --> ROL
+PRIM -- No --> HC{Homes a menos de 1.05 m en PID o de 0.8 m en MPC?}
+HC -- Si --> A1[Alerta 1: START rechazado, ack sin ejecutar. Separar los drones y dar START otra vez]
+A1 --> ROL
+HC -- No --> PM{MPC: algun dron con protocolo incorrecto?}
+PM -- Si --> A10[Alerta 10: START rechazado]
+A10 --> ROL
+PM -- No --> TKO[TAKEOFF: armar los dos y dar takeoff 2 s despues. E sube a 1.5 m y R a 0.5 m]
+TKO --> TKC{ABORT, LAND_ALL o falla a bordo MPC antes de que alguno pase de 0.15 m?}
+TKC -- Si --> TKD{Ya se habia dado takeoff?}
+TKD -- No --> CAN1[Cancelar: desarmar sin dar takeoff. Si fue falla a bordo queda la alerta 9]
+CAN1 --> ROL
+TKD -- Si, rampa de empuje --> CAN2[Bajar takeoff de los dos. Nunca se da un takeoff nuevo]
+CAN2 --> DONE
+TKC -- No --> TTO{Timeout de despegue de 30 s?}
+TTO -- Si --> A3{Alerta 3: algun dron ya despego?}
+A3 -- Si --> ABR
+A3 -- No --> CAN2
+TTO -- No --> HOV[HOVER_READY 2 s]
+HOV --> PAR[MISSION: E y R en paralelo]
+
+subgraph EXPLORADOR
+E1[Ir al siguiente waypoint de la N a 1.5 m] --> E2[RealSense D435i hacia abajo, video :18800 a la estacion, YOLO11n]
+E2 --> E3{Fuego o toma detectada?}
+E3 -- Si --> E4[Geolocalizar: rayo de camara + pose OptiTrack al plano z = 0.02 m. Agrupar en 0.25 m con 3 o mas observaciones]
+E4 --> E5[Publicar objetivo a Simulink: id 1 a 32, clase, x, y. Sin ids libres no se publica y sale aviso rojo]
+E5 --> E6{Fin de la N?}
+E3 -- No --> E6
+E6 -- No --> E1
+E6 -- Si --> E7[E regresa a su home y cede la prioridad a R]
+end
+
+subgraph RESPONDEDOR
+R1{Hay objetivos pendientes en la cola?} -- No --> R2[Hover en espera sobre el ultimo objetivo]
+R2 --> R1
+R1 -- Si --> R3[Tomar el objetivo mas cercano. Un id nuevo a menos de 0.25 m de otro es alias]
+R3 --> R4[Volar a x y del objetivo a 0.5 m]
+R4 --> R5[Hover t_mark = 3 s]
+R5 --> R6[Marcar visitado: visited_mask, y56 a y60 y mapa de la UI]
+R6 --> R1
+end
+
+PAR --> E1
+PAR --> R1
+E5 -. objetivo nuevo .-> R1
+
+subgraph SEPARACION
+V{Version de control} -- PID --> VP[SEPARATION GUARD: distancia horizontal de al menos 0.9 m entre poses y entre consignas. E tiene prioridad, R espera en un punto seguro, E espera si R esta marcando]
+V -- MPC --> VM[STACKING INFO: se permite apilarse con dz de al menos 0.8 m. MPC a bordo con compensacion de downwash]
+VP --> RLIM[SETPOINT RATE LIMITER por norma: camino recto hacia la consigna]
+VM --> RLIM
+end
+R4 -.-> V
+E1 -.-> V
+
+E7 --> FIN1{E termino la N, cola vacia y R libre?}
+FIN1 -- No, R sigue atendiendo --> R1
+FIN1 -- Si --> RH[RETURN_HOME: si las trayectorias se cruzarian, primero uno con desvio y despues el otro]
+RH --> HH[Hover en home. La UI marca en home. Esperar LAND_ALL del operador, o auto_land]
+HH --> LND1
+
+subgraph ATERRIZAJE
+LND1{MPC apilado: E a menos de 0.9 m en horizontal del punto de R?}
+LND1 -- Si --> LW[R espera a su altura con takeoff = 1 hasta que E se aparte]
+LW --> LND1
+LND1 -- No --> LR[R aterriza primero]
+LR --> LE[E aterriza en su sitio si queda a 0.9 m o mas de R. Si no, en su home o en el punto libre mas cercano]
+LE --> DONE([DONE: los dos en el suelo y desarmados. Mapa con anomalias detectadas y visitadas])
+LR -. 30 s por paso sin ver el suelo .-> A4[Alerta 4: timeout de aterrizaje, sigue el paso siguiente]
+LE -. 30 s por paso sin ver el suelo .-> A4
+end
+
+subgraph SEGURIDAD
+S1[Sin heartbeat de Python mas de 1 s en MISSION] --> SP[PAUSED: los dos en hover en su sitio]
+S2[Perdida de rastreo de un dron mas de 0.2 s en vuelo: alerta 2] --> SP
+SP --> SR{RESUME con los dos drones rastreados?}
+SR -- No --> SP
+S3[ABORT desde la UI, tambien desde PAUSED] --> ABR[ABORT: regreso a home sin cruzar trayectorias y hover hasta LAND_ALL]
+S7[LAND_ALL desde la UI, tambien desde PAUSED] --> LND1
+S4[Switch Takeoff/Land abajo: alerta 6] --> OPL[El supervisor recibe LAND ALL con cmd_seq + 0.5 durante 1 ms]
+S5[Switch Arm abajo: desarma, alerta 7] --> OPL
+S6[E-Stop: corta los motores de los dos, alerta 5] --> OPL
+OPL -. no aceptado en 2 s, o 90 s con el switch abajo .-> S8[Alerta 8: respaldo crudo, se suelta takeoff salvo al dron que tiene al otro debajo]
+end
+SR -- Si --> PAR
+ABR --> HH
+OPL --> LND1
+
+subgraph FALLA_A_BORDO_SOLO_MPC
+F0{MPC LINK CHECK: dron con FSM 7 u 8, o 9 con takeoff, o enlace perdido con takeoff, o protocolo incorrecto mas de 0.5 s?}
+F0 -- Los dos en falla --> LR
+F0 -- Uno en falla --> F1[Alerta 9, o 10 si es protocolo. Al dron en falla nunca se le vuelve a dar takeoff]
+F1 --> F2[Paso 1 apartarse: el sano va en recta a su altura a un punto a 1.10 m o mas del dron en falla, limite xy 1.5 m/s. Si estaban apilados sale de inmediato]
+F2 --> F3{Ya a 0.9 m o mas en horizontal, o pasaron 8 s?}
+F3 -- No --> F2
+F3 -- Si --> F4[Paso 2: al dron en falla se le baja takeoff. El sano regresa a su home con desvio. Si su home queda a menos de 1.10 m del dron en falla se queda donde esta]
+F4 --> F5[Paso 3: aterriza el sano]
+F5 --> F6[Paso 4: esperar al dron en falla en el suelo, o t_land_max]
+F6 --> DONE
+end
+PAR -. falla a bordo en vuelo .-> F0
+LW -. falla a bordo mientras R espera .-> F0

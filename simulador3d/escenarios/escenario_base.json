@@ -1,0 +1,12 @@
+{
+  "nota": "Escenario de ejemplo sobre la N por defecto de config/estacion.json. Tomas = válvulas que abrazan el tubo (yaw = dirección del tramo). Fuegos = junto al tubo. Coordenadas RSF en m: +x adelante, +y izquierda.",
+  "homes": [[-1.0, 0.0], [1.0, -0.3]],
+  "yaw0_deg": [0, 0],
+  "objetos": [
+    {"clase": "toma",  "x": 0.30,  "y": 1.20,   "yaw_deg": 0},
+    {"clase": "fuego", "x": 0.453, "y": 0.347,  "yaw_deg": 20,  "variante": "A"},
+    {"clase": "toma",  "x": -0.55, "y": -0.55,  "yaw_deg": 45},
+    {"clase": "fuego", "x": 0.70,  "y": -1.275, "yaw_deg": 0,   "variante": "B"},
+    {"clase": "fuego", "x": -0.75, "y": 1.275,  "yaw_deg": 60,  "variante": "C"}
+  ]
+}

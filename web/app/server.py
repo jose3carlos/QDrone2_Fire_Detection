@@ -1,252 +1,895 @@
-"""Servidor web de QDrone2 Fire Detection (sin MATLAB).
+"""Estación web de 2× QDrone 2 (ARQUITECTURA §2, §3.3, §3.4, §6).
 
-Uso:
-    python -m app.server                 # usa config.json
-    python -m app.server --config otro.json
+La misión vive en Simulink (o en el simulador MATLAB). Esta estación solo:
+puentea (:18700), recibe video (:18800), detecta, geolocaliza, publica objetivos y muestra todo.
+
+Uso (desde la carpeta ``web``):
+    python -m app.server                    # fuente según config/estacion.json (web.fuente)
+    python -m app.server --fuente mock      # simulación interna, sin MATLAB
+    python -m app.server --fuente simulink  # se conecta a tcpip://127.0.0.1:18700
 Luego abre http://127.0.0.1:8080
 """
 from __future__ import annotations
 
 import argparse
-import base64
+import asyncio
+import collections
+import contextlib
 import json
+import math
 import os
-import sys
 import threading
 import time
+from urllib.parse import urlsplit
 
-import numpy as np
-from flask import Flask, Response, jsonify, request, send_from_directory
+from fastapi import Body, FastAPI, File, HTTPException, Request, UploadFile, WebSocket, WebSocketDisconnect
+from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, Response, StreamingResponse
+from fastapi.staticfiles import StaticFiles
 
 try:
-    import cv2  # type: ignore
+    import cv2
 except Exception:  # pragma: no cover
     cv2 = None
+import numpy as np
 
-from .cameras import CameraWorker
-from .fomo import FomoDetector, camera_to_model
-from .mission import MissionController
-from .pose import SetpointServer, make_pose_source
+from . import netinfo
+from . import protocol as P
+from .bridge import BridgeClient, PuenteNoListo
+from .cameras import CameraHub, FolderCamera, OpenCVCamera, QDF1Client, SyntheticCamera
+from .config import DEFAULT_PATH, PROJECT_DIR, WEB_DIR, Config, validar_ip
+from .geo import CameraModel
+from .mock_sim import MockServer
+from .mock_world import default_anomalies, render_view
+from .vision_service import PoseHistory, VisionService, load_detector
 
-ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-STATIC = os.path.join(ROOT, "app", "static")
-
-
-def load_config(path):
-    with open(path, encoding="utf-8") as fh:
-        cfg = json.load(fh)
-    model = cfg.setdefault("model", {})
-    if not os.path.isabs(model.get("path", "")):
-        model["path"] = os.path.normpath(os.path.join(
-            ROOT, model.get("path", "../models/fire_hazard-cpp-mcu-v7-impulse-#1.zip")))
-    cam = cfg.setdefault("camera", {})
-    if cam.get("folder") and not os.path.isabs(cam["folder"]):
-        cam["folder"] = os.path.join(ROOT, cam["folder"])
-    return cfg
+STATIC = os.path.join(WEB_DIR, "app", "static")
+DATA_DIR = os.path.join(WEB_DIR, "datos")
+FUENTES = ("mock", "simulink", "sim3d")
+COMMANDS_UI = ("START", "PAUSE", "RESUME", "ABORT", "LAND_ALL")
+MAX_VERTICES = 16  # = p.max_vertices de simulink_qdrone2/lib/qd2_params.m
+SIM_TTL_S = 5.0    # s sin ver un objetivo en y(56:60) (con telemetría fresca) -> deja de mostrarse
+CHOQUE_ID_M = 0.5  # m: mismo id en la estación y en Simulink pero tan lejos -> choque de ids
 
 
-def _jpeg(img, quality=80):
-    ok, buf = cv2.imencode(".jpg", img, [int(cv2.IMWRITE_JPEG_QUALITY), quality])
-    return buf.tobytes() if ok else b""
+class Station:
+    """Une puente, cámara, visión y configuración. Una instancia por proceso."""
 
+    def __init__(self, config_path=DEFAULT_PATH, fuente=None, mock_speed=1.0):
+        self.cfg = Config(config_path)  # no se escribe nada al arrancar (defaults en memoria)
+        self.fuente = fuente or self.cfg.web("fuente")
+        if self.fuente not in FUENTES:
+            raise ValueError(f"fuente desconocida '{self.fuente}'. Opciones: {FUENTES}")
+        self.mock_speed = mock_speed
+        self.mock = None
+        self.bridge = None
+        self.poses = PoseHistory()
+        self.lock = threading.RLock()
+        self.rng = np.random.default_rng(7)
+        self.world = []
+        self.events = collections.deque(maxlen=60)
+        self._last_state = None
+        self._last_sim_t = None       # para detectar que Simulink se reinició (t vuelve a 0)
+        self._first_tel = True
+        self._persisted = False
+        self._saved_sig = None
+        self.sim_targets = {}         # id -> objetivo que reporta Simulink en y(56:60) (+ "t" de reloj)
+        self._last_alerta = 0
+        self._n_bloqueados = 0
+        self._sesion = None           # n_sesion del puente de la última telemetría
+        # MPC: drones que la estación VIO fallar en esta corrida de Simulink (FSM a bordo 7/8, o 9 debiendo
+        # volar). La alerta 9 es global; con esto solo sale en rojo el dron que falló (ver protocol.fsm_info).
+        self._falla_vista = {1: False, 2: False}
+        # con el estacion.json real se guarda en web/datos; con otro (pruebas) junto a ese archivo
+        same = os.path.abspath(config_path) == os.path.abspath(DEFAULT_PATH)
+        self._persist_path = os.path.join(DATA_DIR if same else os.path.dirname(os.path.abspath(config_path)),
+                                          "objetivos_estacion.json")
+        self.camera = CameraHub(self._camera_key, self._camera_factory)
+        det, name, err = self._make_detector()
+        self.vision = VisionService(self.camera, self.poses, self._vision_gate, self._publish_targets,
+                                    lambda: self.cfg.data, det, name, err,
+                                    synthetic_fn=lambda: self.camera.key == ("sintetica",))
 
-def _draw_box(img, box, src_w, src_h, color=(0, 0, 255), label=None):
-    """Dibuja una caja en coordenadas del modelo (src_w x src_h) sobre img."""
-    h, w = img.shape[:2]
-    x, y, bw, bh = box
-    if bw <= 0 or bh <= 0:
-        return
-    sx, sy = w / src_w, h / src_h
-    p1 = (int(x * sx), int(y * sy))
-    p2 = (int((x + bw) * sx), int((y + bh) * sy))
-    cv2.rectangle(img, p1, p2, color, 2)
-    if label:
-        cv2.putText(img, label, (p1[0], max(12, p1[1] - 4)), cv2.FONT_HERSHEY_SIMPLEX, 0.5, color, 1, cv2.LINE_AA)
+    # ------------------------------------------------------------------ ciclo de vida
+    def start(self):
+        self._start_source()
+        self.camera.start()
+        self.vision.start()
+        return self
 
+    def stop(self):
+        self.camera.stop()
+        self.vision.stop()
+        if self.bridge:
+            self.bridge.stop()
+        if self.mock:
+            self.mock.stop()
 
-def _annotated_model_image(model_img, result, scale=2):
-    """Imagen 180x180 (lo que ve el modelo) ampliada con todas las celdas FOMO y la seleccionada."""
-    img = model_img if model_img.ndim == 3 else cv2.cvtColor(model_img, cv2.COLOR_GRAY2BGR)
-    img = cv2.resize(img, None, fx=scale, fy=scale, interpolation=cv2.INTER_NEAREST)
-    H, W = model_img.shape[:2]
-    for d in result.detections:
-        _draw_box(img, [d.x, d.y, d.width, d.height], W, H, (0, 200, 255))
-    if result.detected:
-        _draw_box(img, result.box, W, H, (0, 0, 255), f"{result.label} {result.confidence:.0f}%")
-    return img
+    def _start_source(self):
+        cfg = self.cfg.data
+        self._last_sim_t, self._first_tel, self._sesion = None, True, None
+        with self.lock:
+            self.sim_targets = {}
+        self._last_alerta = 0
+        self._falla_vista = {1: False, 2: False}
+        self._load_targets()
+        self.world = cfg.get("web", {}).get("mock_anomalias") or default_anomalies(cfg["pista"]["vertices"])
+        if self.fuente == "mock":
+            self.mock = MockServer(cfg, "127.0.0.1", 0, speed=self.mock_speed).start()
+            host, port = "127.0.0.1", self.mock.port
+        else:
+            host, port = self.cfg.web("host_puente"), int(cfg["red"].get("puerto_puente", 18700))
+        self.bridge = BridgeClient(host, port, params_fn=self._bridge_params,
+                                   cmd_timeout_s=float(self.cfg.web("cmd_timeout_s")))
+        self.bridge.listeners.append(self._on_telemetry)
+        self.bridge.on_cmd_result = self._on_cmd_result
+        self.bridge.start()
+        self.log(f"Fuente '{self.fuente}': puente {self.bridge.uri}")
 
+    def set_fuente(self, fuente):
+        if fuente not in FUENTES:
+            raise ValueError(f"fuente desconocida '{fuente}'")
+        with self.lock:
+            if self.bridge:
+                self.bridge.stop()
+            if self.mock:
+                self.mock.stop()
+                self.mock = None
+            self.fuente = fuente
+            self.poses.clear()
+            self.vision.reset()
+            det, name, err = self._make_detector()
+            self.vision.detector, self.vision.detector_name, self.vision.detector_error = det, name, err
+            self._start_source()
+        self.cfg.update({"web": {"fuente": fuente}})
 
-def create_app(cfg):
-    detector = FomoDetector(cfg["model"]["path"], cfg["model"].get("min_confidence", 0.5))
-    camera = CameraWorker(cfg.get("camera", {}))
-    camera.start()
-    pose = make_pose_source(cfg.get("pose", {}))
-    setpoints = SetpointServer(cfg.get("setpoint_output", {}))
-    mission = MissionController(camera, detector, pose, setpoints, cfg.get("mission", {}))
-    mission.start()
+    def log(self, text):
+        self.events.appendleft({"t": time.strftime("%H:%M:%S"), "msg": text})
 
-    app = Flask(__name__, static_folder=None)
-    live = {"enabled": False, "result": None, "stamp": 0.0, "fps": 0.0}
+    # ------------------------------------------------------------------ puente
+    def _bridge_params(self):
+        m = self.cfg.data.get("mision", {})
+        return {"z_explorer": m.get("z_explorador", 0.0), "z_responder": m.get("z_respondedor", 0.0),
+                "t_mark": m.get("t_mark", 0.0), "d_min_h": m.get("d_min_h", 0.0)}
 
-    def live_loop():
-        last_id, n, t0 = 0, 0, time.time()
-        while True:
-            if not live["enabled"]:
-                time.sleep(0.2)
+    # ------------------------------------------------------------------ ids de objetivos
+    # Simulink busca los objetivos por id e ignora actualizaciones de un id ya visitado. Por eso
+    # los ids NUNCA se reinician mientras Simulink conserve su tabla: la tabla de la estación se
+    # guarda en web/datos/objetivos_estacion.json y se recupera al reiniciar la estación.
+    def _load_targets(self):
+        try:
+            with open(self._persist_path, encoding="utf-8") as fh:
+                d = json.load(fh)
+        except (OSError, ValueError):
+            return
+        if d.get("fuente") != self.fuente or not d.get("clusters"):
+            return
+        self.vision.import_state(d)
+        self._last_sim_t = d.get("sim_t")
+        self._persisted = True
+        n = len([c for c in d["clusters"] if c.get("id")])
+        self._saved_sig = None
+        self.log(f"Recuperada la tabla de objetivos guardada ({n} publicados, siguiente id {d.get('next_id')})")
+
+    def _save_targets(self, targets):
+        sig = tuple((t[0], t[1], round(t[2], 2), round(t[3], 2)) for t in targets)
+        if sig == self._saved_sig:
+            return
+        self._saved_sig = sig
+        d = self.vision.export_state()
+        d.update({"fuente": self.fuente, "sim_t": self._last_sim_t, "guardado": time.strftime("%Y-%m-%d %H:%M:%S")})
+        try:
+            os.makedirs(DATA_DIR, exist_ok=True)
+            tmp = self._persist_path + ".tmp"
+            with open(tmp, "w", encoding="utf-8") as fh:
+                json.dump(d, fh)
+            os.replace(tmp, self._persist_path)
+        except OSError:
+            pass
+
+    def _sync_ids(self, tel):
+        """Detecta reinicios de Simulink y evita que los ids nuevos choquen con su tabla."""
+        t = tel.get("t")
+        known = int(tel.get("n_targets_known") or 0)
+        restarted = False
+        if t is not None and self._last_sim_t is not None and t < self._last_sim_t - 1.0:
+            restarted = True     # el tiempo de Simulink volvió a empezar: su tabla está vacía
+        sesion = getattr(self.bridge, "n_sesion", 0)
+        if self._first_tel or sesion != self._sesion:
+            # 1.ª telemetría de la estación o de una conexión nueva: el puente todavía no mandó objetivos en
+            # esta conexión, así que Simulink sin objetivos y la estación con objetivos publicados significa
+            # que Simulink se reinició (o que la tabla guardada es de una corrida anterior). En la 1.ª telemetría
+            # de la estación solo cuenta la tabla guardada (un objetivo manual recién puesto no se borra).
+            reconexion = not self._first_tel
+            if (reconexion or self._persisted) and known == 0 and self.vision.targets()[0]:
+                restarted = True
+            self._first_tel = False
+            self._sesion = sesion
+            self._persisted = False
+        if restarted:
+            self._falla_vista = {1: False, 2: False}
+        if restarted and (self.vision.targets()[0] or self.vision.targets()[1]):
+            self.vision.reset()
+            self._saved_sig = None
+            self.log("Simulink se reinició (t volvió a empezar): lista de objetivos de la estación reiniciada")
+        with self.lock:
+            if restarted or known == 0:
+                self.sim_targets = {}      # la tabla de Simulink está vacía
+            sim_ids = list(self.sim_targets)
+        if t is not None:
+            self._last_sim_t = t
+        floor = max([known, int(tel.get("responder_target_id") or 0)] + list(tel.get("visited_ids") or [])
+                    + sim_ids) + 1
+        self.vision.ensure_next_id(floor)
+
+    def _sync_sim_targets(self, tel, stamp):
+        """y(56:60): un objetivo de la tabla de Simulink por mensaje. Se acumulan por id (1..32) para que la UI
+        vea también los que Simulink conoce y esta estación no publicó (p. ej. el simulador 3D con su
+        detector interno)."""
+        ob = tel.get("objetivo_sim")
+        if ob is None or int(tel.get("n_targets_known") or 0) == 0:
+            return
+        with self.lock:
+            nuevo = ob["id"] not in self.sim_targets
+            self.sim_targets[ob["id"]] = {**ob, "t": stamp}
+        if nuevo:
+            propios = self.vision.targets()[0]
+            radio = float(self.cfg.get("vision", "radio_cluster_m", default=0.25) or 0.25)
+            cerca = [t["id"] for t in propios if math.hypot(t["x"] - ob["x"], t["y"] - ob["y"]) < radio]
+            if ob["id"] in {t["id"] for t in propios}:
+                pass
+            elif cerca:
+                self.log(f"Simulink tiene el objetivo {ob['id']} en el mismo lugar que el #{cerca[0]} de esta "
+                         "estación: es el mismo objeto (Simulink guardó el id de la estación como alias)")
+            else:
+                self.log(f"Simulink reporta el objetivo {ob['id']} ({P.CLASSES.get(ob['cls'])}, "
+                         f"{ob['x']:+.2f}, {ob['y']:+.2f}) que esta estación no publicó")
+
+    def _check_alerta(self, tel):
+        a = int(tel.get("alerta") or 0)
+        if a != self._last_alerta:
+            if a:
+                self.log(f"ALERTA {a}: {tel.get('alerta_texto')}")
+            else:
+                self.log(f"Alerta {self._last_alerta} despejada")
+            self._last_alerta = a
+        if tel.get("ack_operador"):
+            self.log("cmd_seq_ack con +0.5: petición del operador (LAND ALL desde los switches) en curso")
+
+    def _on_telemetry(self, tel, stamp):
+        self._sync_sim_targets(tel, stamp)
+        self._sync_ids(tel)
+        self._check_alerta(tel)
+        self._registrar_fallas(tel)
+        e = tel.get("explorer_id", 0)
+        if e in (1, 2):
+            d = tel["drones"][e]
+            if d["tracked"] and None not in (d["x"], d["y"], d["z"], d["yaw"]):
+                self.poses.add(stamp, d["x"], d["y"], d["z"], d["yaw"])
+        st = tel.get("mission_state")
+        if st != self._last_state:
+            self.log(f"Estado de misión: {P.MISSION_STATES_ES.get(st, st)}")
+            self._last_state = st
+
+    def _registrar_fallas(self, tel):
+        """MPC: recuerda qué dron reportó una falla a bordo (7/8, o 9 debiendo volar) en esta corrida."""
+        if tel.get("version") != 2:
+            return
+        for d in (1, 2):
+            dd = tel["drones"][d]
+            if not self._falla_vista[d] and P.fsm_info(2, dd["fsm_state"], tel.get("mission_state"), 0)[2]:
+                self._falla_vista[d] = True
+                self.log(f"Dron {d}: falla a bordo (FSM {dd['fsm_state']}, {dd['fsm_texto']})")
+
+    def _tel_ui(self, tel):
+        """Telemetría para la UI: en MPC, con la alerta 9, el 9 del dron que NO falló es su fin de vuelo."""
+        if not tel or tel.get("version") != 2 or not any(self._falla_vista.values()):
+            return tel
+        tel = dict(tel)
+        tel["drones"] = {d: dict(dd) for d, dd in tel["drones"].items()}
+        for d, dd in tel["drones"].items():
+            dd["fsm_tipo"], dd["fsm_texto"], dd["fsm_falla"] = P.fsm_info(
+                2, dd["fsm_state"], tel.get("mission_state"), tel.get("alerta"), self._falla_vista.get(d))
+        return tel
+
+    def _publish_targets(self, targets):
+        if self.bridge:
+            self.bridge.set_targets(targets)
+        self._save_targets(targets)
+
+    def _on_cmd_result(self, r):
+        txt = {"recibido": "recibido por Simulink", "caducado": "CADUCADO (no se ejecutará)",
+               "descartado": "descartado", "reemplazado": "reemplazado"}.get(r["estado"], r["estado"])
+        self.log(f"Comando {r['cmd']} (cmd_seq {r['cmd_seq'] or '—'}) {txt}. {r['detalle']}")
+
+    def command(self, name):
+        """Pone el comando en la cola del puente. ``PuenteNoListo`` si no hay telemetría fresca."""
+        if name not in COMMANDS_UI:
+            raise ValueError(f"comando desconocido '{name}'")
+        if self.bridge is None:
+            raise PuenteNoListo("el puente no está iniciado")
+        seq = self.bridge.send_command(name)
+        self.log(f"Comando {name} " + (f"enviado (cmd_seq {seq})" if seq else "en cola"))
+        return seq
+
+    # ------------------------------------------------------------------ cámara y visión
+    def _synthetic_allowed(self):
+        """La cámara sintética dibuja anomalías INVENTADAS (mock_world) y el detector falso las publica a
+        Simulink. Solo se permite con el mock interno, con el simulador MATLAB 3D (sim3d) o si se
+        habilita a propósito ``web.permitir_sintetica_en_simulink`` (p. ej. con QD2_Sim_Dual)."""
+        return self.fuente in ("mock", "sim3d") or bool(self.cfg.web("permitir_sintetica_en_simulink"))
+
+    def _synthetic(self):
+        return self.fuente == "mock" or (self.cfg.get("camara", "fuente") == "sintetica" and self._synthetic_allowed())
+
+    def _make_detector(self):
+        return load_detector(self.cfg.web("detector"), PROJECT_DIR, self.cfg.data, self._synthetic())
+
+    def _camera_key(self):
+        if self.fuente == "mock":
+            return ("sintetica",)
+        src = str(self.cfg.get("camara", "fuente", default="dron"))
+        if src == "sintetica" and not self._synthetic_allowed():
+            return ("ninguna",)   # bloqueada: ver avisos()
+        if src == "dron":
+            tel = self.bridge.telemetry if self.bridge else None
+            e = tel.get("explorer_id", 0) if tel else 0
+            e = e if e in (1, 2) else 1
+            ip = self.cfg.get("red", f"ip_dron{e}", default="")
+            return ("dron", ip, int(self.cfg.get("red", "puerto_video", default=18800))) if ip else ("ninguna",)
+        return (src,)
+
+    def _camera_factory(self, key):
+        kind = key[0]
+        if kind == "ninguna":
+            return None
+        if kind == "dron":
+            return QDF1Client(key[1], key[2])
+        if kind == "sintetica":
+            return SyntheticCamera(self.render_synthetic, fps=15.0)
+        if kind.startswith("opencv"):
+            idx = kind.split(":")[1] if ":" in kind else 0
+            return OpenCVCamera(idx)
+        if kind == "carpeta":
+            return FolderCamera(os.path.join(DATA_DIR, "imagenes_prueba"))
+        raise ValueError(f"fuente de cámara desconocida '{kind}'")
+
+    def avisos(self):
+        """Avisos para la barra roja/amarilla de la página."""
+        out = []
+        synth_cam = self.camera.key == ("sintetica",)
+        if synth_cam and self.fuente != "mock":
+            out.append({"nivel": "rojo", "msg": f"CÁMARA SINTÉTICA con la fuente '{self.fuente}': las anomalías son "
+                        "INVENTADAS (mock_world) y se publican a Simulink. No usar con drones reales."})
+        if self.cfg.get("camara", "fuente") == "sintetica" and not self._synthetic_allowed():
+            out.append({"nivel": "rojo", "msg": "camara.fuente = 'sintetica' está BLOQUEADA con la fuente 'simulink' "
+                        "(mandaría anomalías inventadas a los drones). Pon camara.fuente = 'dron', o si es una "
+                        "simulación habilita web.permitir_sintetica_en_simulink en estacion.json."})
+        clases = self.vision.detector_classes()
+        if not synth_cam and 1 not in clases:
+            out.append({"nivel": "rojo", "msg": f"El detector '{self.vision.detector_name}' NO detecta tomas "
+                        f"(clase 1){': solo fuego' if 0 in clases else ''}. Revisa vision/detector.py y "
+                        "vision/modelos/mejor.onnx (ver web/README.md)."})
+        bloq = self.vision.blocked()
+        if bloq:
+            out.append({"nivel": "rojo", "msg": f"Límite de ids: {len(bloq)} anomalía(s) confirmada(s) NO se publicaron "
+                        "a Simulink porque el protocolo solo admite ids 1..32 (visited_mask)."})
+            if len(bloq) > self._n_bloqueados:
+                self.log(f"Sin ids libres (1..32): {len(bloq)} anomalía(s) confirmada(s) sin publicar")
+        self._n_bloqueados = len(bloq)
+        rech = (self.bridge.status().get("n_targets_rechazados") if self.bridge else 0) or 0
+        if rech:
+            out.append({"nivel": "rojo", "msg": f"{rech} objetivo(s) con id fuera de 1..32 no se mandaron a Simulink."})
+        choques = self._choques_id()
+        if choques:
+            out.append({"nivel": "rojo", "msg": "Choque de ids con Simulink: " + ", ".join(f"#{i}" for i in choques)
+                        + " son objetos distintos en la estación y en Simulink (¿publican la estación y un detector "
+                        "interno a la vez?). Deja que publique solo uno."})
+        # La versión real la define el modelo que corre (y(3)); version_control de estacion.json decide qué
+        # binario lanzan los comandos quarc_run de la pestaña Conexiones. Si no coinciden, se lanzaría el dron
+        # equivocado (tierra MPC con el binario PID -> alerta 10; tierra PID con el dron MPC -> no arma).
+        tel = self.bridge.telemetry if self.bridge else None
+        v_cfg = str(self.cfg.get("version_control", default="PID")).upper()
+        v_tel = (tel or {}).get("version_name")
+        if v_tel in ("PID", "MPC") and v_tel != v_cfg and self.fuente != "mock":
+            out.append({"nivel": "amarillo", "msg": f"El modelo que corre es {v_tel} pero estacion.json dice "
+                        f"version_control = {v_cfg}: los comandos quarc_run de Conexiones lanzarían el binario "
+                        f"{v_cfg} en los drones. Cambia la versión en la pestaña Misión antes de lanzar los drones."})
+        ci = self.vision.cam_info or {}
+        if ci.get("aviso"):
+            out.append({"nivel": "amarillo", "msg": "Cámara: " + ci["aviso"]})
+        if str(ci.get("origen", "")).startswith("HFOV"):
+            out.append({"nivel": "amarillo", "msg": "Geolocalización con HFOV/VFOV (sin intrínsecos fx, fy, cx, cy en "
+                        "estacion.json para esta resolución): copia los que imprime el streamer a camara.intrinsecos."})
+        return out
+
+    def _cam_model(self):
+        """Modelo de la cámara con la resolución configurada (huella en el mapa y cámara sintética)."""
+        return CameraModel.from_config(self.cfg.get("camara", default={}), self.cfg.data)
+
+    def explorer_pose(self):
+        tel = self.bridge.telemetry if self.bridge else None
+        if not tel or tel.get("explorer_id") not in (1, 2):
+            return None
+        d = tel["drones"][tel["explorer_id"]]
+        if not d["tracked"] or None in (d["x"], d["y"], d["z"], d["yaw"]):
+            return None
+        return (d["x"], d["y"], d["z"], d["yaw"])
+
+    def render_synthetic(self):
+        cam = self._cam_model()
+        pose = self.explorer_pose()
+        if pose is None or pose[2] < 0.15:
+            img = np.full((cam.h, cam.w, 3), 25, np.uint8)
+            cv2.putText(img, "Explorador en tierra / sin pose", (120, cam.h // 2), cv2.FONT_HERSHEY_SIMPLEX,
+                        0.7, (180, 180, 180), 1, cv2.LINE_AA)
+            return img
+        return render_view(cam, pose, self.cfg.get("pista", "vertices"), self.world, rng=self.rng)
+
+    def _vision_gate(self):
+        tel = self.bridge.telemetry if self.bridge else None
+        if not tel or not self.bridge.fresh():
+            return False
+        pose = self.explorer_pose()
+        zmin = float(self.cfg.web("z_min_deteccion"))
+        return tel.get("mission_state") in (P.MISSION, P.PAUSED) and pose is not None and pose[2] >= zmin
+
+    # ------------------------------------------------------------------ objetivos (estación + Simulink)
+    def _sim_vigentes(self):
+        """Objetivos de y(56:60) vistos hace poco (con telemetría fresca se olvidan tras SIM_TTL_S)."""
+        fresh = bool(self.bridge and self.bridge.fresh())
+        now = time.time()
+        with self.lock:
+            if fresh:
+                for k in [k for k, o in self.sim_targets.items() if now - o["t"] > SIM_TTL_S]:
+                    del self.sim_targets[k]
+            return {k: dict(o) for k, o in self.sim_targets.items()}
+
+    def _choques_id(self):
+        sim = self._sim_vigentes()
+        out = []
+        for t in self.vision.targets()[0]:
+            o = sim.get(t["id"])
+            if o and (o["cls"] != t["cls"] or math.hypot(o["x"] - t["x"], o["y"] - t["y"]) > CHOQUE_ID_M):
+                out.append(t["id"])
+        return out
+
+    def merged_targets(self, tel):
+        """Tabla de la UI: los objetivos que publicó la estación más los que Simulink reporta en y(56:60),
+        sin duplicar: mismo id = mismo objetivo, y un objetivo de Simulink a menos de radio_cluster de uno de la
+        estación con otro id también (Simulink guardó el id de la estación como alias; ``alias_de``).
+        ``origen``: estacion | estacion+simulink | simulink."""
+        targets, _ = self.vision.targets()
+        sim = self._sim_vigentes()
+        visited = set(tel["visited_ids"]) if tel else set()
+        cur = tel["responder_target_id"] if tel else 0
+        propios = {t["id"] for t in targets}
+        radio = float(self.cfg.get("vision", "radio_cluster_m", default=0.25) or 0.25)
+        out, alias_de_sim = [], set()
+        for t in targets:
+            o = sim.get(t["id"])
+            alias = None
+            if o is None:
+                # Simulink registra como ALIAS (sin agregarlo a su tabla) un id nuevo a menos de radio_cluster
+                # de un objetivo que ya tiene (qd2_mission_step.actualizar_objetivos, sin mirar la clase).
+                # Ese objetivo de Simulink es el mismo objeto: no se muestra dos veces.
+                cerca = [(math.hypot(s["x"] - t["x"], s["y"] - t["y"]), k) for k, s in sim.items()
+                         if k not in propios]
+                d, k = min(cerca, default=(None, None))
+                if d is not None and d < radio:
+                    o, alias = sim[k], k
+                    alias_de_sim.add(k)
+            t["origen"] = "estacion+simulink" if o else "estacion"
+            if o:
+                t["x_sim"], t["y_sim"], t["estado_sim"] = round(o["x"], 3), round(o["y"], 3), o["estado"]
+            if alias is not None:
+                t["alias_de"] = alias      # en Simulink es el objetivo #alias (este id quedó como alias suyo)
+            t["x"], t["y"], t["conf"] = round(t["x"], 3), round(t["y"], 3), round(t["conf"], 3)
+            out.append(t)
+        for k in propios | alias_de_sim:
+            sim.pop(k, None)
+        for tid, o in sim.items():
+            if not (1 <= tid <= P.MAX_TARGETS):
                 continue
-            got = camera.wait_newer(last_id, 1.0)
-            if got is None:
-                continue
-            frame, last_id, _ = got
-            try:
-                live["result"] = detector.infer_model_ready(camera_to_model(frame, detector.info))
-                live["stamp"] = time.time()
-            except Exception as exc:
-                live["result"], live["error"] = None, str(exc)
-            n += 1
-            if time.time() - t0 > 1:
-                live["fps"], n, t0 = n / (time.time() - t0), 0, time.time()
-            time.sleep(0.1)  # ~ 8-10 inferencias por segundo es suficiente para la vista
+            out.append({"id": tid, "cls": o["cls"], "x": round(o["x"], 3), "y": round(o["y"], 3), "conf": None,
+                        "n": None, "manual": False, "origen": "simulink", "estado_sim": o["estado"]})
+        for t in out:
+            es = t.get("estado_sim")
+            # visited_mask y responder_target_id llegan en cada mensaje; el estado de y(56:60) puede tener
+            # hasta 32 mensajes de retraso, así que solo se usa para "visitado" (es permanente)
+            t["estado"] = ("visitada" if t["id"] in visited or es == 3
+                           else "asignada" if cur and cur in (t["id"], t.get("alias_de")) else "detectada")
+            t["clase"] = P.CLASSES.get(t["cls"], str(t["cls"]))
+        return sorted(out, key=lambda t: t["id"])
 
-    threading.Thread(target=live_loop, daemon=True, name="live-detect").start()
+    # ------------------------------------------------------------------ estado para la UI
+    def snapshot(self):
+        tel, stamp = self.bridge.latest() if self.bridge else (None, 0.0)
+        tel = self._tel_ui(tel)
+        _, pending = self.vision.targets()
+        targets = self.merged_targets(tel)
+        pose = self.explorer_pose()
+        cam = self._cam_model()
+        foot = cam.footprint(*pose) if pose and pose[2] > 0.1 else []
+        cfg = self.cfg.data
+        return {
+            "t_servidor": time.time(), "fuente": self.fuente,
+            "puente": self.bridge.status() if self.bridge else None,
+            "tel": tel, "tel_edad_s": round(time.time() - stamp, 2) if stamp else None,
+            "objetivos": targets, "candidatos": [{**c, "x": round(c["x"], 3), "y": round(c["y"], 3)} for c in pending],
+            "objetivos_sin_id": len(self.vision.blocked()),
+            "huella": foot, "camara": self.camera.status(), "vision": self.vision.status(),
+            "pista": cfg.get("pista", {}).get("vertices", []),
+            "mision": cfg.get("mision", {}), "version_config": cfg.get("version_control", "PID"),
+            "verdad_mock": self.world if self.fuente == "mock" else [],
+            "mock": self.mock.estado_pruebas() if self.mock is not None else None,
+            "eventos": list(self.events)[:15], "avisos": self.avisos(),
+        }
 
-    @app.get("/")
+
+# ---------------------------------------------------------------------------- FastAPI
+def create_app(station: Station, start=True):
+    @contextlib.asynccontextmanager
+    async def lifespan(_app):
+        if start:
+            station.start()
+        try:
+            yield
+        finally:
+            station.stop()
+
+    app = FastAPI(title="Estación QDrone 2 — tomas clandestinas", docs_url="/api/docs", redoc_url=None,
+                  lifespan=lifespan)
+    app.state.station = station
+    os.makedirs(DATA_DIR, exist_ok=True)
+
+    app.mount("/static", StaticFiles(directory=STATIC), name="static")
+
+    # Otra página abierta en el mismo navegador no puede mandar comandos, subir archivos ni leer el
+    # WebSocket: si el navegador manda Origin, debe ser la propia estación.
+    @app.middleware("http")
+    async def check_origin(request: Request, call_next):
+        if request.method not in ("GET", "HEAD", "OPTIONS") and not origin_ok(request.headers):
+            return JSONResponse({"detail": "origen no permitido"}, status_code=403)
+        return await call_next(request)
+
+    @app.get("/", response_class=HTMLResponse)
     def index():
-        return send_from_directory(STATIC, "index.html")
+        return FileResponse(os.path.join(STATIC, "index.html"))
+
+    # -------------------------------------------------------------- estado y comandos
+    @app.get("/api/estado")
+    def estado():
+        return JSONResponse(station.snapshot())
+
+    @app.post("/api/cmd")
+    def cmd(body: dict = Body(...)):
+        try:
+            seq = station.command(str(body.get("cmd", "")).upper())
+        except ValueError as exc:
+            raise HTTPException(400, str(exc))
+        except PuenteNoListo as exc:
+            raise HTTPException(409, str(exc))
+        return {"ok": True, "cmd_seq": seq, "estado": "enviado" if seq else "en cola"}
+
+    @app.post("/api/fuente")
+    def fuente(body: dict = Body(...)):
+        try:
+            station.set_fuente(body.get("fuente"))
+        except ValueError as exc:
+            raise HTTPException(400, str(exc))
+        return {"ok": True, "fuente": station.fuente}
+
+    @app.post("/api/mock/reiniciar")
+    def mock_reset():
+        if station.mock is None:
+            raise HTTPException(400, "solo disponible con la fuente mock")
+        station.mock.reset()
+        station.vision.reset()
+        station.poses.clear()
+        with station.lock:
+            station.sim_targets = {}
+        station.log("Mock reiniciado")
+        return {"ok": True}
+
+    # Solo para probar la UI con la fuente mock: forzar y(55) y agregar objetivos "de Simulink" (y(56:60))
+    @app.post("/api/mock/alerta")
+    def mock_alerta(body: dict = Body(...)):
+        if station.mock is None:
+            raise HTTPException(400, "solo disponible con la fuente mock")
+        code = body.get("codigo")
+        try:
+            station.mock.forzar_alerta(None if code is None else int(code))
+        except (TypeError, ValueError) as exc:
+            raise HTTPException(400, str(exc))
+        station.log("Mock: " + ("alerta real (sin forzar)" if code is None else f"y(55) forzada a {int(code)}"))
+        return {"ok": True, "codigo": code}
+
+    @app.post("/api/mock/objetivo_interno")
+    def mock_objetivo(body: dict = Body(...)):
+        if station.mock is None:
+            raise HTTPException(400, "solo disponible con la fuente mock")
+        try:
+            cls = body.get("cls", 0)
+            cls = P.CLASS_IDS[cls] if isinstance(cls, str) else int(cls)
+            x, y = float(body["x"]), float(body["y"])
+        except (KeyError, ValueError, TypeError) as exc:
+            raise HTTPException(400, f"datos inválidos: {exc}")
+        if cls not in P.CLASSES:
+            raise HTTPException(400, "cls debe ser 0 (fuego) o 1 (toma)")
+        tid = station.mock.objetivo_interno(cls, x, y)
+        if tid is None:
+            raise HTTPException(409, "la tabla del mock ya tiene 32 objetivos (ids 1..32)")
+        return {"ok": True, "id": tid}
+
+    @app.post("/api/objetivos/manual")
+    def manual(body: dict = Body(...)):
+        try:
+            cls = body.get("cls", 0)
+            cls = P.CLASS_IDS[cls] if isinstance(cls, str) else int(cls)
+            x, y = float(body["x"]), float(body["y"])
+        except (KeyError, ValueError, TypeError) as exc:
+            raise HTTPException(400, f"datos inválidos: {exc}")
+        if cls not in P.CLASSES:
+            raise HTTPException(400, "cls debe ser 0 (fuego) o 1 (toma)")
+        lim = station.cfg.get("mision", "limites_xy", default=[-1.5, 1.5])
+        if not (lim[0] <= x <= lim[1] and lim[0] <= y <= lim[1]):
+            raise HTTPException(400, f"la posición debe estar dentro de la arena {lim}")
+        try:
+            tid = station.vision.add_manual(cls, x, y)
+        except ValueError as exc:
+            raise HTTPException(400, str(exc))
+        station.log(f"Objetivo manual {tid}: {P.CLASSES.get(cls)} ({x:+.2f}, {y:+.2f})")
+        return {"ok": True, "id": tid}
+
+    @app.post("/api/objetivos/reiniciar")
+    def objetivos_reset():
+        # Solo si Simulink no tiene objetivos: si no, los ids volverían a empezar en 1 y chocarían
+        # con su tabla (Simulink ignora un id ya visitado). Reiniciar Simulink vacía su tabla y la
+        # estación lo detecta sola.
+        tel = station.bridge.telemetry if station.bridge else None
+        if not tel or not station.bridge.fresh():
+            raise HTTPException(409, "sin telemetría del puente: no se sabe si Simulink ya tiene objetivos")
+        if int(tel.get("n_targets_known") or 0) > 0:
+            raise HTTPException(409, f"Simulink ya tiene {tel['n_targets_known']} objetivos: no se puede reiniciar "
+                                     "la lista (reinicia el modelo de Simulink / el mock para empezar de cero)")
+        station.vision.reset()
+        station.log("Lista de objetivos de la estación reiniciada")
+        return {"ok": True}
+
+    # -------------------------------------------------------------- configuración
+    @app.get("/api/config")
+    def get_config():
+        return station.cfg.reload_if_changed()
+
+    @app.post("/api/config/red")
+    def set_red(body: dict = Body(...)):
+        patch = {}
+        try:
+            for k in ("ip_pc", "ip_dron1", "ip_dron2"):
+                if k in body:
+                    patch[k] = validar_ip(body[k])
+        except ValueError as exc:
+            raise HTTPException(400, str(exc))
+        if "interfaz_preferida" in body:
+            patch["interfaz_preferida"] = str(body["interfaz_preferida"])
+        ip1 = patch.get("ip_dron1", station.cfg.get("red", "ip_dron1", default=""))
+        ip2 = patch.get("ip_dron2", station.cfg.get("red", "ip_dron2", default=""))
+        if ip1 and ip1 == ip2:
+            raise HTTPException(400, "los dos drones no pueden tener la misma IP")
+        station.cfg.update({"red": patch})
+        return {"ok": True, "red": station.cfg.data["red"]}
+
+    @app.post("/api/config/version")
+    def set_version(body: dict = Body(...)):
+        v = str(body.get("version_control", "")).upper()
+        if v not in ("PID", "MPC"):
+            raise HTTPException(400, "version_control debe ser PID o MPC")
+        station.cfg.update({"version_control": v})
+        return {"ok": True}
+
+    @app.post("/api/config/optitrack")
+    def set_optitrack(body: dict = Body(...)):
+        patch = {}
+        for k in ("carpeta", "archivo_cal", "archivo_motive"):
+            if k in body:
+                patch[k] = str(body[k])
+        for k in ("rigid_body_dron1", "rigid_body_dron2"):
+            if k in body:
+                try:
+                    v = int(body[k])
+                except (TypeError, ValueError):
+                    raise HTTPException(400, f"{k} debe ser un entero")
+                if v < 1:
+                    raise HTTPException(400, f"{k} debe ser ≥ 1")
+                patch[k] = v
+        rb1 = patch.get("rigid_body_dron1", station.cfg.get("optitrack", "rigid_body_dron1"))
+        rb2 = patch.get("rigid_body_dron2", station.cfg.get("optitrack", "rigid_body_dron2"))
+        if rb1 == rb2:
+            raise HTTPException(400, "los dos drones no pueden usar el mismo rigid body")
+        for k in ("archivo_cal", "archivo_motive"):
+            ext = ".cal" if k == "archivo_cal" else ".motive"
+            if patch.get(k) and not patch[k].lower().endswith(ext):
+                raise HTTPException(400, f"{k} debe terminar en {ext}")
+        station.cfg.update({"optitrack": patch})
+        return {"ok": True, "optitrack": station.cfg.data["optitrack"]}
+
+    @app.get("/api/optitrack/archivos")
+    def list_optitrack(carpeta: str = ""):
+        folder = carpeta or station.cfg.get("optitrack", "carpeta", default="")
+        if not folder or not os.path.isdir(folder):
+            return {"ok": False, "carpeta": folder, "error": "la carpeta no existe en esta PC", "cal": [], "motive": []}
+        out = {"cal": [], "motive": []}
+        base_depth = folder.rstrip("\\/").count(os.sep)
+        for root, dirs, files in os.walk(folder):
+            if root.count(os.sep) - base_depth >= 3:
+                dirs[:] = []
+            for f in files:
+                ext = os.path.splitext(f)[1].lower()
+                if ext in (".cal", ".motive"):
+                    p = os.path.join(root, f)
+                    st = os.stat(p)
+                    out[ext[1:]].append({"ruta": p, "nombre": os.path.relpath(p, folder), "kb": round(st.st_size / 1024, 1),
+                                         "modificado": time.strftime("%Y-%m-%d %H:%M", time.localtime(st.st_mtime)),
+                                         "_t": st.st_mtime})
+            if len(out["cal"]) + len(out["motive"]) > 500:
+                break
+        for k in out:
+            out[k].sort(key=lambda r: -r["_t"])
+            for r in out[k]:
+                r.pop("_t")
+        return {"ok": True, "carpeta": folder, **out}
+
+    @app.post("/api/optitrack/subir")
+    async def upload_optitrack(archivo: UploadFile = File(...)):
+        name = os.path.basename(archivo.filename or "")
+        ext = os.path.splitext(name)[1].lower()
+        if ext not in (".cal", ".motive"):
+            raise HTTPException(400, "solo se aceptan archivos .cal o .motive")
+        dest_dir = os.path.join(DATA_DIR, "optitrack")
+        os.makedirs(dest_dir, exist_ok=True)
+        dest = os.path.join(dest_dir, name)
+        data = await archivo.read()
+        if len(data) > 200 * 1024 * 1024:
+            raise HTTPException(400, "archivo demasiado grande")
+        with open(dest, "wb") as fh:
+            fh.write(data)
+        return {"ok": True, "ruta": dest, "tipo": ext[1:]}
+
+    @app.post("/api/config/pista")
+    def set_pista(body: dict = Body(...)):
+        try:
+            verts = [[round(float(a), 4), round(float(b), 4)] for a, b in body["vertices"]]
+        except (KeyError, TypeError, ValueError):
+            raise HTTPException(400, "vertices debe ser una lista de pares [x, y]")
+        lim = station.cfg.get("mision", "limites_xy", default=[-1.5, 1.5])
+        # qd2_params_from_config de Simulink usa como máximo p.max_vertices = 16
+        if len(verts) < 2 or len(verts) > MAX_VERTICES:
+            raise HTTPException(400, f"se necesitan entre 2 y {MAX_VERTICES} vértices (límite de Simulink)")
+        if any(not (lim[0] <= v <= lim[1]) for p in verts for v in p):
+            raise HTTPException(400, f"todos los vértices deben estar dentro de {lim}")
+        station.cfg.update({"pista": {"vertices": verts}})
+        station.log(f"Pista guardada ({len(verts)} vértices)")
+        return {"ok": True, "vertices": verts}
+
+    @app.post("/api/pista/capturar")
+    def capturar(body: dict = Body(...)):
+        dron = int(body.get("dron", 1))
+        tel = station.bridge.telemetry if station.bridge else None
+        if dron not in (1, 2) or not tel or not station.bridge.fresh():
+            raise HTTPException(409, "no hay telemetría reciente del puente")
+        d = tel["drones"][dron]
+        if not d["tracked"] or d["x"] is None:
+            raise HTTPException(409, f"el dron {dron} no está rastreado por OptiTrack")
+        rb = station.cfg.get("optitrack", f"rigid_body_dron{dron}")
+        return {"ok": True, "dron": dron, "rigid_body": rb, "x": round(d["x"], 4), "y": round(d["y"], 4),
+                "z": round(d["z"], 4)}
+
+    # -------------------------------------------------------------- red
+    @app.get("/api/red")
+    def red():
+        cfg = station.cfg.data
+        return {"interfaces": netinfo.interfaces(cfg["red"].get("interfaz_preferida", "Wi-Fi 2")),
+                "ip_recomendada": netinfo.ip_recomendada(cfg), "red": cfg["red"]}
+
+    @app.get("/api/comandos")
+    def comandos(ip_pc: str = ""):
+        return netinfo.comandos(station.cfg.data, ip_pc or None)
+
+    # -------------------------------------------------------------- video
+    def _no_signal(text):
+        img = np.full((360, 480, 3), 30, np.uint8)
+        cv2.putText(img, text, (20, 185), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (190, 190, 190), 1, cv2.LINE_AA)
+        return img
+
+    def _jpeg(img, q=75):
+        ok, buf = cv2.imencode(".jpg", img, [int(cv2.IMWRITE_JPEG_QUALITY), q])
+        return buf.tobytes()
+
+    @app.get("/api/camara.jpg")
+    def snapshot_jpg():
+        frame, _, _ = station.camera.latest()
+        img = station.vision.annotate(frame) if frame is not None else _no_signal("Sin imagen de cámara")
+        return Response(_jpeg(img, 85), media_type="image/jpeg")
 
     @app.get("/video.mjpg")
     def video():
         def gen():
-            last_id = 0
+            last = 0
             while True:
-                got = camera.wait_newer(last_id, 2.0)
+                got = station.camera.wait_newer(last, 2.0)
                 if got is None:
-                    frame = np.zeros((240, 320, 3), np.uint8)
-                    cv2.putText(frame, "Sin imagen de camara", (40, 125), cv2.FONT_HERSHEY_SIMPLEX,
-                                0.6, (200, 200, 200), 1, cv2.LINE_AA)
+                    img = _no_signal("Sin video: " + (station.camera.error or "esperando"))[:, :, :]
                 else:
-                    frame, last_id, _ = got
-                    frame = frame.copy()
-                    r = live["result"]
-                    if live["enabled"] and r is not None and time.time() - live["stamp"] < 1.0 and r.detected:
-                        _draw_box(frame, r.box, detector.info.width, detector.info.height,
-                                  (0, 0, 255), f"{r.label} {r.confidence:.0f}%")
-                jpg = _jpeg(frame)
-                yield b"--frame\r\nContent-Type: image/jpeg\r\nContent-Length: " + \
-                      str(len(jpg)).encode() + b"\r\n\r\n" + jpg + b"\r\n"
-                time.sleep(1 / 25)
+                    frame, last, _ = got
+                    img = station.vision.annotate(frame)
+                jpg = _jpeg(img)
+                yield (b"--frame\r\nContent-Type: image/jpeg\r\nContent-Length: " + str(len(jpg)).encode()
+                       + b"\r\n\r\n" + jpg + b"\r\n")
+                time.sleep(1 / 20)
+        return StreamingResponse(gen(), media_type="multipart/x-mixed-replace; boundary=frame")
 
-        return Response(gen(), mimetype="multipart/x-mixed-replace; boundary=frame")
-
-    @app.get("/api/state")
-    def state():
-        snap = mission.snapshot()
-        r = live["result"]
-        snap.update({
-            "camera": camera.status(),
-            "pose": {"source": getattr(pose, "name", "?"), "connected": pose.connected,
-                     "error": pose.error, "raw": list(pose.raw)[:64]},
-            "setpointOutput": setpoints.status(),
-            "model": detector.describe(),
-            "live": {"enabled": live["enabled"], "fps": round(live["fps"], 1),
-                     "result": r.to_dict() if (r is not None and live["enabled"]) else None},
-        })
-        return jsonify(snap)
-
-    @app.post("/api/mission/start")
-    def mission_start():
-        mission.start_mission()
-        return jsonify(ok=True)
-
-    @app.post("/api/mission/home")
-    def mission_home():
-        mission.abort_to_home()
-        return jsonify(ok=True)
-
-    @app.post("/api/mission/reset")
-    def mission_reset():
-        mission.reset()
-        return jsonify(ok=True)
-
-    @app.post("/api/mission/waypoints")
-    def mission_waypoints():
-        body = request.get_json(force=True)
+    # -------------------------------------------------------------- WebSocket
+    @app.websocket("/ws")
+    async def ws(sock: WebSocket):
+        if not origin_ok(sock.headers):
+            await sock.close(code=1008)
+            return
+        await sock.accept()
         try:
-            wps = [[float(v) for v in row] for row in body.get("waypoints", [])]
-            if any(len(row) != 4 for row in wps):
-                raise ValueError("Cada waypoint debe tener 4 valores: X, Y, Z, Yaw")
-            mission.set_waypoints(wps, body.get("batchImages"), body.get("captureSeconds"))
-        except Exception as exc:
-            return jsonify(ok=False, error=str(exc)), 400
-        return jsonify(ok=True)
+            while True:
+                snap = await asyncio.get_running_loop().run_in_executor(None, station.snapshot)
+                await sock.send_json(_clean(snap))
+                await asyncio.sleep(1 / 15)
+        except (WebSocketDisconnect, RuntimeError):
+            pass
 
-    @app.post("/api/live")
-    def set_live():
-        live["enabled"] = bool(request.get_json(force=True).get("enabled"))
-        return jsonify(ok=True, enabled=live["enabled"])
-
-    def _respond(result, model_img):
-        jpg = _jpeg(_annotated_model_image(model_img, result), 90)
-        return jsonify(ok=True, result=result.to_dict(),
-                       image="data:image/jpeg;base64," + base64.b64encode(jpg).decode())
-
-    @app.post("/api/detect")
-    def detect_now():
-        frame, fid, _ = camera.latest()
-        if frame is None:
-            return jsonify(ok=False, error="La cámara todavía no entrega imágenes"), 503
-        model_img = camera_to_model(frame, detector.info)
-        return _respond(detector.infer_model_ready(model_img), model_img)
-
-    @app.post("/api/infer")
-    def infer_upload():
-        f = request.files.get("image")
-        if f is None:
-            return jsonify(ok=False, error="Falta el archivo 'image'"), 400
-        data = np.frombuffer(f.read(), np.uint8)
-        img = cv2.imdecode(data, cv2.IMREAD_UNCHANGED)
-        if img is None:
-            return jsonify(ok=False, error="No se pudo decodificar la imagen"), 400
-        if img.dtype == np.uint16:
-            img = np.floor(img.astype(np.float64) / 257 + 0.5).astype(np.uint8)
-        if img.ndim == 3 and img.shape[2] == 4:  # como prepare_image.m: alfa sobre negro
-            alpha = img[..., 3:4].astype(np.float64) / 255
-            img = np.floor(img[..., :3] * alpha + 0.5).astype(np.uint8)
-        from .fomo import prepare_image
-        model_img = prepare_image(img, detector.info)
-        return _respond(detector.infer_model_ready(model_img), model_img)
-
-    @app.get("/api/results/<int:i>.jpg")
-    def result_image(i):
-        res = mission.results
-        if i < 0 or i >= len(res):
-            return Response(status=404)
-        r = res[i]
-        frame = r["_bestFrame"].copy()
-        br = r["bestResult"]
-        if br["detected"]:
-            _draw_box(frame, br["box"], detector.info.width, detector.info.height,
-                      (0, 0, 255), f"Fire {br['confidence']:.0f}%")
-        return Response(_jpeg(cv2.resize(frame, (320, 240))), mimetype="image/jpeg")
-
-    app.extensions["qdrone2"] = {"mission": mission, "camera": camera, "detector": detector}
     return app
 
 
+def origin_ok(headers):
+    """True si no hay Origin (curl, Python) o si coincide con el Host de la propia estación."""
+    origin = headers.get("origin")
+    if not origin:
+        return True
+    try:
+        return urlsplit(origin).netloc.lower() == (headers.get("host") or "").lower()
+    except ValueError:
+        return False
+
+
+def _clean(o):
+    """JSON estricto: NaN/inf -> None."""
+    if isinstance(o, float):
+        return o if math.isfinite(o) else None
+    if isinstance(o, dict):
+        return {str(k): _clean(v) for k, v in o.items()}
+    if isinstance(o, (list, tuple)):
+        return [_clean(v) for v in o]
+    if isinstance(o, np.generic):
+        return _clean(o.item())
+    return o
+
+
 def main(argv=None):
-    parser = argparse.ArgumentParser(description="QDrone2 Fire Detection - interfaz web")
-    parser.add_argument("--config", default=os.path.join(ROOT, "config.json"))
-    parser.add_argument("--host")
-    parser.add_argument("--port", type=int)
-    args = parser.parse_args(argv)
-    if cv2 is None:
-        sys.exit("Falta opencv-python: python -m pip install -r requirements.txt")
-    cfg = load_config(args.config)
-    host = args.host or cfg.get("server", {}).get("host", "127.0.0.1")
-    port = args.port or int(cfg.get("server", {}).get("port", 8080))
-    app = create_app(cfg)
-    print(f"\n  QDrone2 Fire Detection listo en  http://{'127.0.0.1' if host == '0.0.0.0' else host}:{port}\n")
-    app.run(host=host, port=port, threaded=True, debug=False, use_reloader=False)
+    ap = argparse.ArgumentParser(description="Estación web 2× QDrone 2")
+    ap.add_argument("--config", default=DEFAULT_PATH)
+    ap.add_argument("--fuente", choices=FUENTES)
+    ap.add_argument("--host", help="IP donde escucha la web (por defecto 127.0.0.1, solo esta PC)")
+    ap.add_argument("--puerto", type=int)
+    ap.add_argument("--velocidad-mock", type=float, default=1.0)
+    ap.add_argument("--imprimir-puerto", action="store_true", help="solo imprime el puerto web y sale (lo usa el .bat)")
+    a = ap.parse_args(argv)
+    if a.imprimir_puerto:
+        print(a.puerto or int(Config(a.config).get("red", "puerto_web", default=8080)))
+        return
+    import uvicorn
+    station = Station(a.config, a.fuente, a.velocidad_mock)
+    host = a.host or station.cfg.web("host") or "127.0.0.1"
+    port = a.puerto or int(station.cfg.get("red", "puerto_web", default=8080))
+    if host not in ("127.0.0.1", "localhost"):
+        print(f"  AVISO: la estación queda accesible desde la red en {host}:{port} (sin contraseña).")
+    print(f"\n  Estación QDrone 2 ({station.fuente}) en  http://127.0.0.1:{port}\n")
+    uvicorn.run(create_app(station), host=host, port=port, log_level="warning")
 
 
 if __name__ == "__main__":

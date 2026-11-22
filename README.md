@@ -1,5 +1,14 @@
 # QDrone2 Fire Detection — MATLAB R2023b
 
+> **Sistema nuevo: 2× QDrone 2 (explorador + respondedor) para tomas clandestinas y fuegos.**
+> Empieza en [docs/LEEME_SISTEMA_DUAL.md](docs/LEEME_SISTEMA_DUAL.md): qué es cada carpeta
+> (`simulink_qdrone2/`, `simulador3d/`, `web/`, `vision/`, `impresion3d/`), cómo arrancar cada
+> parte, mapa de documentos y estado de validación. El contrato es
+> [docs/ARQUITECTURA.md](docs/ARQUITECTURA.md). Ojo: `web/` ahora es la estación del sistema
+> dual (YOLO11n, puente :18700); la versión web de un dron descrita abajo quedó como referencia
+> en [web/GUIA_QDRONE2.md](web/GUIA_QDRONE2.md). El resto de este README es del proyecto
+> anterior (un dron, FOMO) y se conserva tal cual.
+
 > **Rama `Quique`:** agrega compatibilidad con **MATLAB R2023a** y una **versión web sin
 > MATLAB**.
 >

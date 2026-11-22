@@ -1,0 +1,201 @@
+"""Lectura y escritura de ``config/estacion.json`` (única fuente de verdad, ARQUITECTURA §5-§6).
+
+Reglas:
+* Nunca se renombran ni se borran claves existentes; solo se modifican valores o se agregan claves.
+* Cada guardado vuelve a leer el archivo del disco y aplica solo el *parche* pedido. Así no se
+  pierden cambios que otra herramienta (Simulink, MATLAB, otro agente) haya hecho mientras tanto.
+* La escritura es atómica (archivo temporal + ``os.replace``) y conserva el estilo del archivo
+  original: diccionarios con sangría de 2 espacios, listas de números en una sola línea, el
+  texto original de cada número (``0.20`` sigue siendo ``0.20``) y los finales de línea (CRLF o LF),
+  para no ensuciar el ``git diff``.
+* Al arrancar NO se escribe nada: los valores por defecto de la sección ``web`` viven en memoria
+  (``WEB_DEFAULTS``) y solo se guardan las claves que el usuario cambia desde la página.
+"""
+from __future__ import annotations
+
+import copy
+import ipaddress
+import json
+import math
+import os
+import threading
+import time
+
+WEB_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+PROJECT_DIR = os.path.dirname(WEB_DIR)
+DEFAULT_PATH = os.path.join(PROJECT_DIR, "config", "estacion.json")
+
+_LOCK = threading.RLock()
+
+# Valores por defecto que la estación agrega si faltan (solo claves nuevas, nunca renombres).
+WEB_DEFAULTS = {
+    "fuente": "mock",            # mock | simulink | sim3d
+    "host": "127.0.0.1",         # por seguridad solo escucha en la propia PC
+    "host_puente": "127.0.0.1",  # dónde corre el Stream Server de Simulink / simulador
+    "detector": "auto",          # auto | vision | fomo | falso | ninguno
+    "camara_latencia_s": 0.12,   # retraso estimado del video para sincronizar con la pose
+    "z_min_deteccion": 0.4,      # no se geolocaliza con el explorador por debajo de esta altura
+    "cmd_timeout_s": 1.5,        # un comando sin ack de Simulink en este tiempo caduca (no se ejecuta tarde)
+    "puerto_quarc_target": 17000,
+    "puerto_ext_mode": 17001,
+}
+
+
+class _Num(float):
+    """float que recuerda cómo estaba escrito en el archivo (para no cambiar 0.20 por 0.2)."""
+
+    def __new__(cls, text):
+        obj = float.__new__(cls, text)
+        obj.text = text
+        return obj
+
+    def __deepcopy__(self, memo):
+        return self
+
+    def __reduce__(self):
+        return (_Num, (self.text,))
+
+
+def _fmt_scalar(v):
+    if isinstance(v, _Num):
+        return v.text
+    if isinstance(v, bool):
+        return "true" if v else "false"
+    if v is None:
+        return "null"
+    if isinstance(v, float):
+        if math.isnan(v) or math.isinf(v):
+            return "null"
+        r = repr(v)
+        return r
+    return json.dumps(v, ensure_ascii=False)
+
+
+def _inline(v):
+    """True si la lista se puede escribir en una sola línea (escalares o listas de escalares)."""
+    if not isinstance(v, list):
+        return False
+    for x in v:
+        if isinstance(x, dict):
+            return False
+        if isinstance(x, list) and any(isinstance(y, (list, dict)) for y in x):
+            return False
+    return True
+
+
+def dumps(obj, indent=0):
+    """Serializa como el ``estacion.json`` original (sangría 2, listas numéricas en línea)."""
+    pad = "  " * indent
+    if isinstance(obj, dict):
+        if not obj:
+            return "{}"
+        if indent >= 3 and not any(isinstance(v, (dict, list)) for v in obj.values()):
+            # diccionarios pequeños anidados (p. ej. intrínsecos) en una sola línea, como el original
+            return "{" + ", ".join(f"{json.dumps(k, ensure_ascii=False)}: {_fmt_scalar(v)}"
+                                   for k, v in obj.items()) + "}"
+        items = [f'{pad}  {json.dumps(k, ensure_ascii=False)}: {dumps(v, indent + 1)}' for k, v in obj.items()]
+        return "{\n" + ",\n".join(items) + "\n" + pad + "}"
+    if isinstance(obj, list):
+        if _inline(obj):
+            return "[" + ", ".join(dumps(x, indent + 1) if isinstance(x, list) else _fmt_scalar(x)
+                                   for x in obj) + "]"
+        items = [pad + "  " + dumps(x, indent + 1) for x in obj]
+        return "[\n" + ",\n".join(items) + "\n" + pad + "]"
+    return _fmt_scalar(obj)
+
+
+def deep_merge(base, patch):
+    """Mezcla ``patch`` dentro de una copia de ``base`` (los diccionarios se mezclan, el resto se reemplaza)."""
+    out = copy.deepcopy(base)
+    for k, v in patch.items():
+        if isinstance(v, dict) and isinstance(out.get(k), dict):
+            out[k] = deep_merge(out[k], v)
+        else:
+            out[k] = copy.deepcopy(v)
+    return out
+
+
+def validar_ip(ip):
+    """'' (pendiente) o una IPv4 válida."""
+    ip = (ip or "").strip()
+    if ip == "":
+        return ""
+    try:
+        return str(ipaddress.IPv4Address(ip))
+    except ValueError:
+        raise ValueError(f"IP inválida: '{ip}'")
+
+
+class Config:
+    """Acceso con candado a ``estacion.json``. ``data`` es una copia en memoria."""
+
+    def __init__(self, path=DEFAULT_PATH):
+        self.path = os.path.abspath(path)
+        self.data = {}
+        self.mtime = 0.0
+        self.reload()
+
+    # ------------------------------------------------------------------ lectura
+    def _read_disk(self):
+        with open(self.path, "rb") as fh:
+            raw = fh.read()
+        self._newline = "\r\n" if b"\r\n" in raw else "\n"
+        return json.loads(raw.decode("utf-8-sig"), parse_float=_Num)
+
+    def reload(self):
+        with _LOCK:
+            self.data = self._read_disk()
+            self.mtime = os.path.getmtime(self.path)
+            return self.data
+
+    def reload_if_changed(self):
+        try:
+            if os.path.getmtime(self.path) != self.mtime:
+                self.reload()
+        except OSError:
+            pass
+        return self.data
+
+    def get(self, *keys, default=None):
+        d = self.data
+        for k in keys:
+            if not isinstance(d, dict) or k not in d:
+                return default
+            d = d[k]
+        return d
+
+    def web(self, key):
+        return self.get("web", key, default=WEB_DEFAULTS.get(key))
+
+    # ------------------------------------------------------------------ escritura
+    def update(self, patch):
+        """Aplica ``patch`` sobre la versión del disco y guarda de forma atómica."""
+        with _LOCK:
+            try:
+                current = self._read_disk()
+            except FileNotFoundError:
+                current = {}
+            merged = deep_merge(current, patch)
+            text = dumps(merged) + "\n"
+            tmp = self.path + ".tmp"
+            with open(tmp, "w", encoding="utf-8", newline=getattr(self, "_newline", "\n")) as fh:
+                fh.write(text)
+            for intento in range(10):  # OneDrive o un editor pueden bloquear el archivo un instante
+                try:
+                    os.replace(tmp, self.path)
+                    break
+                except PermissionError:
+                    if intento == 9:
+                        raise
+                    time.sleep(0.1)
+            self.data = merged
+            self.mtime = os.path.getmtime(self.path)
+            return merged
+
+    def ensure_web_defaults(self):
+        """Agrega la sección ``web`` (o las claves que falten) sin tocar nada más.
+        Ya no se llama al arrancar (para no reescribir el archivo); queda para uso manual."""
+        web = self.data.get("web", {}) if isinstance(self.data.get("web"), dict) else {}
+        faltan = {k: v for k, v in WEB_DEFAULTS.items() if k not in web}
+        if faltan:
+            self.update({"web": faltan})

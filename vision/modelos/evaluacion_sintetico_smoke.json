@@ -1,0 +1,102 @@
+{
+  "modelo": "C:\\Users\\ezequ\\OneDrive\\Escritorio\\QDrone2_Deteccion_Tomas_Pemex\\vision\\modelos\\mejor.pt",
+  "datos": "C:\\Users\\ezequ\\OneDrive\\Escritorio\\QDrone2_Deteccion_Tomas_Pemex\\vision\\datos\\sintetico_smoke",
+  "velocidad": [
+    {
+      "motor": "ultralytics",
+      "dispositivo": "cuda:0",
+      "n": 66,
+      "ms_media": 18.43,
+      "ms_mediana": 18.66,
+      "ms_p90": 21.13,
+      "fps_media": 54.3,
+      "res_tipica": "640x480",
+      "gpu": "NVIDIA GeForce RTX 4060 Laptop GPU"
+    },
+    {
+      "motor": "opencv",
+      "dispositivo": "cpu",
+      "n": 50,
+      "ms_media": 29.14,
+      "ms_mediana": 28.89,
+      "ms_p90": 31.53,
+      "fps_media": 34.3,
+      "res_tipica": "640x480"
+    },
+    {
+      "motor": "ultralytics",
+      "dispositivo": "cpu",
+      "n": 50,
+      "ms_media": 37.11,
+      "ms_mediana": 33.03,
+      "ms_p90": 51.13,
+      "fps_media": 26.9,
+      "res_tipica": "640x480"
+    }
+  ],
+  "mAP50": 0.991,
+  "mAP50_95": 0.9145,
+  "precision": 0.9827,
+  "recall": 0.975,
+  "por_clase": {
+    "fuego": {
+      "AP50": 0.9888,
+      "AP50_95": 0.911,
+      "P": 0.9725,
+      "R": 1.0
+    },
+    "toma": {
+      "AP50": 0.9933,
+      "AP50_95": 0.918,
+      "P": 0.9929,
+      "R": 0.95
+    }
+  },
+  "n_imagenes_val": 66,
+  "comparacion_motores": {
+    "conf_operacion": 0.5,
+    "acuerdo_cajas_iou0.8": {
+      "cajas_ultralytics": 84,
+      "cajas_opencv": 82,
+      "ultralytics_en_opencv": 0.9643,
+      "opencv_en_ultralytics": 0.9878,
+      "dif_conf_media": 0.0039
+    },
+    "ultralytics": {
+      "fuego": {
+        "TP": 39,
+        "FP": 4,
+        "FN": 0,
+        "P": 0.907,
+        "R": 1.0,
+        "F1": 0.9512
+      },
+      "toma": {
+        "TP": 39,
+        "FP": 2,
+        "FN": 1,
+        "P": 0.9512,
+        "R": 0.975,
+        "F1": 0.963
+      }
+    },
+    "opencv": {
+      "fuego": {
+        "TP": 39,
+        "FP": 2,
+        "FN": 0,
+        "P": 0.9512,
+        "R": 1.0,
+        "F1": 0.975
+      },
+      "toma": {
+        "TP": 39,
+        "FP": 2,
+        "FN": 1,
+        "P": 0.9512,
+        "R": 0.975,
+        "F1": 0.963
+      }
+    }
+  }
+}

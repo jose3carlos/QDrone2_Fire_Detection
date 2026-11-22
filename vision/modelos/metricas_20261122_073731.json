@@ -1,0 +1,37 @@
+{
+  "fecha": "2026-11-22T00:55:09",
+  "run": "C:\\Users\\ezequ\\OneDrive\\Escritorio\\QDrone2_Deteccion_Tomas_Pemex\\vision\\runs\\smoke_30ep",
+  "datos_train": [
+    "C:\\Users\\ezequ\\OneDrive\\Escritorio\\QDrone2_Deteccion_Tomas_Pemex\\vision\\datos\\sintetico_smoke\\images\\train"
+  ],
+  "datos_val": [
+    "C:\\Users\\ezequ\\OneDrive\\Escritorio\\QDrone2_Deteccion_Tomas_Pemex\\vision\\datos\\sintetico_smoke\\images\\val"
+  ],
+  "fotos_reales": {
+    "train": 0,
+    "val": 0
+  },
+  "epocas": 30,
+  "imgsz": 640,
+  "batch": 16,
+  "base": "yolo11n.pt",
+  "minutos_entrenamiento": 3.7,
+  "mAP50": 0.96,
+  "mAP50_95": 0.8105,
+  "precision": 0.9716,
+  "recall": 0.9464,
+  "por_clase": {
+    "fuego": {
+      "AP50": 0.9567,
+      "AP50_95": 0.8412,
+      "P": 0.9431,
+      "R": 0.9487
+    },
+    "toma": {
+      "AP50": 0.9633,
+      "AP50_95": 0.7798,
+      "P": 1.0,
+      "R": 0.9441
+    }
+  }
+}

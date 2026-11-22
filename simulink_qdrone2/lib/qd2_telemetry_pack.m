@@ -1,0 +1,71 @@
+function y = qd2_telemetry_pack(t, tel, version, guard_active, pose1, pose2, sp1, sp2, vel1, vel2, aux)
+%QD2_TELEMETRY_PACK Arma el vector de 64 doubles Simulink -> Python (§3.3).
+%   y = qd2_telemetry_pack(t, tel, version, guard_active, pose1, pose2,
+%                          sp1, sp2, vel1, vel2, aux)
+%   tel        : salida de qd2_mission_step.
+%   version    : 1 PID, 2 MPC.
+%   pose1/2    : [x y z yaw] medidos.  sp1/2: [x y z yaw] enviados al dron
+%                (después del guard y del rate limiter).
+%   vel1/2     : [vx vy vz].
+%   aux        : [tracked1 tracked2 fsm1 fsm2 bat1 bat2 comm1 comm2]
+%                (fsm = estado a bordo si se conoce, si no el inferido;
+%                 batería NaN si no hay dato).
+%   y          : 64x1 (índices base 1 como en ARQUITECTURA.md; 55 = alerta).
+%#codegen
+
+y = zeros(64,1);
+y(1) = t;
+y(2) = tel.mission_state;
+y(3) = version;
+y(4) = tel.explorer_id;
+y(5) = tel.responder_id;
+y(6) = tel.explorer_wp_idx;
+y(7) = tel.explorer_wp_total;
+y(8) = tel.responder_target_id;
+y(9) = tel.n_targets_known;
+y(10) = tel.n_targets_visited;
+y(11) = guard_active;
+if tel.explorer_id == 2
+    pe = pose2; pr = pose1;
+else
+    pe = pose1; pr = pose2;
+end
+y(12) = norm([pe(1) - pr(1), pe(2) - pr(2)]);
+y(13) = pe(3) - pr(3);
+y(14) = tel.explorer_done;
+home = [tel.home1; tel.home2];
+role = [tel.role1 tel.role2];
+for i = 1:2
+    o = 14 + 18*(i-1);
+    if i == 1
+        ps = pose1; sp = sp1; v = vel1;
+    else
+        ps = pose2; sp = sp2; v = vel2;
+    end
+    y(o+1) = aux(i);
+    y(o+2) = aux(2+i);
+    y(o+3:o+6) = [ps(1); ps(2); ps(3); ps(4)];
+    y(o+7:o+10) = [sp(1); sp(2); sp(3); sp(4)];
+    y(o+11:o+13) = [v(1); v(2); v(3)];
+    y(o+14) = aux(4+i);
+    y(o+15) = home(i,1);
+    y(o+16) = home(i,2);
+    y(o+17) = role(i);
+    y(o+18) = aux(6+i);
+end
+y(51) = tel.visited_mask;
+y(52) = tel.marking_progress;
+y(53) = tel.queue_length;
+y(54) = tel.cmd_seq_ack;
+% 55: alerta (0 = nada): 1 homes demasiado cerca (START rechazado), 2 pausa
+% por pérdida de rastreo, 3 timeout de despegue, 4 timeout de aterrizaje,
+% 5 E-stop, 6 Takeoff abajo, 7 Arm abajo, 8 respaldo crudo (5-8 las pone la
+% capa del operador en tierra), 9 falla a bordo de un dron (FSM 7/8/9, MPC),
+% 10 protocolo MPC incorrecto.
+y(55) = tel.alerta;
+% 56-60: un objetivo de la tabla por mensaje, rotando: [id clase x y estado]
+% (estado 1 pendiente, 2 asignado, 3 visitado). id = 0: tabla vacía.
+if isfield(tel, 'obj_rot')
+    y(56:60) = [tel.obj_rot(1); tel.obj_rot(2); tel.obj_rot(3); tel.obj_rot(4); tel.obj_rot(5)];
+end
+end
