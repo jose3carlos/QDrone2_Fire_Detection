@@ -27,6 +27,15 @@ Tiempo total estimado en el laboratorio: **6–7 h** (las fotos reales van en pa
 
 ---
 
+## Sesión previa. Soporte de la cámara (con el dron en el laboratorio, 1–2 días antes) — 1 h + impresión
+
+Sigue `impresion3d/README.md`, sección "Soporte de la cámara". La pieza A tarda varias horas en imprimirse, así que no cabe en la etapa 5.
+- [ ] Imprime la probeta (~30 min). Con ella elige `TUERCA_EC_A` (fila, eje vertical) y `TUERCA_EC_B` (pared, eje horizontal) y comprueba el patrón de 45 mm con la cámara.
+- [ ] Fotos del frente, de un lado y de abajo del explorador. Mide con calibrador los valores `MEDIR EN LAB` (espesor del carbono, travesaño, lengüeta de la escuadra original, enchufe USB-C, altura de la cámara sobre el piso, aros) y confirma que la escuadra original usa los 2 M3 traseros (A) o no (B).
+- [ ] Holgura del cable USB ≥ 90 mm. Si no alcanza, consigue una extensión USB-C 3.1 Gen 1 corta.
+- [ ] Regenera `cad/soporte_camara.py` con los valores medidos, imprime la pieza final en PETG/ASA (brim 5 mm) y móntala (pasos 2 a 7 del README).
+- [ ] Mide la posición de la lente RGB respecto al pivote de Motive y actualiza `camara.offset_camara_m` (etapa 5).
+
 ## Etapa 0. Antes de salir (laptop, día anterior) — 45 min
 
 - [ ] Copiar el proyecto a la USB **sin** lo pesado (en `cmd`):
@@ -36,8 +45,8 @@ Tiempo total estimado en el laboratorio: **6–7 h** (las fotos reales van en pa
 - [ ] Copiar también `%USERPROFILE%\Downloads\Equipo2.zip` (respaldo del binario y del modelo original).
 - [ ] Laptop: `%USERPROFILE%\.venvs\qdrone2_vision\Scripts\python.exe vision\entrenar.py --help` responde (para el afinado con fotos reales). Llevar el cargador.
 - [ ] Cargar **todas** las baterías de los QDrone 2 (4S). A bordo, con ≤ 14.0 V durante 0.3 s se activa el aterrizaje por batería baja, y queda activo.
-- [ ] Material: antena Alfa (RTL8811AU), USB, tubería en N, 3 fuegos y 3 tomas impresos, distractores (plantas, carritos, cinta, calcomanías de flama), cinta métrica, cinta para marcar los homes, soporte de la D435i ya montado en el explorador.
-- [ ] Pesar los dos drones (el explorador lleva la D435i y el soporte). Anotar: dron 1 ______ kg, dron 2 ______ kg (el PID y el MPC a bordo usan 1.504 kg de trim).
+- [ ] Material: antena Alfa (RTL8811AU), USB, tubería en N, 3 fuegos y 3 tomas impresos, distractores (plantas, carritos, cinta, calcomanías de flama), cinta métrica, cinta para marcar los homes, soporte de la cámara ya impreso en PETG/ASA y montado en el explorador (ver la sesión previa, arriba), tornillos de repuesto (2 M3×6 ISO 7380-2, 2 M3×8 de nylon, tuercas M3), calibrador.
+- [ ] Pesar los dos drones (el explorador lleva la D435i y el soporte, ~+32 g). Anotar: dron 1 ______ kg, dron 2 ______ kg (el PID y el MPC a bordo usan 1.504 kg de trim). El soporte adelanta el centro de masa del explorador ~6 mm: en el primer hover revisar que no derive ni sostenga cabeceo.
 
 ## Etapa 1. Instalar en la PC del laboratorio — 40 min
 
@@ -88,8 +97,13 @@ Tiempo total estimado en el laboratorio: **6–7 h** (las fotos reales van en pa
 ## Etapa 5. Cámara del explorador — 25 min (y fotos reales en paralelo)
 
 - [ ] El explorador (el que lleva la D435i hacia abajo) se coloca **siempre en la menor x**.
+- [ ] **Soporte de la cámara** (`impresion3d/README.md`, sección "Soporte de la cámara"). La impresión y el montaje se hacen en la **sesión previa** (al inicio de este checklist); aquí solo se verifica:
+  - Variante montada: A / B. Cámara con 2 M3×6 (**nunca M3×8**): lentes abajo, rejilla hacia adelante y USB a la derecha (lado de la muesca en V) → `rotacion_montaje = 0`.
+  - Con el dron en el piso, la cara de las lentes queda a ≥ 10 mm del piso: ______ mm. Las hélices giran a mano sin tocar nada y el cable USB no está tenso.
+  - Mide la posición de la lente RGB (la del extremo opuesto al USB) respecto al pivote de Motive: x ______, y ______, z ______ m. Para z, si la pose está corregida con `bias_z`: altura sobre el piso + 0.004.
+  - Escríbela en `camara.offset_camara_m` (estimado `[0.212, 0.0325, 0.019]`; hoy dice `[0.20, 0.0, -0.05]`) y reinicia la estación.
 - [ ] `scp web/drone/qdrone2_camera_streamer.py nvidia@<IP_explorador>:~/`
-- [ ] Números de serie: `ssh nvidia@<IP> "rs-enumerate-devices -s"`. Si no existe esa herramienta: `ssh nvidia@<IP> "python3 -c \"import pyrealsense2 as rs; [print(d.get_info(rs.camera_info.name), d.get_info(rs.camera_info.serial_number)) for d in rs.context().devices]\""`. Serie de la D435i de abajo: ____________ (el QDrone 2 trae otra RealSense **frontal**).
+- [ ] Números de serie: `ssh nvidia@<IP> "rs-enumerate-devices -s"`. Si no existe esa herramienta: `ssh nvidia@<IP> "python3 -c \"import pyrealsense2 as rs; [print(d.get_info(rs.camera_info.name), d.get_info(rs.camera_info.serial_number)) for d in rs.context().devices]\""`. Serie de la RealSense: ____________ (debe salir **una sola**: la frontal integrada, ahora girada hacia abajo; si sale la IMU, es D435i).
 - [ ] Lanzar (dejar esa terminal abierta): `ssh nvidia@<IP> "python3 ~/qdrone2_camera_streamer.py --camara auto --serie <serie>"`.
 - [ ] Copiar la línea `"intrinsecos": {"640x480": {...}}` que imprime a `camara.intrinsecos` de `C:\QD2\config\estacion.json` y reiniciar la estación.
 - [ ] UI: "Video ~15 fps". La imagen es **la de abajo**. Con 0, arriba de la imagen = adelante del dron.
