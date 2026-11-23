@@ -121,8 +121,9 @@ def test_alerta_no_finita_es_grave_y_no_nada():
         tel = P.unpack_telemetry(P._TEL.pack(*raw))
         assert tel["alerta"] == P.ALERTA_NO_FINITA and tel["alerta"] != 0
         assert tel["alerta_nivel"] == "grave" and "NaN" in tel["alerta_texto"]
-    # y(61:64) son los únicos reservados
-    assert len(_tel()["reserved"]) == 4
+    # y(61:63) = actitud del explorador; y(64) es el único reservado
+    assert len(_tel()["reserved"]) == 1
+    assert _tel()["explorer_att_ok"] is False
 
 
 # =============================================================================== mock

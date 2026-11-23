@@ -135,7 +135,7 @@ function render(s) {
     $('s-note').textContent = tel.guard_active ? 'El SEPARATION GUARD está reteniendo a un dron.' : '';
     $('sep-block').classList.toggle('active', !!tel.guard_active);
   }
-  renderDrones(tel);
+  renderDrones(tel, s.actitud_explorador);
   renderTargets(s);
   renderInfo(s);
   // eventos
@@ -175,7 +175,7 @@ function aHome(d) {
   return dist <= tol ? ' · <span class="flag ok">en home</span>' : ` · a ${f2(dist)} m`;
 }
 
-function renderDrones(tel) {
+function renderDrones(tel, act) {
   const box = $('drones');
   if (!tel) { box.innerHTML = '<div class="dcard">Sin telemetría del puente.</div>'; return; }
   box.innerHTML = [1, 2].map((id) => {
@@ -191,8 +191,27 @@ function renderDrones(tel) {
         <tr><td>vel</td><td>${f2(d.vx)}, ${f2(d.vy)}, ${f2(d.vz)}</td></tr>
         <tr><td>home</td><td>${f2(d.home_x)}, ${f2(d.home_y)}${aHome(d)}</td></tr>
         <tr><td>batería</td><td>${d.battery_V === null ? '—' : f2(d.battery_V, 1) + ' V'}</td></tr>
+        ${id === tel.explorer_id ? `<tr><td title="y(61:62) CRUDOS: roll y pitch del explorador tal como llegan de OptiTrack (prueba del libro)">actitud (cruda)</td><td>${actitudTxt(tel)}</td></tr>${actitudUsadaTxt(act)}` : ''}
       </table></div>`;
   }).join('');
+}
+
+// y(61:63): roll (φ) y pitch (θ) del explorador TAL COMO LLEGAN; inclinación total = acos(cos φ · cos θ)
+function actitudTxt(tel) {
+  if (!tel.explorer_att_ok) return '<span class="flag bad">no disponible (y(63) = 0)</span>';
+  const r = tel.explorer_roll, p = tel.explorer_pitch;
+  const incl = Math.acos(Math.min(1, Math.cos(r) * Math.cos(p))) * 57.2958;
+  return `φ ${f2(r * 57.2958, 1)}° · θ ${f2(p * 57.2958, 1)}° · incl. ${f2(incl, 1)}°`;
+}
+
+// La actitud que entra a la geolocalización (snapshot.actitud_explorador): solo se muestra si difiere de la
+// cruda, es decir con vision.actitud_signos / actitud_offset_deg ajustados o con usar_actitud = false.
+function actitudUsadaTxt(act) {
+  if (!act || !act.cruda) return '';
+  const tip = 'title="Actitud con la que se geolocaliza: signo · (cruda − offset) de vision.actitud_signos / actitud_offset_deg"';
+  if (!act.usar) return `<tr><td ${tip}>actitud usada</td><td><span class="flag bad">ignorada (usar_actitud = false): nivelado</span></td></tr>`;
+  if (!act.ajustada || !act.usada) return '';
+  return `<tr><td ${tip}>actitud usada</td><td>φ ${f2(act.usada[0], 1)}° · θ ${f2(act.usada[1], 1)}° (con signos/offset)</td></tr>`;
 }
 
 function renderTargets(s) {
@@ -214,7 +233,8 @@ function renderTargets(s) {
     <span>Frames</span><b>${v.frames ?? 0}</b>
     <span>Observaciones</span><b>${v.observaciones ?? 0}</b>
     <span>Candidatos</span><b>${v.candidatos ?? 0} (requieren ${cfg?.vision?.min_observaciones ?? 3} obs.)</b>
-    <span title="Filtros físicos de la estación (vision.tam_max_m, vision.dist_max_tubo_toma_m…): no entran al cluster">Descartadas</span><b>${desc.total ?? 0} (tamaño ${desc['tamaño'] ?? 0}, tubo ${desc['lejos del tubo'] ?? 0})</b>
+    <span title="Filtros físicos de la estación (vision.tam_max_m, vision.dist_max_tubo_toma_m, vision.inclinacion_max_deg = ${v.filtros?.inclinacion_max_deg ?? 'desactivado'}°…): no entran al cluster">Descartadas</span><b>${desc.total ?? 0} (tamaño ${desc['tamaño'] ?? 0}, tubo ${desc['lejos del tubo'] ?? 0}, inclinación ${desc['inclinación'] ?? 0})</b>
+    <span title="Roll/pitch del explorador (y(61:63)) en la geolocalización (vision.usar_actitud)">Actitud</span><b${v.actitud && v.actitud.usar && !v.actitud.ok ? ' style="color: var(--warn)"' : ''}>${esc(v.actitud?.texto ?? '—')}${v.actitud?.ok ? ` · φ ${f2(v.actitud.roll_deg, 1)}° θ ${f2(v.actitud.pitch_deg, 1)}°` : ''}</b>
     <span>Último frame</span><b>${(last.dets || []).length} cajas · ${last.ms ?? 0} ms</b>
     ${v.error ? `<span>Error</span><b>${esc(v.error)}</b>` : ''}`;
 }

@@ -980,6 +980,61 @@ tc.verifyEqual(unique(ids2), 32);
 fprintf('[y(56:60)] ids enviados en 6 mensajes: %s; con ids 33/40/32 publicados solo sale %s\n', mat2str(ids), mat2str(unique(ids2)));
 end
 
+function test_actitud_y61(tc)
+% y(61:63) = [roll pitch válido] del EXPLORADOR (rad); y(64) reservado (0).
+% att = [roll1 pitch1 roll2 pitch2] va por dron; qd2_telemetry_pack elige
+% el del explorador con el mismo criterio que la pose (y(o+3:o+6)).
+p = tc.TestData.p;
+att = [0.05 -0.08 -0.03 0.12];
+aux = [1 1 1 1 16 16 1 1];
+s0 = qd2_mission_init(p);
+[~, ~, ~, tel] = qd2_mission_step(s0, entrada_basica(0, [-1 0 0 0], [1 0 0 0]), p);
+pack = @(tel, aux, varargin) qd2_telemetry_pack(0, tel, 1, 0, [-1 0 1.5 0.3], [1 0 1.5 -0.2], ...
+    tel.sp1, tel.sp2, [0 0 0], [0 0 0], aux, varargin{:});
+% explorador 1 y 2: toma la actitud del dron correcto
+tel.explorer_id = 1; tel.responder_id = 2;
+y = pack(tel, aux, att);
+tc.verifyEqual(y(61:64)', [0.05 -0.08 1 0]);
+tc.verifyEqual(y(20), 0.3);                         % yaw del dron 1 (y(o+6)): misma pose
+tel.explorer_id = 2; tel.responder_id = 1;
+y = pack(tel, aux, att);
+tc.verifyEqual(y(61:64)', [-0.03 0.12 1 0]);
+tc.verifyEqual(y(38), -0.2);                        % yaw del dron 2
+% explorador no rastreado -> 0 0 0 (aunque el otro dron sí esté rastreado)
+y = pack(tel, [1 0 1 1 16 16 1 1], att);
+tc.verifyEqual(y(61:64)', [0 0 0 0]);
+% ángulos no finitos (pérdida de rastreo en Corrected Pose Data) -> 0 0 0
+y = pack(tel, aux, [0.05 -0.08 NaN 0.12]);
+tc.verifyEqual(y(61:64)', [0 0 0 0]);
+y = pack(tel, aux, [0.05 -0.08 0.03 Inf]);
+tc.verifyEqual(y(61:64)', [0 0 0 0]);
+y = pack(tel, aux, [NaN NaN 0.03 -0.04]);           % NaN solo en el responder: no importa
+tc.verifyEqual(y(61:64)', [0.03 -0.04 1 0]);
+% sin explorador (roles sin asignar) -> 0 0 0
+tel.explorer_id = 0; tel.responder_id = 0;
+y = pack(tel, aux, att);
+tc.verifyEqual(y(61:64)', [0 0 0 0]);
+% llamadores viejos (11 argumentos) -> 0 0 0, y el resto del vector no cambia
+tel.explorer_id = 1; tel.responder_id = 2;
+y11 = pack(tel, aux);
+y12 = pack(tel, aux, att);
+tc.verifyEqual(y11(61:64)', [0 0 0 0]);
+tc.verifyEqual(y12(1:60), y11(1:60));
+% con la misión: tras 1 s de rastreo estable asigna roles -> sale la actitud del explorador
+s = qd2_mission_init(p);
+in = entrada_basica(0, [1 0 0 0], [-1 0.5 0 0]);    % el dron 2 está atrás -> explorador 2
+for k = 1:300
+    in.t = 0.01*k;
+    [s, ~, ~, tel] = qd2_mission_step(s, in, p);
+end
+tc.verifyEqual(tel.explorer_id, 2);
+y = qd2_telemetry_pack(in.t, tel, 1, 0, in.pose1, in.pose2, tel.sp1, tel.sp2, [0 0 0], [0 0 0], aux, att);
+ie = tel.explorer_id;
+tc.verifyEqual(y(61:63)', [att(2*ie-1) att(2*ie) 1]);
+fprintf('[y(61:63)] explorador %d -> roll %.3f pitch %.3f válido %d; sin rastreo / NaN / sin explorador / 11 args -> 0 0 0\n', ...
+    ie, y(61), y(62), y(63));
+end
+
 function test_falla_landing_apilado(tc)
 % Revisión (defecto alto): LAND_ALL dado con los drones APILADOS (MPC) y
 % falla 0.2 s después, con la misión en LANDING paso 1. Antes R ya bajaba

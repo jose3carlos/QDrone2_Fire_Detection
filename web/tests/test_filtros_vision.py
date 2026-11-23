@@ -16,7 +16,7 @@ import pytest
 from app.config import filtros_vision
 from app.geo import CameraModel, dist_polilinea
 from app.mock_world import ColorDetector, default_anomalies, render_view
-from app.vision_service import MOTIVO_TAMANO, MOTIVO_TUBO, Z_PLANE, PoseHistory, VisionService
+from app.vision_service import MOTIVO_INCLINACION, MOTIVO_TAMANO, MOTIVO_TUBO, Z_PLANE, PoseHistory, VisionService
 
 PROJECT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 with open(os.path.join(PROJECT, "config", "estacion.json"), encoding="utf-8") as _f:
@@ -115,7 +115,7 @@ def test_caja_enorme_tipo_cara_se_descarta_por_tamano():
     assert d["xy"] is not None                         # se geolocalizó (para la UI), pero no entró al cluster
     assert vs.targets() == ([], []) and published[-1] == []
     st = vs.status()
-    assert st["descartadas"] == {MOTIVO_TAMANO: 5, MOTIVO_TUBO: 0, "total": 5}
+    assert st["descartadas"] == {MOTIVO_TAMANO: 5, MOTIVO_TUBO: 0, MOTIVO_INCLINACION: 0, "total": 5}
     assert st["candidatos"] == 0 and st["observaciones"] == 0
     vs.reset()
     assert vs.status()["descartadas"]["total"] == 0    # acumulado desde reset
@@ -279,10 +279,11 @@ def test_piezas_reales_con_altura_en_las_orillas_no_se_descartan(altura):
 
 def test_lectura_de_parametros():
     assert filtros_vision({}) == {"tam_max_m": 0.35, "tam_min_m": None, "dist_max_tubo_toma_m": 0.25,
-                                  "dist_max_tubo_fuego_m": None}
+                                  "dist_max_tubo_fuego_m": None, "inclinacion_max_deg": 15.0}
     f = filtros_vision({"vision": {"tam_max_m": None, "dist_max_tubo_toma_m": "abc", "dist_max_tubo_fuego_m": 0.4,
                                    "tam_min_m": 0.05}})
-    assert f == {"tam_max_m": None, "tam_min_m": 0.05, "dist_max_tubo_toma_m": 0.25, "dist_max_tubo_fuego_m": 0.4}
+    assert f == {"tam_max_m": None, "tam_min_m": 0.05, "dist_max_tubo_toma_m": 0.25, "dist_max_tubo_fuego_m": 0.4,
+                 "inclinacion_max_deg": 15.0}
     assert filtros_vision({"vision": {"tam_max_m": 0, "dist_max_tubo_toma_m": True}})["tam_max_m"] is None
     assert filtros_vision({"vision": {"dist_max_tubo_toma_m": True}})["dist_max_tubo_toma_m"] == 0.25
     # estacion.json real trae las claves con los valores por defecto

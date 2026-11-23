@@ -73,12 +73,12 @@ La estación no necesita torch: corre `vision/modelos/mejor.onnx` con OpenCV.
 **Pruebas.**
 ```matlab
 % cada línea, desde la raíz del repositorio
-cd simulink_qdrone2/tests; correr_pruebas; cd ../..          % librería: 30 pruebas
+cd simulink_qdrone2/tests; correr_pruebas; cd ../..          % librería: 31 pruebas
 cd simulink_qdrone2/pid;   qd2_probar_operador; cd ../..     % capa del operador: 27 casos
-cd simulador3d;            res = probar_sim3d(false); cd ..  % simulador 3D: 13 pruebas
+cd simulador3d;            res = probar_sim3d(false); cd ..  % simulador 3D: 14 pruebas (15 con figura)
 ```
 ```bat
-cd web && %USERPROFILE%\.venvs\qd2_web\Scripts\python -m pytest -q tests   :: 122 pruebas
+cd web && %USERPROFILE%\.venvs\qd2_web\Scripts\python -m pytest -q tests   :: 163 pruebas
 ```
 Con `matlab -batch`, la ventana "QUARC Tip of the Day" bloquea MATLAB: usa `matlab -sd <carpeta> -batch "..."` con un `startup.m` que solo haga `error('fin')` (ver `simulink_qdrone2/tests/README.md`).
 
@@ -109,12 +109,12 @@ Todo lo que sigue se probó **en software (SIL) en la laptop de desarrollo, con 
 
 | Qué | Dónde está el resultado |
 |---|---|
-| Librería: 30/30 pruebas (misiones PID y MPC, guard, MPC contra `quadprog`, downwash, ABORT/LAND_ALL antes de despegar, homes cerca, timeouts, pérdida de rastreo, falla a bordo apilada, enlace perdido, protocolo, y(56:60), codegen en Simulink) | `simulink_qdrone2/lib/README.md` "Resultados" |
+| Librería: 31/31 pruebas (misiones PID y MPC, guard, MPC contra `quadprog`, downwash, ABORT/LAND_ALL antes de despegar, homes cerca, timeouts, pérdida de rastreo, falla a bordo apilada, enlace perdido, protocolo, y(56:60), actitud y(61:63), codegen en Simulink) | `simulink_qdrone2/lib/README.md` "Resultados" |
 | Modelos de tierra PID y MPC: Update Diagram, 246 bloques originales sin mover, `qd2_probar_operador` 27/27, `qd2_probar_tierra` (nominal PID y MPC, falla a bordo, protocolo, enlace caído) | `simulink_qdrone2/pid/README.md` |
 | Dron MPC: COMMANDER real en lazo cerrado con la planta; PROTOCOL CHECK estricto (solo índice 24 = 2) con tramas sintéticas | `simulink_qdrone2/sim/README.md` §1 y "Resultados" |
 | `QD2_Sim_Dual`: misión completa PID y MPC, fallas a bordo (apilados, protocolo, enlace caído en los dos sentidos), pérdida de rastreo | `simulink_qdrone2/sim/README.md` "Resultados" |
-| Simulador 3D: 13/13 pruebas sin capturas | `simulador3d/README.md`, `PRUEBA_E2E.md` §5.3 |
-| Estación web: 122 pruebas (pytest) | `web/README.md` |
+| Simulador 3D: 14/14 pruebas sin capturas (15 con figura), incluida la telemetría y(61:63) | `simulador3d/README.md`, `PRUEBA_E2E.md` §5.3 |
+| Estación web: 163 pruebas (pytest), incluida la geolocalización con roll y pitch del explorador (y(61:63)) | `web/README.md` |
 | E2E en tiempo real con la estación real: `QD2_Sim_Dual` PID, MPC y MPC con falla a bordo; simulador 3D PID y MPC (todas PASA) | `PRUEBA_E2E.md` §5 |
 | YOLO11n: 10 000 imágenes sintéticas, afinado con negativos (COCO y capturas de webcam sin piezas). Con OpenCV-ONNX (conf 0.5): fotos de COCO apartadas con "toma" falsa 28.8 % → 0 %, capturas de la cara sin piezas con detección 44/50 → 0/50, fuego detectado en capturas de webcam 50/56 → 47/56; la estación lo carga con OpenCV-ONNX en CPU | `vision/README.md` §3 y "Negativos" |
 
@@ -125,6 +125,7 @@ Todo lo que sigue se probó **en software (SIL) en la laptop de desarrollo, con 
 - **OptiTrack con 2 rigid bodies, los Stream Servers reales y los drones**: nada del enlace real está probado (loopback, `Communication_Status`, respuesta de 8 doubles con la etiqueta y(8) = 2, falsos "enlace perdido").
 - **MPC real**: el escape a 1.5 m/s, el vuelo apilado y el LAND ALL apilado con drones reales; medir la fuerza de downwash (en la simulación es un supuesto, `F0` = 5.9 N) y el pivot del rigid body (el autoland exige z ≤ 0.05 m).
 - **Cámara real**: intrínsecos de la D435i (`camara.intrinsecos`), `rotacion_montaje` y offset del soporte.
+- **Inclinación del explorador (riesgo de geolocalización)**: con 5° de inclinación a 1.5 m el punto proyectado se mueve ~0.13 m (10° → ~0.26 m). Eso se come el margen del filtro "lejos del tubo" (0.25 m). La estación ya corrige con el roll y pitch de OptiTrack que manda el modelo de tierra en y(61:63) (`docs/ARQUITECTURA.md` §3.3 y §7) y descarta lo visto con más de 15° de inclinación. Falta: (1) que los modelos de tierra que se compilen manden y(61:63); un modelo viejo manda 0, la estación geolocaliza nivelado y sale un aviso amarillo; (2) la prueba de signos con el rigid body del día (checklist, etapa 4). La convención R = Rz(yaw)·Ry(pitch)·Rx(roll) se sacó de la cadena QUARC del modelo del Equipo2 y de un vuelo suyo, pero nunca se ha probado con la estación. La corrección no quita una inclinación del soporte de la cámara respecto al rigid body ni un error de la latencia del video (`web.camara_latencia_s`).
 - **YOLO con fotos reales**: ninguna foto del laboratorio (cámara del dron sobre el tapete) en el entrenamiento; sólo 151 capturas de webcam (caras y cuarto, 19 con fuego), revisadas por dos revisores automáticos (Claude) y no por una persona. La E2E usó la cámara sintética con el detector falso, no YOLO. Hace falta capturar y etiquetar ~300–500 fotos del laboratorio (`vision/README.md` §4).
 - **`quarc_run`**: los comandos de Conexiones usan `-r`, que según la documentación local de QUARC descarga y ejecuta (`-D` solo descarga y es una alternativa excluyente). La ayuda corta es `quarc_run -?`, no `-h`.
 - **Abrir `QD2_Sim_Dual` en R2022a**: `qd2_e2e_web`/`qd2_correr_sim` cargan los `.slx` de R2025a. En R2022a hay que abrir `versiones/R2022a/QD2_Sim_Dual.slx` con esa carpeta como carpeta actual (`PRUEBA_E2E.md` §7).

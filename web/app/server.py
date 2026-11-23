@@ -36,11 +36,11 @@ from . import netinfo
 from . import protocol as P
 from .bridge import BridgeClient, PuenteNoListo
 from .cameras import CameraHub, FolderCamera, OpenCVCamera, QDF1Client, SyntheticCamera
-from .config import DEFAULT_PATH, PROJECT_DIR, WEB_DIR, Config, validar_ip
-from .geo import CameraModel
+from .config import DEFAULT_PATH, PROJECT_DIR, WEB_DIR, Config, actitud_vision, validar_ip
+from .geo import CameraModel, corregir_actitud
 from .mock_sim import MockServer
 from .mock_world import default_anomalies, render_view
-from .vision_service import PoseHistory, VisionService, load_detector
+from .vision_service import PoseHistory, VisionService, load_detector, pose_para_geo
 
 STATIC = os.path.join(WEB_DIR, "app", "static")
 DATA_DIR = os.path.join(WEB_DIR, "datos")
@@ -264,7 +264,10 @@ class Station:
         if e in (1, 2):
             d = tel["drones"][e]
             if d["tracked"] and None not in (d["x"], d["y"], d["z"], d["yaw"]):
-                self.poses.add(stamp, d["x"], d["y"], d["z"], d["yaw"])
+                # y(61:63): roll/pitch del explorador solo si y(63) = 1 (modelos viejos: None -> nivelado)
+                ok = tel.get("explorer_att_ok")
+                self.poses.add(stamp, d["x"], d["y"], d["z"], d["yaw"],
+                               tel.get("explorer_roll") if ok else None, tel.get("explorer_pitch") if ok else None)
         st = tel.get("mission_state")
         if st != self._last_state:
             self.log(f"Estado de misión: {P.MISSION_STATES_ES.get(st, st)}")
@@ -400,6 +403,12 @@ class Station:
         if str(ci.get("origen", "")).startswith("HFOV"):
             out.append({"nivel": "amarillo", "msg": "Geolocalización con HFOV/VFOV (sin intrínsecos fx, fy, cx, cy en "
                         "estacion.json para esta resolución): copia los que imprime el streamer a camara.intrinsecos."})
+        # Actitud y(61:63): con el explorador en misión y sin actitud se geolocaliza nivelado (modelo viejo)
+        if (tel and self.bridge.fresh() and actitud_vision(self.cfg.data)["usar"] and not tel.get("explorer_att_ok")
+                and tel.get("mission_state") in (P.MISSION, P.PAUSED) and self.explorer_pose() is not None):
+            out.append({"nivel": "amarillo", "msg": "Actitud del explorador no disponible (y(63) = 0): la "
+                        "geolocalización supone el dron nivelado (5° de inclinación ≈ 0.13 m de error a 1.5 m). "
+                        "¿Modelo de Simulink sin y(61:63)? Regenera los modelos (construir_modelos)."})
         return out
 
     def _cam_model(self):
@@ -415,6 +424,32 @@ class Station:
             return None
         return (d["x"], d["y"], d["z"], d["yaw"])
 
+    def explorer_attitude(self):
+        """(roll, pitch) del explorador tal como llegan en y(61:62), o None si y(63) = 0 (sin actitud)."""
+        tel = self.bridge.telemetry if self.bridge else None
+        if not tel or not tel.get("explorer_att_ok"):
+            return None
+        r, p = tel.get("explorer_roll"), tel.get("explorer_pitch")
+        return None if r is None or p is None else (r, p)
+
+    def actitud_ui(self):
+        """Actitud del explorador para su tarjeta en la UI (grados), sin depender del video:
+        ``cruda`` = y(61:62) tal como llegan (la que se mira en la prueba del libro) y ``usada`` = la que
+        entra a la geolocalización, ya con ``vision.actitud_signos`` / ``actitud_offset_deg`` (None con
+        ``usar_actitud`` = false o sin y(63)). ``ajustada`` = hay signos u offsets distintos de [1, 1] / [0, 0]."""
+        act = actitud_vision(self.cfg.data)
+        ajustada = (act["signo_roll"], act["signo_pitch"], act["offset_roll"], act["offset_pitch"]) != (1.0, 1.0, 0.0, 0.0)
+        out = {"usar": act["usar"], "ajustada": ajustada, "cruda": None, "usada": None}
+        att = self.explorer_attitude()
+        if att is None or not all(math.isfinite(a) for a in att):
+            return out
+        out["cruda"] = [round(math.degrees(a), 2) for a in att]
+        if act["usar"]:
+            r, p = corregir_actitud(att[0], att[1], act["signo_roll"], act["signo_pitch"],
+                                    act["offset_roll"], act["offset_pitch"])
+            out["usada"] = [round(math.degrees(r), 2), round(math.degrees(p), 2)]
+        return out
+
     def render_synthetic(self):
         cam = self._cam_model()
         pose = self.explorer_pose()
@@ -423,7 +458,10 @@ class Station:
             cv2.putText(img, "Explorador en tierra / sin pose", (120, cam.h // 2), cv2.FONT_HERSHEY_SIMPLEX,
                         0.7, (180, 180, 180), 1, cv2.LINE_AA)
             return img
-        return render_view(cam, pose, self.cfg.get("pista", "vertices"), self.world, rng=self.rng)
+        # la cámara virtual simula la cámara FÍSICA: siempre con la actitud verdadera (sin importar
+        # vision.usar_actitud), para que apagar la corrección muestre el error en lugar de esconderlo
+        att = self.explorer_attitude() or (0.0, 0.0)
+        return render_view(cam, tuple(pose) + tuple(att), self.cfg.get("pista", "vertices"), self.world, rng=self.rng)
 
     def _vision_gate(self):
         tel = self.bridge.telemetry if self.bridge else None
@@ -502,14 +540,23 @@ class Station:
         return sorted(out, key=lambda t: t["id"])
 
     # ------------------------------------------------------------------ estado para la UI
+    def huella(self):
+        """Polígono que ve la cámara del explorador sobre el piso, con la misma actitud (corregida con
+        vision.actitud_signos / actitud_offset_deg, o nivelada sin y(63) o con usar_actitud = false) con
+        la que se geolocaliza."""
+        pose = self.explorer_pose()
+        if not pose or pose[2] <= 0.1:
+            return []
+        pose_geo, _ = pose_para_geo(tuple(pose) + tuple(self.explorer_attitude() or (None, None)),
+                                    actitud_vision(self.cfg.data))
+        return self._cam_model().footprint(*pose_geo, z_plane=0.02)
+
     def snapshot(self):
         tel, stamp = self.bridge.latest() if self.bridge else (None, 0.0)
         tel = self._tel_ui(tel)
         _, pending = self.vision.targets()
         targets = self.merged_targets(tel)
-        pose = self.explorer_pose()
-        cam = self._cam_model()
-        foot = cam.footprint(*pose) if pose and pose[2] > 0.1 else []
+        foot = self.huella()
         cfg = self.cfg.data
         return {
             "t_servidor": time.time(), "fuente": self.fuente,
@@ -518,6 +565,7 @@ class Station:
             "objetivos": targets, "candidatos": [{**c, "x": round(c["x"], 3), "y": round(c["y"], 3)} for c in pending],
             "objetivos_sin_id": len(self.vision.blocked()),
             "huella": foot, "camara": self.camera.status(), "vision": self.vision.status(),
+            "actitud_explorador": self.actitud_ui(),
             "pista": cfg.get("pista", {}).get("vertices", []),
             "mision": cfg.get("mision", {}), "version_config": cfg.get("version_control", "PID"),
             "verdad_mock": self.world if self.fuente == "mock" else [],

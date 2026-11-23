@@ -1,7 +1,8 @@
-function y = qd2_telemetry_pack(t, tel, version, guard_active, pose1, pose2, sp1, sp2, vel1, vel2, aux)
+function y = qd2_telemetry_pack(t, tel, version, guard_active, pose1, pose2, sp1, sp2, vel1, vel2, aux, att)
 %QD2_TELEMETRY_PACK Arma el vector de 64 doubles Simulink -> Python (§3.3).
 %   y = qd2_telemetry_pack(t, tel, version, guard_active, pose1, pose2,
 %                          sp1, sp2, vel1, vel2, aux)
+%   y = qd2_telemetry_pack(..., aux, att)
 %   tel        : salida de qd2_mission_step.
 %   version    : 1 PID, 2 MPC.
 %   pose1/2    : [x y z yaw] medidos.  sp1/2: [x y z yaw] enviados al dron
@@ -10,7 +11,15 @@ function y = qd2_telemetry_pack(t, tel, version, guard_active, pose1, pose2, sp1
 %   aux        : [tracked1 tracked2 fsm1 fsm2 bat1 bat2 comm1 comm2]
 %                (fsm = estado a bordo si se conoce, si no el inferido;
 %                 batería NaN si no hay dato).
-%   y          : 64x1 (índices base 1 como en ARQUITECTURA.md; 55 = alerta).
+%   att        : (opcional) [roll1 pitch1 roll2 pitch2] en rad, POR DRON (no
+%                por rol), de la misma Corrected Pose Data de OptiTrack que
+%                pose1/2 (d(4), d(5)). Convención Tait-Bryan ZYX intrínseca,
+%                R = Rz(yaw)*Ry(pitch)*Rx(roll), cuerpo FLU: roll > 0 baja el
+%                lado derecho, pitch > 0 baja la nariz. Sin este argumento
+%                (llamadores viejos) y(61:63) = 0.
+%   y          : 64x1 (índices base 1 como en ARQUITECTURA.md; 55 = alerta;
+%                61 = roll y 62 = pitch del EXPLORADOR, 63 = 1 si son válidos,
+%                64 = reservado).
 %#codegen
 
 y = zeros(64,1);
@@ -67,5 +76,21 @@ y(55) = tel.alerta;
 % (estado 1 pendiente, 2 asignado, 3 visitado). id = 0: tabla vacía.
 if isfield(tel, 'obj_rot')
     y(56:60) = [tel.obj_rot(1); tel.obj_rot(2); tel.obj_rot(3); tel.obj_rot(4); tel.obj_rot(5)];
+end
+% 61-63: actitud del EXPLORADOR [roll pitch válido] (rad), de la misma pose
+% OptiTrack que y(o+3:o+6). Válido = hay explorador (1 o 2), está rastreado
+% (aux) y los dos ángulos son finitos; si no, 0 0 0 y la estación geolocaliza
+% nivelada. 64: reservado (0).
+if nargin >= 12
+    ie = round(tel.explorer_id);
+    if ie == 1 || ie == 2
+        r = att(2*ie - 1);
+        p = att(2*ie);
+        if aux(ie) > 0.5 && isfinite(r) && isfinite(p)
+            y(61) = r;
+            y(62) = p;
+            y(63) = 1;
+        end
+    end
 end
 end

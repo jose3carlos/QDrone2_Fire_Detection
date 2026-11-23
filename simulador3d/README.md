@@ -117,7 +117,7 @@ Notas:
 - **Heartbeat en tiempo de reloj.** Python manda a 20 Hz de *reloj* aunque el simulador corra a x16 o sin tiempo real. Por eso el simulador cuenta a Python como vivo si llegó un heartbeat nuevo en los últimos `t_hb_python` = 0.5 s de reloj; mientras tanto, el heartbeat que ve la misión sube en cada paso. Puedes acelerar (botón x2, hasta x16) con la UI conectada sin que la misión se pause sola.
 - Si la estación se cae durante MISSION, la misión pasa a PAUSED como en el sistema real. A x1 la pausa llega ~1.5 s después (0.5 s de reloj + 1 s de `hb_timeout`; en el real es ~1 s). A los 3 s de reloj sin paquetes, la estación interna retoma el heartbeat y puedes dar RESUME desde la figura.
 - Si el **primer** paquete de Python ya trae un comando, no se ejecuta ni se confirma (ack = `cmd_seq` − 1): BridgeClient lo reporta como *caducado*, no como *recibido*.
-- La telemetría manda `tracked` y la pose **medida** (la que usa la misión). Con `perdida_rastreo`, el dron llega con `tracked = 0` y la pose en NaN; la estación convierte NaN en `null` y no la usa.
+- La telemetría manda `tracked` y la pose **medida** (la que usa la misión). Con `perdida_rastreo`, el dron llega con `tracked = 0` y la pose en NaN; la estación convierte NaN en `null` y no la usa. En y(61:63) va el roll y pitch del explorador (ver "Notas y diferencias con el contrato").
 
 **Objetivos en la UI.** La estación une sus objetivos con los que el simulador reporta en y(56:60) (columna *Origen* de la tabla: estación / ambos / Simulink). Hay dos formas de usarlo:
 
@@ -137,7 +137,7 @@ cd simulador3d
 res = probar_sim3d();        % ~4 min; guarda PNG en capturas/ (probar_sim3d(false): sin capturas)
 ```
 
-Son 14 pruebas (13 con `probar_sim3d(false)`, que se salta "misma corrida con y sin figura"): malla, cámara y clusters contra `geo.py`, escenario `'web'` contra `mock_world.py`, misiones PID, MPC y aleatoria, el detector solo en MISSION/PAUSED, la misma corrida con y sin figura, el heartbeat de Python a x16, el primer paquete con START, tiempo real y costo de cuadro.
+Son 15 pruebas (14 con `probar_sim3d(false)`, que se salta "misma corrida con y sin figura"): malla, cámara y clusters contra `geo.py`, escenario `'web'` contra `mock_world.py`, misiones PID, MPC y aleatoria, el detector solo en MISSION/PAUSED, la telemetría y(61:63) (actitud del explorador), la misma corrida con y sin figura, el heartbeat de Python a x16, el primer paquete con START, tiempo real y costo de cuadro.
 
 En una terminal, con el simulador corriendo y `usar_tcp = true`:
 
@@ -196,6 +196,7 @@ python simulador3d\prueba_cliente_puente.py --start-en -1 --comando-sim 46 RESUM
 - **Telemetría 56–60 (contrato §3.3).** En cada mensaje va un objetivo de la tabla de la misión, rotando: `[id clase x y estado]`, con estado 1 = pendiente, 2 = asignado, 3 = visitado. La estación los une con los suyos por id y por cercanía (alias).
 - **o+2 según la versión (contrato §3.3).** En PID va el **Flight State de tierra** (Flight Plan del Equipo2: 0 Idle, 1 Armed, 2 Takeoff, 3 Land, 9 MS Stop), emulado con arm/takeoff; en MPC, la FSM a bordo (1..9). Antes de la revisión E2E (22-nov) iba la FSM a bordo también en PID.
 - **FSM a bordo hacia la misión (MPC).** Como tierra MPC, la misión recibe `fsm_a_bordo` (1 paso de retardo) y aplica las reglas de falla a bordo (alerta 9). El simulador no emula fallas a bordo (7/8); para eso usa `QD2_Sim_Dual` (`falla_fsm`).
+- **Telemetría 61–63 (actitud del explorador).** y(61) = roll, y(62) = pitch (rad) y y(63) = 1 si son válidos, con la actitud **real** de la planta (`X(7:8)` de `qd2_quad_plant`, sin ruido, misma convención que OptiTrack: R = Rz(yaw)·Ry(pitch)·Rx(roll), roll > 0 baja el lado derecho, pitch > 0 baja la nariz). Sin explorador o con `perdida_rastreo` del explorador va 0 0 0 y la estación geolocaliza nivelada. y(64) sigue en 0. El detector interno del simulador (`sim3d_detector`, paso 4) sigue proyectando solo con el yaw, como la estación antes de este cambio: sus métricas de error no reflejan la corrección de la estación.
 - **y(55) = alerta.** Como en la librería (`tel.alerta` de `qd2_mission_step`: 0-4; en MPC también la 9 si la FSM a bordo simulada llegara a 7/8, pero el simulador no emula esas fallas, y nunca la 10 porque no le pasa `proto_mal`). El simulador no tiene capa del operador, así que nunca emite 5-8.
 - **`cmd_seq`.** El simulador numera sus comandos internos (botones y Python) y devuelve a Python el ack con el `cmd_seq` de Python.
 - **Detector.** Solo procesa cuadros en MISSION o PAUSED, con el explorador rastreado y por encima de `web.z_min_deteccion` (0.4 m), igual que `_vision_gate` de la estación. En pausas largas pueden acumularse falsos positivos, porque el `Clusterer` no tiene decaimiento; la estación real tiene el mismo riesgo.

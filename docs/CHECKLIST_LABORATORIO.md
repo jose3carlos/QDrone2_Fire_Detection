@@ -55,7 +55,7 @@ Sigue `impresion3d/README.md`, sección "Soporte de la cámara". La pieza A tard
 - [ ] QUARC instalado para ese release (menú QUARC en Simulink; `getenv('QUARC_DIR')` no vacío).
 - [ ] Python ≥ 3.10: `py -3 --version`. Si no está, instalarlo (marcar "Add python.exe to PATH").
 - [ ] Con internet (Wi-Fi interna): `C:\QD2\web\iniciar_web.bat --fuente mock`. La primera vez crea el venv (~5 min). En `http://127.0.0.1:8080`, START del mock llega a DONE. Cerrar.
-- [ ] `cd C:\QD2\web` → `%USERPROFILE%\.venvs\qd2_web\Scripts\python -m pytest -q tests` → **122 passed**.
+- [ ] `cd C:\QD2\web` → `%USERPROFILE%\.venvs\qd2_web\Scripts\python -m pytest -q tests` → **163 passed**.
 - [ ] `cd C:\QD2` → `%USERPROFILE%\.venvs\qd2_web\Scripts\python web\preflight_lab.py`. En este punto lo normal es que falten las IPs, Motive y los intrínsecos; **no** deben faltar archivos.
 - [ ] (Opcional, 15 min) SIL en esta PC: en MATLAB `cd C:\QD2\simulink_qdrone2\versiones\R2022a` **y luego** `open_system('QD2_Sim_Dual.slx')` (si abres desde otra carpeta usa la librería de R2025a y no carga). `qd2_e2e_web` **no** sirve en R2022a. Prueba a mano de `PRUEBA_E2E.md` §4 con una **copia** de la config.
 
@@ -88,11 +88,18 @@ Sigue `impresion3d/README.md`, sección "Soporte de la cámara". La pieza A tard
 - [ ] `C:\QD2\web\iniciar_web.bat --fuente simulink`: "Puente 50 Hz", "Modelo PID", los dos drones **rastreados**. Los drones están encendidos en el piso, sin lanzar sus binarios.
 - [ ] Cada dron en el piso marca **z = 0 ± 0.02 m**: el autoland a bordo exige z ≤ 0.05 m. Si no, corregir `optitrack.bias_z_dronN` en `estacion.json`.
 - [ ] Mover cada dron a mano hacia +x y hacia +y: la UI lo sigue en el mismo sentido y el yaw ≈ 0 cuando mira a +x.
+- [ ] **Actitud del explorador, y(61:63): llega y los signos son correctos** (2 min, sin volar, Motive cerrado). Se mira en la tarjeta del explorador (el de menor x), fila *actitud (cruda)* (φ = roll, θ = pitch): y(61:62) tal como llegan de OptiTrack, sin signos ni offset de la estación. Si dice "no disponible (y(63) = 0)" con el dron rastreado, el modelo de tierra es viejo: regenerarlo (`construir_modelos`). Mientras tanto la estación geolocaliza suponiendo el dron nivelado. Con el explorador en el piso mirando a +x:
+  1. Nivelado: φ ≈ 0° y θ ≈ 0° (± 1°). Anotar φ ______ θ ______. Si alguno pasa de ~1°, el rigid body se creó inclinado: escribir esos dos valores en `vision.actitud_offset_deg` (`[roll, pitch]` en grados) de `estacion.json` y reiniciar la estación.
+  2. Un libro de ~3 cm bajo las patas **izquierdas** (lado izquierdo arriba): φ debe salir **positivo** (≈ +5° a +10°). Anotar ______.
+  3. El libro bajo las patas **traseras** (cola arriba, nariz abajo): θ debe salir **positivo**. Anotar ______.
+  4. Girar el dron 90° en sentido antihorario visto desde arriba: ψ ≈ +90°.
+  - Si φ o θ sale con el signo contrario, poner −1 en esa posición de `vision.actitud_signos` (p. ej. `[1, -1]` si el pitch sale invertido) y reiniciar la estación. No hay que recompilar ni tocar código. Anotarlo en "Anotar lo que falló".
+  - Después de cambiar `actitud_signos` o `actitud_offset_deg`, la fila *actitud (cruda)* **no cambia** (sigue mostrando y(61:62)). La corrección se confirma en la fila **actitud usada** que aparece debajo, en la misma tarjeta: nivelado ≈ 0°, y con el libro los signos ya positivos. Con video, la misma actitud usada sale en Anomalías → Visión → *Actitud*.
 - [ ] **Pista:** con la tubería ya fija, poner un dron sobre cada extremo de tubo → **Capturar vértice** → Guardar (máx. 16 vértices, dentro de ±1.5 m).
 - [ ] **Vértices medidos ANTES de cualquier vuelo con anomalías.** Hoy `pista.vertices` es una estimación desde fotos. La estación descarta toda toma a más de `vision.dist_max_tubo_toma_m` (0.25 m) de esa polilínea ("lejos del tubo"): con vértices mal puestos se descartarían las tomas reales. Comprobar en la pestaña **Pista** que los vértices guardados están en el orden del recorrido de la N y que en el mapa 2D la N cae sobre el tubo real (error < 0.05 m en cada extremo). Vértices medidos: ______________________.
 - [ ] **Stop** del modelo de tierra (ningún dron vuela) → **Build de nuevo**: la pista y el bias se leen **al compilar**. Connect → Start.
 
-**SEGUIR si:** los dos rigid bodies se rastrean sin cortes en toda la arena, z ≈ 0 en el piso y los ejes cuadran. **NO SEGUIR si:** un dron se pierde en alguna zona de la arena, o los ejes o el yaw están invertidos (revisar la orientación con que se creó el rigid body).
+**SEGUIR si:** los dos rigid bodies se rastrean sin cortes en toda la arena, z ≈ 0 en el piso, los ejes cuadran y la actitud del explorador llega con los signos correctos (o corregidos en `vision.actitud_signos`). **NO SEGUIR si:** un dron se pierde en alguna zona de la arena, o los ejes o el yaw están invertidos (revisar la orientación con que se creó el rigid body).
 
 ## Etapa 5. Cámara del explorador — 25 min (y fotos reales en paralelo)
 
@@ -100,7 +107,7 @@ Sigue `impresion3d/README.md`, sección "Soporte de la cámara". La pieza A tard
 - [ ] **Soporte de la cámara** (`impresion3d/README.md`, sección "Soporte de la cámara"). La impresión y el montaje se hacen en la **sesión previa** (al inicio de este checklist); aquí solo se verifica:
   - Variante montada: A / B. Cámara con 2 M3×6 (**nunca M3×8**): lentes abajo, rejilla hacia adelante y USB a la derecha (lado de la muesca en V) → `rotacion_montaje = 0`.
   - Con el dron en el piso, la cara de las lentes queda a ≥ 10 mm del piso: ______ mm. Las hélices giran a mano sin tocar nada y el cable USB no está tenso.
-  - Mide la posición de la lente RGB (la del extremo opuesto al USB) respecto al pivote de Motive: x ______, y ______, z ______ m. Para z, si la pose está corregida con `bias_z`: altura sobre el piso + 0.004.
+  - Mide la posición de la lente RGB (la del extremo opuesto al USB) respecto al pivote de Motive: x ______, y ______, z ______ m. Para z, si la pose está corregida con `bias_z`: altura sobre el piso + 0.004. Mídelo con el dron **nivelado** y sin restar el pivote: la estación ya sabe por `optitrack.bias_z_dronN` que la pose corregida queda 0.07 m debajo del pivote y, al inclinarse el dron, gira el offset alrededor del pivote.
   - Escríbela en `camara.offset_camara_m` (estimado `[0.212, 0.0325, 0.019]`; hoy dice `[0.20, 0.0, -0.05]`) y reinicia la estación.
 - [ ] `scp web/drone/qdrone2_camera_streamer.py nvidia@<IP_explorador>:~/`
 - [ ] Números de serie: `ssh nvidia@<IP> "rs-enumerate-devices -s"`. Si no existe esa herramienta: `ssh nvidia@<IP> "python3 -c \"import pyrealsense2 as rs; [print(d.get_info(rs.camera_info.name), d.get_info(rs.camera_info.serial_number)) for d in rs.context().devices]\""`. Serie de la RealSense: ____________ (debe salir **una sola**: la frontal integrada, ahora girada hacia abajo; si sale la IMU, es D435i).
@@ -112,6 +119,7 @@ Sigue `impresion3d/README.md`, sección "Soporte de la cámara". La pieza A tard
   - Si el error parece una rotación (sale a la izquierda en vez de adelante), ajustar `camara.rotacion_montaje` (0/90/180/270).
   - Si es un desplazamiento fijo, ajustar `camara.offset_camara_m`.
   - Estos cambios son solo de la estación: se reinicia la estación, sin recompilar Simulink.
+- [ ] **Geolocalización con el dron inclinado:** con la pieza en el centro de la imagen, inclinar el explorador a mano unos 10°, primero con la nariz abajo y luego de lado. La posición (x, y) que muestra la etiqueta de la caja en la cámara debe moverse < 0.05 m. Sin la corrección se movería ~0.26 m. Si se mueve el doble (~0.5 m), un signo está invertido: repetir la prueba del libro de la etapa 4. Movimiento medido: ______ m.
 
 **SEGUIR si:** las cajas salen sobre las piezas y el error es < 0.15 m. **NO SEGUIR con anomalías si:** no detecta tomas o el error es > 0.25 m (el radio de cluster). Se puede volar sin anomalías mientras tanto.
 
@@ -227,3 +235,4 @@ No hay misión con un solo dron. Se usa el modo MANUAL original: Command Source 
 - Un solo binario MPC con un solo "Drone Weight" para los dos drones, aunque el explorador pesa más.
 - YOLO sin fotos reales **cenitales** hasta la etapa 5b: solo vio fotos de Blender, negativos de COCO y capturas de webcam de frente (ya no confunde caras con tomas, pero falta validarlo desde el dron).
 - El modo MANUAL en tierra MPC solo se probó como lógica (`qd2_probar_operador`), nunca en vuelo.
+- La corrección de inclinación (y(61:63)) solo se probó en software. No corrige una inclinación del soporte de la cámara respecto al rigid body. Con un modelo de tierra viejo (y(63) = 0) se geolocaliza nivelado: en ese caso, explorar despacio (casi sin inclinarse).

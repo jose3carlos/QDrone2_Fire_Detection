@@ -87,6 +87,7 @@ Lg.alerta = nan(1, n_max); Lg.hb_ok = nan(1, n_max); Lg.modo_python = nan(1, n_m
 Lg.explorer_id = nan(1, n_max); Lg.t_mark_acum = nan(1, n_max); Lg.t_en_estado = nan(1, n_max);
 Lg.t_dwell = nan(1, n_max);
 Lg.F_dw = nan(2, n_max); Lg.ack = nan(1, n_max); Lg.det_cuadros = nan(1, n_max);
+Lg.tel_att = nan(3, n_max);   % y(61:63) de la telemetría [roll pitch válido] del explorador
 k = 0;
 t = 0;
 y64 = zeros(64, 1);
@@ -273,14 +274,17 @@ end
         in.t = tt;
         in.pose1 = [pm(:,1); X(9,1)];
         in.pose2 = [pm(:,2); X(9,2)];
+        % actitud medida [roll1 pitch1 roll2 pitch2] (rad), como Corrected Pose Data(4:5):
+        % solo la usa la telemetría (y(61:63)); sin ruido para no mover el generador aleatorio
+        in.att = [X(7,1) X(8,1) X(7,2) X(8,2)];
         in.tracked1 = 1; in.tracked2 = 1;
         for j = 1:size(opc.perdida_rastreo, 1)
             pr = opc.perdida_rastreo(j, :);
             if tt >= pr(2) && tt < pr(3)
                 if pr(1) == 1
-                    in.tracked1 = 0; in.pose1 = nan(4, 1);
+                    in.tracked1 = 0; in.pose1 = nan(4, 1); in.att(1:2) = NaN;
                 else
-                    in.tracked2 = 0; in.pose2 = nan(4, 1);
+                    in.tracked2 = 0; in.pose2 = nan(4, 1); in.att(3:4) = NaN;
                 end
             end
         end
@@ -393,10 +397,11 @@ end
         end
         estados_vistos(s.estado + 1) = true;
         % ---- telemetría §3.3
-        if ~isempty(pt) && mod(k, cada_tel) == 0
-            n_tel = n_tel + 1;
+        if mod(k, cada_tel) == 0
+            if ~isempty(pt), n_tel = n_tel + 1; end
             y64 = telemetria();
-            pt = sim3d_puente('enviar', pt, y64);
+            Lg.tel_att(:, k) = y64(61:63);   % y(61:63) también sin puente (probar_sim3d)
+            if ~isempty(pt), pt = sim3d_puente('enviar', pt, y64); end
         end
         % ---- estelas (cada 0.1 s)
         if t - t_estela >= 0.1
@@ -442,8 +447,10 @@ end
             fsm_tel = [ob(1).fsm ob(2).fsm];
         end
         aux = [in_ult.tracked1 in_ult.tracked2 fsm_tel(1) fsm_tel(2) bat(1) bat(2) 1 1];
+        % 61-63: roll, pitch y válido del explorador (actitud real de la planta, la misma
+        % convención R = Rz(yaw)Ry(pitch)Rx(roll) que OptiTrack); 0 0 0 sin rastreo
         y = qd2_telemetry_pack(t, tel, version, ga, pose1, pose2, sp_rl(1, :), sp_rl(2, :), ...
-            X(4:6, 1), X(4:6, 2), aux);
+            X(4:6, 1), X(4:6, 2), aux, in_ult.att);
         if est.py_visto
             y(54) = est.ack_py;      % ack en la numeración de cmd_seq de Python
         end

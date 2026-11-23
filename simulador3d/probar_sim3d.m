@@ -17,6 +17,7 @@ function res = probar_sim3d(con_capturas)
 %  10. Primer paquete de Python con un comando: no se ejecuta ni se confirma.
 %  11. El detector solo trabaja en MISSION/PAUSED (como _vision_gate de la estación).
 %  12. Misma corrida con y sin figura (flujo aleatorio propio): resultados idénticos.
+%  13. Telemetría y(61:63): roll y pitch de la planta del explorador y válido (misión PID).
 %   La prueba TCP con Python está en prueba_cliente_puente.py (ver README).
 
 if nargin < 1, con_capturas = true; end
@@ -145,6 +146,23 @@ nuevo = [L.det_cuadros(1) > 0, diff(L.det_cuadros) > 0];
 est_det = unique(L.estado(nuevo));
 res = anotar(res, 'detector solo en MISSION/PAUSED', all(ismember(est_det, [5 10])) && any(nuevo), ...
     sprintf('%d cuadros procesados, estados en los que hubo cuadros: %s', m.det_cuadros, mat2str(est_det)));
+% ---- 13. telemetría y(61:63) = [roll pitch válido] del explorador
+% La telemetría del paso k usa la actitud medida al inicio del paso = la de la planta
+% registrada al final del paso k-1 (Lg.att); sin pérdidas de rastreo, válido = hay explorador.
+kt = find(~isnan(L.tel_att(1, :)));
+kt = kt(kt > 1);
+eid = L.explorer_id(kt);
+val = eid == 1 | eid == 2;
+err = 0;
+for jj = find(val)
+    ka = kt(jj);
+    err = max(err, max(abs(L.tel_att(1:2, ka) - L.att(1:2, ka - 1, eid(jj)))));
+end
+ok_val = isequal(L.tel_att(3, kt) == 1, val) && all(L.tel_att(:, kt(~val)) == 0, 'all');
+amp = max(abs(L.tel_att(1:2, kt(val))), [], 'all');
+res = anotar(res, 'telemetría y(61:63) actitud del explorador', any(val) && ok_val && err < 1e-12 && amp > 0.005, ...
+    sprintf(['%d mensajes (%d con explorador): y(63) coherente = %d, error vs planta %.1e rad, ' ...
+    '|roll|,|pitch| máx. %.2f°'], numel(kt), sum(val), ok_val, err, rad2deg(amp)));
 % ---- 12. misma corrida con y sin figura
 if con_capturas
     Rb = sim3d_correr(base);

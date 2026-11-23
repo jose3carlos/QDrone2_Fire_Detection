@@ -125,6 +125,7 @@ Con una falla, `qd2_correr_sim` imprime además una línea `FALLA a bordo` (aler
 - **2. OPTITRACK (SIM)**, a 100 Hz:
   - ruido de 2 mm;
   - mismo formato `[x y z roll pitch yaw isTracking]` que el Measurement Conditioning; lo usan la misión en tierra **y** los drones;
+  - roll y pitch son los **reales** de la planta (`x(7)`, `x(8)` de `qd2_quad_plant`, sin ruido), así que el TELEMETRY PACK enlazado manda en y(61:63) la actitud real del explorador y y(63) = 1 (0 durante `trk_off` del explorador). `qd2_correr_sim` lo resume en `R.att_frac_valida`, `R.att_max_deg` y `R.att_err_max` (y(61:62) contra `x(7:8)` de la planta del explorador; 22-nov: error 0 en PID y MPC, inclinación máxima 1.8° y 3.1°);
   - pérdidas de rastreo programables (`trk_off`).
 - **3. Misión**: bloques **enlazados** de `QD2_Mission_Lib`, los mismos de los modelos de tierra:
   - ROLE & HOME, MISSION SUPERVISOR, SEPARATION GUARD (solo se usa en PID), OPERATOR SAFETY LAYER, SETPOINT RATE LIMITER (por norma, con el límite de escape `P.falla_rate_xy` del dron que se aparta de uno en falla), VELOCITY ESTIMATE, STACKING INFO, TELEMETRY PACK y **MPC LINK CHECK**.

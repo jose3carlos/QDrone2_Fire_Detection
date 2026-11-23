@@ -165,7 +165,7 @@ Corrida final después de las correcciones. Estación real (`app.server`, fuente
 | Paquetes de Python recibidos / comandos | 2912 / 4 | 1992 / 4 |
 
 ### 5.3 Pruebas automáticas después de las correcciones
-- `web`: **122 passed**. Son las 117 anteriores, más 5 nuevas en `web/tests/test_frontera_e2e.py`.
+- `web`: **122 passed** (cifra de esa fecha; hoy son 163 con las pruebas de actitud y(61:63)). Son las 117 anteriores, más 5 nuevas en `web/tests/test_frontera_e2e.py`.
 - `QD2_Sim_Dual` reconstruido:
   - Update Diagram OK.
   - El bloque nuevo no se solapa con ningún otro bloque (0 solapes).
@@ -222,7 +222,7 @@ La lista imprimible, con tiempos y criterios de **seguir / no seguir** en cada v
 1. **Copia el proyecto a una ruta corta fuera de OneDrive** (por ejemplo `C:\QD2`). Con rutas largas el build pasa de 260 caracteres y falla (pasó en la regresión del 22-nov). Incluye lo que no está en git: `vision/modelos/mejor.pt`, `mejor.onnx` y `mejor.onnx.json`, y `simulink_qdrone2/binarios_dron/QD2_DroneStack_PID_2021a.rt-linux_qdrone2` (binario original del Equipo2, md5 `00d4d46e…`).
 2. **Revisión automática:** `%USERPROFILE%\.venvs\qd2_web\Scripts\python web\preflight_lab.py` desde la raíz. Solo lee y dice qué falta: modelos de `versiones/`, binarios, ONNX, config, IPs, puertos, Motive abierto y QUARC.
 3. **Prueba de la máquina.** `qd2_e2e_web` **no sirve en R2022a**: carga `sim/QD2_Sim_Dual.slx` y `lib/QD2_Mission_Lib.slx`, que están guardados en R2025a. En R2022a haz la prueba a mano de la sección 4 con la copia de `versiones/R2022a/`: en MATLAB `cd simulink_qdrone2\versiones\R2022a` **antes** de `open_system('QD2_Sim_Dual.slx')`. Así se usa la librería R2022a de esa carpeta (el `PreLoadFcn` del simulador agrega `lib/`, donde está la de R2025a). En R2025a o más nuevo, `qd2_e2e_web({'pid'})` sí sirve.
-4. En `web`: `%USERPROFILE%\.venvs\qd2_web\Scripts\python -m pytest -q tests` (122 passed). La primera vez, `iniciar_web.bat` necesita internet (Wi-Fi interna) para crear el venv.
+4. En `web`: `%USERPROFILE%\.venvs\qd2_web\Scripts\python -m pytest -q tests` (163 passed). La primera vez, `iniciar_web.bat` necesita internet (Wi-Fi interna) para crear el venv.
 
 **Configuración real (`config/estacion.json`, desde la UI con la fuente `simulink`)**
 1. **`camara.fuente = "dron"`.** No debe existir `web.permitir_sintetica_en_simulink`, o debe ser `false`. La barra roja de "CÁMARA SINTÉTICA" **no debe aparecer**.

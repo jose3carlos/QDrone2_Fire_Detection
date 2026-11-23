@@ -94,6 +94,13 @@ R.n_visitados = max(T(:,10));
 R.visited_mask = max(T(:,51));
 R.alerta_max = max(T(:,55));
 R.guard_activo_frac = mean(T(est == 5, 11));
+% y(61:63) = [roll pitch válido] del explorador: comparados con x(7:8) de su planta
+eid = T(:,4);
+v1 = T(:,63) == 1 & eid == 1;
+v2 = T(:,63) == 1 & eid == 2;
+R.att_frac_valida = mean(T(:,63) == 1);
+R.att_max_deg = rad2deg(max(abs(T(:,61:62)), [], 'all'));
+R.att_err_max = max([0; reshape(abs(T(v1,61:62) - X1(v1,7:8)), [], 1); reshape(abs(T(v2,61:62) - X2(v2,7:8)), [], 1)]);
 R.fsm_final = [S1(end,1) S2(end,1)];
 R.bat_final = [S1(end,2) S2(end,2)];
 R.estado_mpc = unique([S1(:,3); S2(:,3)])';

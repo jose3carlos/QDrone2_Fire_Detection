@@ -33,6 +33,10 @@ function R = qd2_probar_tierra(ver, t_final, conservar, t_arm_sw, opt)
 %                 operador baja los switches para permitir el cambio de modo)
 %     .py_off_t   la estación Python deja de mandar heartbeat en t
 %     .trk2_off   [t1 t2]: OptiTrack pierde al dron 2 en ese intervalo
+%     .homes      [x1 y1; x2 y2]: posición inicial (en el piso) de los drones 1 y
+%                 2; por defecto [-1.0 0.3; 0.9 -0.3]. El de menor x es el
+%                 explorador: con [0.9 -0.3; -1.0 0.3] el explorador es el dron 2
+%                 y trk2_off quita el rastreo del EXPLORADOR (y(63) = 0)
 %     .falla      [dron t]: (MPC) el stack a bordo de ese dron entra a Error en t:
 %                 reporta FSM 7 (y 9 a los 4 s) en su respuesta de 8 doubles y cae
 %                 a 0.5 m/s sin obedecer las consignas
@@ -105,14 +109,15 @@ eo = campo(opt, 'enlace_off', [0 -1]);
 if eo(2) >= 0
     fd = [eo(1) eo(2) + 0.5];          % sin paquetes 0.5 s -> Error a bordo: cae
 end
-poner_codigo([MC '/SIM DRONES'], codigo_drones(campo(opt, 'trk2_off', [-1 -1]), fd), {'data', '14'; 'pos', '[6 1]'});
+homes = campo(opt, 'homes', [-1.0 0.3; 0.9 -0.3]);
+poner_codigo([MC '/SIM DRONES'], codigo_drones(campo(opt, 'trk2_off', [-1 -1]), fd, homes), {'data', '14'; 'pos', '[6 1]'});
 add_line(MC, 'Clock Sim/1', 'SIM DRONES/1');
 for k = 1:4
     add_line(MC, sprintf('From Sim %d/1', k), sprintf('SIM DRONES/%d', k+1));
 end
 % retardo de 1 paso: OptiTrack es una fuente (rompe el lazo algebraico de la prueba)
 add_block('simulink/Discrete/Unit Delay', [MC '/Delay Sim'], 'Position', [x0+300 y0+20 x0+330 y0+50], ...
-    'SampleTime', '0.001', 'InitialCondition', '[-1.0 0.3 0.07 0 0 0 1 0.9 -0.3 0.07 0 0 0 1]''');
+    'SampleTime', '0.001', 'InitialCondition', sprintf('[%g %g 0.07 0 0 0 1 %g %g 0.07 0 0 0 1]''', homes(1,1), homes(1,2), homes(2,1), homes(2,2)));
 add_line(MC, 'SIM DRONES/1', 'Delay Sim/1');
 add_line(MC, 'Delay Sim/1', 'Manual Switch/1', 'autorouting', 'smart');
 
@@ -312,6 +317,18 @@ R.t_stop_ok = primero(R.t, R.stop_ok > 0.5);
 % Stop Allowed con algún dron rastreado en el aire (no debe pasar nunca)
 R.stop_con_dron_en_aire = any(R.stop_ok > 0.5 & (p1(:,3) >= 0.10 | p2(:,3) >= 0.10));
 R.max_tel_nan = any(isnan(R.tel(:, [1:14 51:55])), 'all');
+% y(61:63): roll, pitch y válido del explorador. El stub SIM DRONES manda la
+% actitud conocida de codigo_drones; válido = explorador 1/2 rastreado (o+1).
+tt = R.tel(:, 1);
+A = [0.04*sin(0.5*tt) -0.03*cos(0.3*tt) 0.05*sin(0.7*tt) 0.035*sin(0.2*tt + 1)];
+eid = R.tel(:, 4);
+val = (eid == 1 & R.tel(:, 15) > 0.5) | (eid == 2 & R.tel(:, 33) > 0.5);
+R.att_y63_ok = isequal(R.tel(:, 63) > 0.5, val) && all(ismember(R.tel(:, 63), [0 1]));
+R.att_cero_sin_valido = all(R.tel(~val, 61:63) == 0, 'all') && all(R.tel(:, 64) == 0);
+k1 = val & eid == 1; k2 = val & eid == 2;
+err = [abs(R.tel(k1, 61:62) - A(k1, 1:2)); abs(R.tel(k2, 61:62) - A(k2, 3:4))];
+R.att_err_max = maxv(err(:));
+R.att_n_valido = [sum(k1) sum(k2) sum(~val)];
 R.alerta_max = max(R.tel(:, 55));
 R.alertas = unique(R.tel(:, 55))';
 R.n_visitados = max(R.tel(:, 10));
@@ -327,6 +344,8 @@ fprintf('  distancia horizontal mínima (ambos en el aire): poses %.3f m, consig
 fprintf('  |dz| mínimo con distancia horizontal < 0.9 m (ambos en el aire): %.3f m (NaN = nunca se acercaron)\n', R.dz_min_cerca);
 fprintf('  uno encima del otro (dh < 0.5 m y |dz| < 0.3 m con alguno arriba): %d\n', R.choque);
 fprintf('  objetivos visitados = %d, alertas y(55) = %s, DONE t = %.2f\n', R.n_visitados, mat2str(R.alertas), R.t_done);
+fprintf('  y(61:63) actitud del explorador: muestras válidas E1/E2/no válidas = %s, y(63) coherente = %d, 0 0 0 sin válido = %d, error max = %.2e rad\n', ...
+    mat2str(R.att_n_valido), R.att_y63_ok, R.att_cero_sin_valido, R.att_err_max);
 fprintf('  en el suelo t = %s (dh al aterrizar %s m), Stop Allowed t = %.2f, Stop con dron en el aire = %d\n', ...
     mat2str(R.t_suelo, 5), mat2str(R.dh_al_aterrizar, 3), R.t_stop_ok, R.stop_con_dron_en_aire);
 fprintf('  Flight State final = %s, Command Source efectivo final = %d (cambio en t = %.2f), peticiones operador = %d\n', ...
@@ -392,13 +411,13 @@ if ~conservar
 end
 end
 
-function c = codigo_drones(trk2_off, falla)
+function c = codigo_drones(trk2_off, falla, homes)
 c = sprintf([ ...
 'function [data, pos] = fcn(t, trig1, trig2, des1, des2)\n' ...
 '%% 2 drones cinemáticos (solo para la prueba): siguen la consigna con arm y takeoff.\n' ...
 'persistent p tp\n' ...
 'if isempty(p)\n' ...
-'    p = [-1.0 0.3 0; 0.9 -0.3 0];\n' ...
+'    p = [%g %g 0; %g %g 0];\n' ...
 '    tp = t;\n' ...
 'end\n' ...
 'dt = t - tp; tp = t;\n' ...
@@ -420,9 +439,12 @@ c = sprintf([ ...
 'if t >= %g && t < %g\n' ...
 '    trk2 = 0;                                        %% OptiTrack pierde al dron 2\n' ...
 'end\n' ...
+'%% roll y pitch conocidos (rad, < 3°) para verificar y(61:63) del TELEMETRY PACK\n' ...
+'att = [0.04*sin(0.5*t) -0.03*cos(0.3*t) 0.05*sin(0.7*t) 0.035*sin(0.2*t + 1)];\n' ...
 '%% Data [7n] en RSF como sale de Localization - Optitrack (z incluye el pivot de 0.07 m)\n' ...
-'data = [p(1,1); p(1,2); p(1,3)+0.07; 0; 0; 0; 1; p(2,1); p(2,2); p(2,3)+0.07; 0; 0; 0; trk2];\n' ...
-'pos = [p(1,:)''; p(2,:)''];\n'], falla(1), falla(2), falla(2), trk2_off(1), trk2_off(2));
+'data = [p(1,1); p(1,2); p(1,3)+0.07; att(1); att(2); 0; 1; p(2,1); p(2,2); p(2,3)+0.07; att(3); att(4); 0; trk2];\n' ...
+'pos = [p(1,:)''; p(2,:)''];\n'], homes(1,1), homes(1,2), homes(2,1), homes(2,2), ...
+    falla(1), falla(2), falla(2), trk2_off(1), trk2_off(2));
 end
 
 function c = codigo_python(t_off)

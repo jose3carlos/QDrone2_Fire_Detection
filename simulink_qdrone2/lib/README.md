@@ -33,7 +33,7 @@ ctx = tel.ctx_guard;
 | Supervisor | `s = qd2_mission_init(p)` · `[s, sp_E, sp_R, tel] = qd2_mission_step(s, in, p)` |
 | Separación (PID) | `gs = qd2_guard_init()` · `[spE_o, spR_o, guard_active, gs] = qd2_separation_guard(pE, pR, spE, spR, p [, gs, ctx])` |
 | MPC | `mst = qd2_mpc_init(p)` · `[u, mst, info] = qd2_mpc_position(x_est, ref, other, p, mst)` → `u = [T roll pitch yaw_rate status]` |
-| Telemetría | `y64 = qd2_telemetry_pack(t, tel, version, guard_active, pose1, pose2, sp1, sp2, vel1, vel2, aux)` |
+| Telemetría | `y64 = qd2_telemetry_pack(t, tel, version, guard_active, pose1, pose2, sp1, sp2, vel1, vel2, aux[, att])`. `att` (opcional) = `[roll1 pitch1 roll2 pitch2]` (rad, por dron) de la Corrected Pose Data `d(4:5)`; llena **y(61)** = roll y **y(62)** = pitch del explorador, y **y(63)** = 1 si son válidos (explorador 1 o 2, rastreado y ángulos finitos; si no, 0 0 0). Sin `att` (llamadores viejos), y(61:63) = 0. y(64) reservado (0) |
 | Enlace MPC (tierra) | `[est, t_mal] = qd2_enlace_mpc(t_mal, t, tel1, tel2, lb, cs, p, version)` → `est = [fsm1 fsm2 cod1 cod2]` (cod 0 bien, 1 protocolo incorrecto, 2 enlace perdido; `t_mal` = `[t_mal1 t_mal2 visto1 visto2]`, inicia en `[-1 -1 0 0]`; se acepta `[-1 -1]`) |
 | Planta | `x = qd2_quad_plant(x, u, dist, dt [, p.planta])` con `x` 10x1 `[x y z vx vy vz roll pitch yaw T]` |
 | Downwash | `[F, sigma] = qd2_downwash(p_low, p_high [, p.dw])` |
@@ -61,6 +61,7 @@ ctx = tel.ctx_guard;
 - Seguridad: `alerta` y `home_ok`. `alerta` (índice **55** del mensaje de 64, códigos acordados por los dos equipos): 0 nada, 1 homes demasiado cerca (START rechazado), 2 pérdida de rastreo, 3 timeout de despegue, 4 timeout de aterrizaje, **9 falla a bordo de un dron** (FSM a bordo 7 u 8, o 9 / enlace perdido debiendo volar; versión MPC), **10 protocolo MPC incorrecto**. Los códigos 5-8 (E-stop, Takeoff abajo, Arm abajo, respaldo del operador) los pone la capa del operador en tierra, no esta librería; en el TELEMETRY PACK de los modelos de tierra la del operador prevalece sobre todas las de esta librería (también sobre 9 y 10).
 - Falla a bordo: `falla` [1x2] por dron (0, 9 o 10), `falla_fase` (0 ninguna, 1 apartarse, 2 regresar, 3 aterriza el sano, 4 espera al dron en falla en el suelo) y `escape` [1x2] por dron (1 = el limitador de consigna debe usar `p.falla_rate_xy`).
 - `obj_rot` [1x5] = `[id clase x y estado]`: un objetivo de la tabla que rota cada `p.t_rot_obj` (0.02 s); `qd2_telemetry_pack` lo pone en **y(56:60)** (estado 1 pendiente, 2 asignado, 3 visitado; `id` = 0 con la tabla vacía). Igual que el simulador 3D.
+- **y(61:63)** no sale de `tel`: `qd2_telemetry_pack` toma roll y pitch del argumento `att` con el mismo criterio de rol que la pose (`explorer_id`). Convención de OptiTrack (Corrected Pose Data, Tait-Bryan ZYX intrínseca): R = Rz(yaw)·Ry(pitch)·Rx(roll) sobre el cuerpo FLU; roll > 0 baja el lado derecho, pitch > 0 baja la nariz (la misma de `qd2_quad_plant`). La estación la usa para geolocalizar con la inclinación del explorador; con y(63) = 0 geolocaliza nivelada.
 
 **MPC:**
 - `x_est = [x y z vx vy vz roll pitch yaw]`.
@@ -204,4 +205,5 @@ ctx = tel.ctx_guard;
   - **Protocolo** (dron 2 pierde la etiqueta en MISSION a los 40 s): alerta 10 a los 40.52 s; el sano se aparta, regresa y aterriza; DONE a los 50.7 s; dh mínima ya separados 0.901 m.
   - En todos: al dron en falla nunca se le vuelve a subir takeoff y los dos terminan en el suelo.
   - y(56:60): con 3 objetivos, 6 mensajes seguidos enviaron los ids [7 9 4 7 9 4]; con ids 33, 40 y 32 publicados solo entra y sale el 32.
+  - y(61:63) (`test_actitud_y61`, 22-nov): con explorador 1 o 2 se toma la actitud de ese dron. Con el explorador no rastreado, NaN/Inf en sus ángulos, sin explorador o con la llamada de 11 argumentos sale 0 0 0. El resto del vector no cambia con `att`.
 - **Simulink/codegen** (`qd2_prueba_simulink`, también con `qd2_enlace_mpc` y los campos opcionales): compila y simula 60 s en 175 s de reloj.

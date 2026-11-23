@@ -8,8 +8,14 @@ Punto de integración con el ingeniero de visión (ARQUITECTURA §7):
 Flujo por frame: detector → centro de cada caja → rayo de cámara (intrínsecos fx, fy, cx, cy de
 ``camara.intrinsecos`` o ``vision.intrinsecos_nominales``; HFOV/VFOV solo si faltan;
 montaje hacia abajo + ``rotacion_montaje`` + ``offset_camara_m``) → rotado por la pose OptiTrack
-del explorador (yaw y altura; roll y pitch ≈ 0) → intersección con z = 0.02 m → cluster por radio
-→ con ``min_observaciones`` se publica como objetivo por el puente.
+del explorador (x, y, z, yaw y, si la telemetría trae y(63) = 1, roll y pitch de y(61:62), todo
+interpolado a la hora del frame; ``geo.R_mundo_cuerpo``) → intersección con z = 0.02 m → cluster
+por radio → con ``min_observaciones`` se publica como objetivo por el puente.
+
+Actitud (``vision.usar_actitud``, ``actitud_signos``, ``actitud_offset_deg``): sin actitud válida
+(modelo de Simulink viejo con y(61:63) = 0, explorador sin rastreo) se geolocaliza nivelado, como
+antes, y ``status()["actitud"]`` lo dice ("no disponible"). Con actitud, si la inclinación total
+supera ``vision.inclinacion_max_deg`` la detección se descarta con motivo "inclinación".
 
 Filtros físicos (independientes del modelo; ``vision.tam_max_m``, ``tam_min_m``,
 ``dist_max_tubo_toma_m``, ``dist_max_tubo_fuego_m``, leídos en cada frame): antes del cluster se
@@ -27,10 +33,11 @@ import os
 import sys
 import threading
 import time
+import unicodedata
 
 from . import protocol as P
-from .config import filtros_vision
-from .geo import CameraModel, Clusterer, dist_polilinea
+from .config import actitud_vision, filtros_vision
+from .geo import CameraModel, Clusterer, corregir_actitud, dist_polilinea, inclinacion
 
 try:
     import cv2
@@ -40,7 +47,35 @@ except Exception:  # pragma: no cover
 Z_PLANE = 0.02
 MOTIVO_TAMANO = "tamaño"
 MOTIVO_TUBO = "lejos del tubo"
-MOTIVOS = (MOTIVO_TAMANO, MOTIVO_TUBO)
+MOTIVO_INCLINACION = "inclinación"
+MOTIVOS = (MOTIVO_TAMANO, MOTIVO_TUBO, MOTIVO_INCLINACION)
+
+
+def _ascii(texto):
+    """Quita acentos y la tilde de la ñ (cv2.putText con Hershey solo dibuja ASCII)."""
+    return unicodedata.normalize("NFKD", texto).encode("ascii", "ignore").decode("ascii")
+
+
+def pose_para_geo(pose, act):
+    """Pose del explorador (4 valores, o 6 con roll/pitch que pueden ser None) -> (pose de 6 floats
+    para ``CameraModel``, info de actitud).
+
+    ``act`` = ``config.actitud_vision(cfg)``. Con ``act["usar"]`` falso o sin roll/pitch (None) la pose
+    sale nivelada (roll = pitch = 0, como la estación sin actitud). Info: ``ok`` (se aplicó la actitud),
+    ``disponible`` (la pose traía actitud), ``roll``, ``pitch`` (ya corregidos con signo y offset, rad) e
+    ``incl`` (inclinación total, rad; None sin actitud aplicada)."""
+    x, y, z, yaw = pose[:4]
+    roll, pitch = (tuple(pose[4:6]) + (None, None))[:2]
+    disponible = roll is not None and pitch is not None and math.isfinite(roll) and math.isfinite(pitch)
+    ok = bool(act["usar"]) and disponible
+    if ok:
+        roll, pitch = corregir_actitud(roll, pitch, act["signo_roll"], act["signo_pitch"],
+                                       act["offset_roll"], act["offset_pitch"])
+    else:
+        roll = pitch = 0.0
+    info = {"ok": ok, "disponible": disponible, "roll": roll if ok else None, "pitch": pitch if ok else None,
+            "incl": inclinacion(roll, pitch) if ok else None}
+    return (x, y, z, yaw, roll, pitch), info
 
 
 # ---------------------------------------------------------------------------- detectores
@@ -103,23 +138,33 @@ def load_detector(kind, project_dir, cfg, synthetic=False):
 
 # ---------------------------------------------------------------------------- pose del explorador
 class PoseHistory:
-    """Historial (≈10 s) de la pose del explorador para sincronizar con la hora del frame."""
+    """Historial (≈10 s) de la pose del explorador para sincronizar con la hora del frame.
+
+    Cada muestra es (x, y, z, yaw, roll, pitch); roll y pitch son None si la telemetría no trae actitud
+    válida (y(63) = 0). ``at()`` devuelve siempre 6 valores."""
 
     def __init__(self, maxlen=600):
         self.t = collections.deque(maxlen=maxlen)
         self.p = collections.deque(maxlen=maxlen)
         self.lock = threading.Lock()
 
-    def add(self, stamp, x, y, z, yaw):
+    def add(self, stamp, x, y, z, yaw, roll=None, pitch=None):
+        if roll is None or pitch is None:
+            roll = pitch = None
         with self.lock:
             if self.t and stamp < self.t[-1]:
                 return
             if self.t and stamp == self.t[-1]:
                 # varios mensajes de telemetría que llegaron juntos (misma hora): gana el más reciente
-                self.p[-1] = (x, y, z, yaw)
+                self.p[-1] = (x, y, z, yaw, roll, pitch)
                 return
             self.t.append(stamp)
-            self.p.append((x, y, z, yaw))
+            self.p.append((x, y, z, yaw, roll, pitch))
+
+    @staticmethod
+    def _ang(a0, a1, a):
+        """Interpolación angular (por el camino corto, como el yaw)."""
+        return a0 + a * math.atan2(math.sin(a1 - a0), math.cos(a1 - a0))
 
     def at(self, stamp, max_gap=0.5):
         with self.lock:
@@ -134,9 +179,12 @@ class PoseHistory:
             t0, t1 = ts[i - 1], ts[i]
             a = (stamp - t0) / (t1 - t0) if t1 > t0 else 0.0
             p0, p1 = self.p[i - 1], self.p[i]
-            dyaw = math.atan2(math.sin(p1[3] - p0[3]), math.cos(p1[3] - p0[3]))
+            if None in (p0[4], p1[4]):
+                roll = pitch = None            # a un vecino le falta la actitud: no se mezcla con 0
+            else:
+                roll, pitch = self._ang(p0[4], p1[4], a), self._ang(p0[5], p1[5], a)
             return (p0[0] + a * (p1[0] - p0[0]), p0[1] + a * (p1[1] - p0[1]),
-                    p0[2] + a * (p1[2] - p0[2]), p0[3] + a * dyaw)
+                    p0[2] + a * (p1[2] - p0[2]), self._ang(p0[3], p1[3], a), roll, pitch)
 
     def clear(self):
         with self.lock:
@@ -157,10 +205,12 @@ class VisionService(threading.Thread):
         self.clusters = Clusterer(vis.get("radio_cluster_m", 0.25), vis.get("min_observaciones", 3))
         self.lock = threading.Lock()
         self._stop = threading.Event()
-        self.last = {"frame_id": 0, "stamp": 0.0, "dets": [], "ms": 0.0, "pose": None}
+        self.last = {"frame_id": 0, "stamp": 0.0, "dets": [], "ms": 0.0, "pose": None, "actitud": None}
         self.n_frames = self.n_obs = 0
+        self.n_geo_con_actitud = self.n_geo_nivelado = 0   # frames con pose: con actitud aplicada / nivelados
         self.descartadas = {m: 0 for m in MOTIVOS}   # observaciones filtradas desde el último reset
         self.filtros = filtros_vision(cfg_fn())
+        self.actitud = actitud_vision(cfg_fn())
         self.error = ""
         self.cam_info = {}
 
@@ -223,10 +273,22 @@ class VisionService(threading.Thread):
         vis = cfg.get("vision", {})
         conf_min = float(vis.get("confianza_min", 0.5))
         filtros = self.filtros = filtros_vision(cfg)         # en cada frame: se pueden cambiar en caliente
+        act_cfg = self.actitud = actitud_vision(cfg)
         vertices = (cfg.get("pista") or {}).get("vertices") or []
         latency = 0.0 if self.synthetic_fn() else float(cfg.get("web", {}).get("camara_latencia_s", 0.12))
         if pose is None:
             pose = self.poses.at(stamp - latency)
+        att = None
+        if pose is not None:
+            # pose de 4 (pruebas, sin actitud) o 6 valores (PoseHistory) -> 6 floats para la geometría
+            pose, att = pose_para_geo(pose, act_cfg)
+            if att["ok"]:
+                self.n_geo_con_actitud += 1
+            else:
+                self.n_geo_nivelado += 1
+        lim_incl = filtros.get("inclinacion_max_deg")
+        inclinado = (att is not None and att["ok"] and lim_incl is not None
+                     and math.degrees(att["incl"]) > lim_incl)
         t0 = time.perf_counter()
         raw = list(self.detector.detect(frame)) if self.detector is not None else []
         ms = (time.perf_counter() - t0) * 1000.0
@@ -236,8 +298,18 @@ class VisionService(threading.Thread):
         for cls, conf, x1, y1, x2, y2 in raw:
             cls, conf = int(cls), float(conf)
             d = {"cls": cls, "conf": round(conf, 3), "box": [int(x1), int(y1), int(x2), int(y2)], "xy": None,
-                 "descartada": None, "tam_m": None, "dist_tubo_m": None}
-            if conf >= conf_min and pose is not None:
+                 "descartada": None, "tam_m": None, "dist_tubo_m": None,
+                 "inclinacion_deg": round(math.degrees(att["incl"]), 1) if att and att["ok"] else None}
+            if conf >= conf_min and pose is not None and inclinado:
+                # explorador demasiado inclinado: la proyección (y el tamaño / distancia al tubo) no es fiable.
+                # Se geolocaliza solo para dibujarla en la UI (si el rayo corta el piso) y no entra al cluster.
+                g = cam.pixel_to_ground((x1 + x2) / 2.0, (y1 + y2) / 2.0, *pose, z_plane=Z_PLANE)
+                d["xy"] = [round(g[0], 3), round(g[1], 3)] if g is not None else None
+                d["descartada"] = MOTIVO_INCLINACION
+                if gate:
+                    with self.lock:
+                        self.descartadas[MOTIVO_INCLINACION] += 1
+            elif conf >= conf_min and pose is not None:
                 g = cam.pixel_to_ground((x1 + x2) / 2.0, (y1 + y2) / 2.0, *pose, z_plane=Z_PLANE)
                 if g is not None:
                     d["xy"] = [round(g[0], 3), round(g[1], 3)]
@@ -254,9 +326,15 @@ class VisionService(threading.Thread):
                             self.clusters.add(cls, g[0], g[1], conf)
                         self.n_obs += 1
             dets.append(d)
+        actitud = None
+        if att is not None:
+            actitud = {"ok": att["ok"], "disponible": att["disponible"], "inclinado": bool(inclinado),
+                       "roll_deg": round(math.degrees(att["roll"]), 2) if att["ok"] else None,
+                       "pitch_deg": round(math.degrees(att["pitch"]), 2) if att["ok"] else None,
+                       "inclinacion_deg": round(math.degrees(att["incl"]), 2) if att["ok"] else None}
         with self.lock:
             self.last = {"frame_id": self.n_frames, "stamp": stamp, "dets": dets, "ms": round(ms, 1),
-                         "pose": [round(v, 3) for v in pose] if pose else None}
+                         "pose": [round(float(v), 3) for v in pose[:4]] if pose else None, "actitud": actitud}
         self.publish()
         return dets
 
@@ -330,7 +408,30 @@ class VisionService(threading.Thread):
         return {"detector": self.detector_name, "detector_error": self.detector_error, "error": self.error,
                 "frames": self.n_frames, "observaciones": self.n_obs, "objetivos": n_t, "candidatos": n_p,
                 "ultimo": last, "activo": bool(self.gate_fn()),
-                "camara_modelo": self.cam_info, "descartadas": desc, "filtros": dict(self.filtros)}
+                "camara_modelo": self.cam_info, "descartadas": desc, "filtros": dict(self.filtros),
+                "actitud": self.actitud_status(last.get("actitud"))}
+
+    def actitud_status(self, ult):
+        """Estado de la corrección de actitud para la UI (``ult`` = ``last["actitud"]`` del último frame)."""
+        usar = bool(self.actitud.get("usar", True))
+        disponible = bool(ult and ult.get("disponible"))
+        if not usar:
+            texto = "ignorada (vision.usar_actitud = false): geolocalización nivelada"
+        elif ult is None:
+            texto = "sin pose del explorador todavía"
+        elif ult.get("ok"):
+            texto = "corrigiendo roll/pitch" + (" · INCLINADO: detecciones descartadas" if ult.get("inclinado") else "")
+        else:
+            texto = ("no disponible (y(63) = 0: modelo de Simulink sin actitud o explorador sin rastreo): "
+                     "geolocalización nivelada")
+        out = {"usar": usar, "disponible": disponible, "ok": bool(ult and ult.get("ok")), "texto": texto,
+               "roll_deg": None, "pitch_deg": None, "inclinacion_deg": None,
+               "inclinacion_max_deg": self.filtros.get("inclinacion_max_deg"),
+               "signos": [self.actitud.get("signo_roll", 1.0), self.actitud.get("signo_pitch", 1.0)],
+               "frames_con_actitud": self.n_geo_con_actitud, "frames_nivelados": self.n_geo_nivelado}
+        if ult and ult.get("ok"):
+            out.update(roll_deg=ult["roll_deg"], pitch_deg=ult["pitch_deg"], inclinacion_deg=ult["inclinacion_deg"])
+        return out
 
     # -------------------------------------------------------------- dibujo
     def annotate(self, frame):
@@ -346,9 +447,12 @@ class VisionService(threading.Thread):
                 # descartada por los filtros físicos: gris, línea delgada y el motivo
                 color = (150, 150, 150)
                 cv2.rectangle(img, (x1, y1), (x2, y2), color, 1)
-                # cv2.putText (Hershey) no dibuja la ñ
-                label += f" DESCARTADA: {d['descartada'].replace('ñ', 'n')}"
-                if d["descartada"] == MOTIVO_TUBO and d.get("dist_tubo_m") is not None:
+                # cv2.putText (Hershey) no dibuja la ñ ni los acentos
+                label += f" DESCARTADA: {_ascii(d['descartada'])}"
+                if d["descartada"] == MOTIVO_INCLINACION:
+                    if d.get("inclinacion_deg") is not None:
+                        label += f" {d['inclinacion_deg']:.0f} deg"
+                elif d["descartada"] == MOTIVO_TUBO and d.get("dist_tubo_m") is not None:
                     label += f" a {d['dist_tubo_m']:.2f} m"
                 elif d.get("tam_m") is not None:
                     label += f" {d['tam_m']:.2f} m"

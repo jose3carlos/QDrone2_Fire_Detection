@@ -114,6 +114,12 @@ def fsm_info(version, code, mission_state=None, alerta=0, falla_vista=None):
 
 # y(56:60): un objetivo de la tabla de Simulink por mensaje, rotando: [id clase x y estado]
 OBJ_SIM_BASE = 56
+
+# y(61:63): actitud del EXPLORADOR (misma Corrected Pose Data de OptiTrack que x, y, z, yaw en o+3..o+6):
+# y(61) = roll (rad), y(62) = pitch (rad), y(63) = 1 si son válidos (actitud medida y explorador rastreado).
+# Convención R = Rz(yaw)·Ry(pitch)·Rx(roll) (geo.R_mundo_cuerpo). Modelos viejos mandan 0, 0, 0 -> sin actitud.
+# y(64) sigue reservado (0).
+EXPLORER_ROLL_IDX, EXPLORER_PITCH_IDX, EXPLORER_ATT_OK_IDX = 61, 62, 63
 OBJ_ESTADOS = {1: "pendiente", 2: "asignado", 3: "visitado"}
 
 # Campos globales de la telemetría: nombre -> índice base 1
@@ -193,8 +199,15 @@ def unpack_telemetry(data):
     out["visited_ids"] = [k for k in range(1, MAX_TARGETS + 1) if (out["visited_mask"] >> (k - 1)) & 1]
     # y(56:60): objetivo de la tabla de Simulink (rotando); None si la ranura está vacía o es inválida
     out["objetivo_sim"] = _objetivo_sim(v[_i(OBJ_SIM_BASE):_i(OBJ_SIM_BASE) + 5])
-    # y(61:64): reservados (y(55) e y(56:60) ya tienen su campo propio)
-    out["reserved"] = [_num(x) for x in v[_i(61):_i(64) + 1]]
+    # y(61:63): actitud del explorador. Sin y(63) = 1 o con un ángulo no finito: sin actitud (None, False)
+    roll, pitch = float(v[_i(EXPLORER_ROLL_IDX)]), float(v[_i(EXPLORER_PITCH_IDX)])
+    ok = float(v[_i(EXPLORER_ATT_OK_IDX)])
+    att_ok = math.isfinite(ok) and int(round(ok)) == 1 and math.isfinite(roll) and math.isfinite(pitch)
+    out["explorer_roll"] = roll if att_ok else None
+    out["explorer_pitch"] = pitch if att_ok else None
+    out["explorer_att_ok"] = bool(att_ok)
+    # y(64): el único reservado que queda
+    out["reserved"] = [_num(x) for x in v[_i(64):_i(64) + 1]]
     return out
 
 
@@ -211,7 +224,9 @@ def _objetivo_sim(vals):
 
 def pack_telemetry(tel):
     """Inverso de ``unpack_telemetry`` (lo usan el simulador mock y las pruebas).
-    Acepta además ``alerta`` (y(55)) y ``objetivo_sim`` = dict(id, cls, x, y, estado) (y(56:60))."""
+    Acepta además ``alerta`` (y(55)), ``objetivo_sim`` = dict(id, cls, x, y, estado) (y(56:60)) y
+    ``explorer_roll``, ``explorer_pitch``, ``explorer_att_ok`` (y(61:63); sin att_ok verdadero o con un
+    ángulo no finito se escribe 0, 0, 0, igual que el TELEMETRY PACK de Simulink)."""
     v = [0.0] * N_TELEMETRY
     for name, idx in TEL_FIELDS.items():
         if name in tel and tel[name] is not None:
@@ -226,6 +241,13 @@ def pack_telemetry(tel):
     if ob:
         for k, key in enumerate(("id", "cls", "x", "y", "estado")):
             v[_i(OBJ_SIM_BASE + k)] = float(ob[key])
+    if tel.get("explorer_att_ok"):
+        try:
+            r, p = float(tel.get("explorer_roll")), float(tel.get("explorer_pitch"))
+        except (TypeError, ValueError):
+            r = p = float("nan")
+        if math.isfinite(r) and math.isfinite(p):
+            v[_i(EXPLORER_ROLL_IDX)], v[_i(EXPLORER_PITCH_IDX)], v[_i(EXPLORER_ATT_OK_IDX)] = r, p, 1.0
     return _TEL.pack(*v)
 
 

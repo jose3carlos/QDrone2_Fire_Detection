@@ -62,8 +62,10 @@ def default_anomalies(vertices):
 
 
 def render_view(cam, pose, vertices, anomalies, arena_half=1.5, rng=None):
-    """Imagen BGR (cam.h x cam.w) vista por la cámara del explorador en ``pose`` = (x, y, z, yaw)."""
-    x, y, z, yaw = pose
+    """Imagen BGR (cam.h x cam.w) vista por la cámara del explorador en ``pose`` = (x, y, z, yaw) o
+    (x, y, z, yaw, roll, pitch) (actitud en la convención de ``geo.R_mundo_cuerpo``)."""
+    x, y, z, yaw, *att = pose
+    roll, pitch = (tuple(att) + (0.0, 0.0))[:2]
     img = np.empty((cam.h, cam.w, 3), np.uint8)
     img[:] = COL_FLOOR
     if rng is not None:
@@ -71,7 +73,7 @@ def render_view(cam, pose, vertices, anomalies, arena_half=1.5, rng=None):
         img = np.clip(img.astype(np.int16) + noise, 0, 255).astype(np.uint8)
 
     def proj(P):
-        uv, front = cam.world_to_pixel(P, x, y, z, yaw)
+        uv, front = cam.world_to_pixel(P, x, y, z, yaw, roll, pitch)
         return np.clip(uv, -1e5, 1e5), front
 
     def draw_poly(P, color, thick, closed=False):

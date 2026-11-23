@@ -119,7 +119,19 @@ Simulink es el **Stream Server** y la estación Python es el cliente. Simulink e
 | 54 | `cmd_seq_ack`: último `cmd_seq` **recibido** (no "ejecutado"; ver abajo) |
 | 55 | `alerta` (0–10, tabla de abajo) |
 | 56–60 | Un objetivo de la tabla de Simulink por mensaje, rotando: `[id clase x y estado]` (ver abajo) |
-| 61–64 | Reservado (0) |
+| 61 | `explorer_roll`: roll del **explorador** (rad) |
+| 62 | `explorer_pitch`: pitch del **explorador** (rad) |
+| 63 | `explorer_att_ok`: 1 si y(61:62) son válidos (actitud medida y explorador rastreado), 0 si no |
+| 64 | Reservado (0) |
+
+**Actitud del explorador, y(61:63).** Sale de la MISMA "Corrected Pose Data [x y z roll pitch yaw isTracking]" de OptiTrack con la que se llenan x, y, z, yaw del explorador en y(o+3…o+6) (`d(4)`, `d(5)`; el dron que va en y(61:62) se elige por `explorer_id`, igual que pose). Si el explorador no está rastreado, si no hay explorador o si algún ángulo no es finito: y(61:63) = 0. Convención (ángulos de Euler ZYX intrínsecos, regla de la mano derecha, cuerpo FLU: +x nariz, +y izquierda, +z arriba):
+
+`R_mundo←cuerpo = Rz(yaw) · Ry(pitch) · Rx(roll)`
+
+- roll > 0: sube el lado izquierdo y baja el derecho (el dron acelera hacia −y).
+- pitch > 0: baja la nariz (el empuje se inclina hacia +x, el dron acelera hacia adelante).
+
+La convención se sacó de la cadena de QUARC del modelo del Equipo2 ("Convention Correction" → "Prevent Gimbal Lock", Euler YZX → matriz → Euler ZYX relativo) y los signos se comprobaron con un vuelo real del Equipo2 (aceleración hacia adelante vs pitch: correlación +0.88; hacia la izquierda vs roll: −0.85). Es la misma de `qd2_quad_plant.m` y de `rot_zyx` del simulador 3D. Falta la prueba en el laboratorio con el rigid body actual (`docs/CHECKLIST_LABORATORIO.md`); si un signo saliera al revés se corrige con `vision.actitud_signos` en `config/estacion.json`, sin tocar código. Un modelo de Simulink viejo manda y(61:63) = 0: la estación lo detecta por y(63) y geolocaliza nivelada, como antes (§7).
 
 Bloque de dron (18 doubles, offset `o` = 14 para el dron 1 y `o` = 32 para el dron 2):
 
@@ -212,7 +224,7 @@ Las firmas exactas están en `simulink_qdrone2/lib/README.md`; aquí va el resum
 | `[spE_o, spR_o, guard_active, gs] = qd2_separation_guard(pE, pR, spE, spR, p [, gs, ctx])` | Versión PID. Ajusta las consignas para mantener la distancia horizontal ≥ `d_min_h` entre poses y entre consignas. Prioridad: E sigue explorando; R espera en un punto seguro. Si R está marcando y E se acerca, E espera. |
 | `y = qd2_rate_limit(y_prev, u, rate, dt [, xy_norma])` | Limitador de consignas `[x y z yaw]`. Con `xy_norma = 1` limita x,y **por la norma** (camino recto). Ver el requisito de abajo. |
 | `[u, mst, info] = qd2_mpc_position(x_est, ref, other, p, mst)` | MPC lineal a bordo, 50 Hz, horizonte N = 20. Modelo de doble integrador con actitud de primer orden. QP con cotas en las entradas (roll, pitch, empuje), resuelto con FISTA de iteraciones fijas. Incluye observador de perturbación en z (offset-free) y *feedforward* de downwash si el otro dron está encima. `u = [T roll pitch yaw_rate status]`. |
-| `y64 = qd2_telemetry_pack(...)` | Arma los 64 doubles de §3.3 (y(55) = alerta, y(56:60) = objetivo rotando). |
+| `y64 = qd2_telemetry_pack(...)` | Arma los 64 doubles de §3.3 (y(55) = alerta, y(56:60) = objetivo rotando, y(61:63) = roll, pitch y validez de la actitud del explorador). |
 | `[est, t_mal] = qd2_enlace_mpc(t_mal, t, tel1, tel2, lb, cs, p, version)` | MPC LINK CHECK de tierra (§3.2): valida la respuesta de 8 doubles de cada dron y entrega `Onboard Status [4] = [fsm1 fsm2 cod1 cod2]`. |
 | `qd2_quad_plant(x, u, dist, dt)` · `qd2_onboard_step(...)` | Planta y emulación del stack a bordo para simulación: traslación 3D, actitud de primer orden, ruido y downwash. |
 | `qd2_downwash(p_low, p_high)` | Fuerza vertical y ruido sobre el dron de abajo en función de Δxy y Δz. |
@@ -261,7 +273,7 @@ Las firmas exactas están en `simulink_qdrone2/lib/README.md`; aquí va el resum
 - **Modos de fuente:**
   - `simulink`: puente :18700 con el modelo real o con `QD2_Sim_Dual`.
   - `sim3d`: el simulador MATLAB.
-  - `mock`: generador Python interno para probar la UI sin MATLAB. Emite y(55) (y puede forzar cualquier alerta 0..10; la tarjeta de pruebas muestra la que está forzada) e y(56:60), incluidos objetivos "internos" que la estación no publicó. Guarda alias como Simulink (§3.3). Sigue las reglas de §4 para el despegue: takeoff 2 s después de armar, y ABORT/LAND_ALL antes de despegar cancelan el despegue.
+  - `mock`: generador Python interno para probar la UI sin MATLAB. Emite y(55) (y puede forzar cualquier alerta 0..10; la tarjeta de pruebas muestra la que está forzada) e y(56:60), incluidos objetivos "internos" que la estación no publicó. También emite y(61:63): la actitud del explorador que hace falta para dar la aceleración de su planta, con la convención de §3.3. Guarda alias como Simulink (§3.3). Sigue las reglas de §4 para el despegue: takeoff 2 s después de armar, y ABORT/LAND_ALL antes de despegar cancelan el despegue.
   - Las tres fuentes pasan por el mismo cliente del puente, así que y(55) e y(56:60) se leen igual en todas.
 
 ## 7. Visión
@@ -270,6 +282,16 @@ Las firmas exactas están en `simulink_qdrone2/lib/README.md`; aquí va el resum
   - Sintéticos renderizados en Blender: piso de tapete oscuro, tubos PVC blancos, las piezas impresas (STL de `impresion3d/stl`), distractores (plantas, carritos, cilindros), cámara cenital entre 0.3 y 1.8 m con los intrínsecos de la D435i color (VFOV 42.5°; el HFOV de 69.4° solo vale en 16:9, a 640×480 es ~55° con fx ≈ fy ≈ 617 px) e iluminación aleatoria.
   - Negativos (fotos sin piezas, etiqueta vacía) contra falsos positivos: 1 500 fotos de COCO val2017 y capturas de webcam (`vision/negativos_coco.py`; `vision/README.md`, "Negativos").
   - Fotos reales que se capturen en el laboratorio (flujo de etiquetado incluido).
-- **Geolocalización:** el centro de cada bbox se convierte en un rayo de cámara (intrínsecos y extrínsecos del soporte). Ese rayo se rota con la pose OptiTrack del explorador (yaw y altura; roll y pitch ≈ 0) y se interseca con el plano z = 0.02 m. Las observaciones se agrupan (radio 0.25 m, mínimo 3 detecciones) y el resultado se publica como objetivo con posición promedio.
+- **Geolocalización:** el centro de cada bbox se convierte en un rayo de cámara (intrínsecos y extrínsecos del soporte). Ese rayo se rota con la pose OptiTrack completa del explorador, interpolada a la hora del frame: x, y, z, yaw y, cuando y(63) = 1, roll y pitch de y(61:62) (§3.3). Luego se interseca con el plano z = 0.02 m. La cuenta está en `web/app/geo.py`:
+  - `R_wb = Rz(yaw) · Ry(pitch) · Rx(roll)` (`R_mundo_cuerpo`, la única función que fija la convención).
+  - Orientación de la cámara: `R_wc = R_wb · R_bc`, con `R_bc` el montaje hacia abajo más `rotacion_montaje`.
+  - Posición de la cámara: `p_c = p + R_wb · offset_camara_m + b · (ẑ − R_wb · ẑ)`. El offset también se inclina, y gira alrededor del **pivote de Motive**, no del punto de la pose: la Corrected Pose Data es `pivote + bias_z · ẑ` (Bias [0 0 bias_z] en z del mundo, Measurement Conditioning), un punto que se queda `b = −bias_z` (0.07 m, `optitrack.bias_z_dronN`) debajo del pivote aunque el dron se incline. `offset_camara_m` se mide con el dron nivelado desde ese punto. Nivelado, el término de `b` es exactamente 0; ignorarlo dejaría un error de ≈ b·sin(inclinación) (~12 mm a 10°).
+  - Sin la corrección, 5° de inclinación a 1.5 m movían el punto unos 0.13 m, y 10° unos 0.26 m (hasta 0.37 m en las esquinas). Eso se comía el margen de los filtros de tubo (0.25 m) y de tamaño (0.35 m). Ojo con el signo: con la nariz abajo la cámara ve hacia **atrás** del dron.
+  - Parámetros en `config/estacion.json` → `vision`:
+    - `usar_actitud` (true). Con false se supone el dron nivelado, como antes, y no se descarta por inclinación.
+    - `inclinacion_max_deg` (15). Inclinación total `acos(cos roll · cos pitch)`. Si se pasa, la detección se descarta con el motivo "inclinación": se ve en gris en la UI, se cuenta en el estado y no entra al cluster. null lo desactiva.
+    - `actitud_signos` ([1, 1] = [roll, pitch]) y `actitud_offset_deg` ([0, 0]). Corrigen un signo invertido o un rigid body creado un poco inclinado, sin tocar código.
+  - Si llega y(63) = 0 (modelo de Simulink viejo, explorador sin rastreo), se geolocaliza nivelado. La estación lo indica en la pestaña Anomalías, tarjeta Visión (línea "Actitud: no disponible …"), en la fila *actitud (cruda)* de la tarjeta del explorador ("no disponible (y(63) = 0)") y con un aviso amarillo durante la misión. La tarjeta del explorador muestra y(61:62) tal como llegan; si `actitud_signos` / `actitud_offset_deg` no son los neutros, o con `usar_actitud` = false, agrega la fila *actitud usada* con la que entra a la geolocalización.
+  - Las observaciones se agrupan (radio 0.25 m, mínimo 3 detecciones) y el resultado se publica como objetivo con posición promedio.
 - **Entrenar una vez:** `vision/entrenar.py` guarda `vision/modelos/mejor.pt` junto con métricas (`vision/modelos/metricas.json`) y exporta `mejor.onnx`. La estación usa el modelo guardado y **no reentrena** salvo que se pida. Sin torch (venv `qd2_web`), la estación corre `mejor.onnx` con OpenCV en CPU.
 - **Modelo actual (22-nov-2026):** el modelo sintético (80 épocas con ~10 000 imágenes, `sintetico_10k` + `sintetico_smoke`; mAP50 = 0.995 en validación sintética) afinado 25 épocas con negativos (1 500 fotos de COCO y 82 capturas de webcam sin piezas) más 16 capturas de webcam con fuego. Con el motor de la estación (OpenCV-ONNX, conf ≥ 0.5): fotos de COCO apartadas con "toma" falsa 28.8 % → 0 % y con "fuego" falso 12.2 % → 0.4 %; capturas de la cara sin piezas con alguna detección 44/50 → 0/50; fuego detectado en 56 capturas de webcam 50/56 → 47/56. mAP50 en la validación del entrenamiento = 0.9945. Todavía **sin fotos del laboratorio** (cámara cenital sobre el tapete): falta capturarlas y etiquetarlas (`vision/README.md` §3, "Negativos" y §4).

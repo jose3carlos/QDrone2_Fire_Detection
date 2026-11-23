@@ -220,6 +220,9 @@ reentrenó con negativos (sección siguiente) y en las capturas de webcam ya no 
   imagen por su altura (0.125–0.137 m): hasta ~0.24 m con caja holgada; una cara, varios decímetros.
 - **Toma cerca del tubo:** descarta las tomas a más de `vision.dist_max_tubo_toma_m` (0.25 m) de la polilínea
   `pista.vertices`. Para fuegos está desactivado (`vision.dist_max_tubo_fuego_m = null`).
+- **Inclinación del explorador:** la proyección al piso usa el roll y pitch de OptiTrack (y(61:63) de la telemetría).
+  Si el dron va más inclinado que `vision.inclinacion_max_deg` (15°), la detección se descarta. Sin actitud (modelo de
+  Simulink viejo) se proyecta suponiendo el dron nivelado, como antes.
 - Las descartadas no llegan al cluster; en la cámara de la estación salen en gris con el motivo.
 
 Esto **no sustituye** entrenar con negativas: sólo funciona con la cámara cenital del dron y la pose de

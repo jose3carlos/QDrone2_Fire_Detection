@@ -54,6 +54,10 @@
     "tam_min_m": 0.0,
     "dist_max_tubo_toma_m": 0.25,
     "dist_max_tubo_fuego_m": null,
+    "usar_actitud": true,
+    "inclinacion_max_deg": 15,
+    "actitud_signos": [1, 1],
+    "actitud_offset_deg": [0.0, 0.0],
     "intrinsecos_nominales": {
       "nota": "Nominales de la D435i color a partir de VFOV 42.5 grados. En 640x480 el sensor recorta los lados: HFOV real ~55 grados, no 69.4 (69.4 es para 16:9). Sustituir por los de rs2 get_intrinsics() del dron real.",
       "640x480": {"fx": 617.1, "fy": 617.1, "cx": 320.0, "cy": 240.0},

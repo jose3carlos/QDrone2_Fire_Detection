@@ -29,7 +29,12 @@ Lo que emula (versión simplificada; el supervisor "de verdad" vive en Simulink 
   ``add_internal_target`` agrega objetivos "de Simulink" que la estación no publicó (como el
   simulador 3D con su detector interno);
 * o+2 (``fsm_state``) como el modelo real: en PID el Flight State de tierra del Equipo2
-  (0 Idle, 1 Armed, 2 Takeoff, 3 Land, 9 MS Stop) y en MPC la FSM a bordo (1..9).
+  (0 Idle, 1 Armed, 2 Takeoff, 3 Land, 9 MS Stop) y en MPC la FSM a bordo (1..9);
+* y(61:63) = roll, pitch y válido del EXPLORADOR (como el TELEMETRY PACK nuevo): la inclinación que
+  necesita el empuje para dar la aceleración de la planta (convención ``geo.R_mundo_cuerpo``: pitch > 0
+  = nariz abajo al acelerar hacia adelante, roll > 0 = lado izquierdo arriba al acelerar hacia la
+  derecha); 0 en el piso; y(63) = 0 sin explorador o sin rastreo. ``actitud_en_tel = False`` emula un
+  modelo de Simulink viejo (y(61:63) = 0).
 
 También se puede correr solo, para que otros (p. ej. el simulador MATLAB o pruebas) tengan
 un servidor :18700 de referencia:   ``python -m app.mock_sim --puerto 18700``
@@ -126,10 +131,27 @@ def _leg_ok(p, q, groups, dist, hard_min=0.0):
     return True
 
 
+G = 9.81
+
+
+def actitud_de_aceleracion(a_w, yaw):
+    """(roll, pitch) que inclinan el empuje hacia ``a_w + g·z`` con R = Rz(yaw)·Ry(pitch)·Rx(roll)
+    (``geo.R_mundo_cuerpo``): la dirección del empuje en el cuerpo sin yaw es
+    Ry(pitch)·Rx(roll)·e3 = [cos(roll)·sin(pitch), -sin(roll), cos(roll)·cos(pitch)]."""
+    c, s = math.cos(yaw), math.sin(yaw)
+    ax, ay = c * a_w[0] + s * a_w[1], -s * a_w[0] + c * a_w[1]     # Rz(-yaw)·a
+    t = np.array([ax, ay, G + a_w[2]])
+    t /= np.linalg.norm(t)
+    roll = -math.asin(max(-1.0, min(1.0, t[1])))
+    pitch = math.atan2(t[0], t[2])
+    return roll, pitch
+
+
 class Drone:
     def __init__(self, x, y, yaw=0.0):
         self.p = np.array([x, y, 0.0])
         self.v = np.zeros(3)
+        self.a = np.zeros(3)       # aceleración del último paso (mundo), para la actitud de y(61:62)
         self.yaw = yaw
         self.sp = np.array([x, y, 0.0])
         self.yawd = yaw
@@ -144,6 +166,7 @@ class Drone:
     def step(self, dt, vmax_xy=0.55, vmax_z=0.5, tau=0.35):
         if not self.flying and self.sp[2] <= 0.0 and self.p[2] <= 0.01:
             self.v[:] = 0.0
+            self.a[:] = 0.0
             self.p[2] = 0.0
             return
         err = self.sp - self.p
@@ -152,10 +175,13 @@ class Drone:
         if n > vmax_xy:
             vd[:2] *= vmax_xy / n
         vd[2] = max(-vmax_z, min(vmax_z, vd[2]))
-        self.v += (vd - self.v) * min(1.0, dt / tau)
+        dv = (vd - self.v) * min(1.0, dt / tau)
+        self.a = dv / dt if dt > 0 else np.zeros(3)
+        self.v += dv
         self.p += self.v * dt
         if self.p[2] < 0.0:
             self.p[2], self.v[2] = 0.0, 0.0
+            self.a[2] = 0.0
         e = math.atan2(math.sin(self.yawd - self.yaw), math.cos(self.yawd - self.yaw))
         self.yaw += max(-1.0 * dt, min(1.0 * dt, e))
         self.battery = max(13.5, self.battery - (0.0009 if self.flying else 0.00002) * dt)
@@ -181,6 +207,7 @@ class MockMission:
         self.version = 2 if str(cfg.get("version_control", "PID")).upper() == "MPC" else 1
         self.vertices = cfg.get("pista", {}).get("vertices", [[-1.2, 1.2], [1.2, 1.2], [-1.2, -1.2], [1.2, -1.2]])
         self.drones = {1: Drone(*homes[0]), 2: Drone(*homes[1])}
+        self.actitud_en_tel = True   # False = modelo de Simulink viejo: y(61:63) = 0
         self.t = 0.0
         self.state = P.INIT
         self.prev_state = P.INIT
@@ -642,6 +669,9 @@ class MockMission:
             "alerta": self.alerta if self.alerta_forzada is None else int(self.alerta_forzada),
             "objetivo_sim": self._objetivo_rotando(),
         }
+        if self.actitud_en_tel and dE is not None and dE.tracked:
+            tel["explorer_roll"], tel["explorer_pitch"] = actitud_de_aceleracion(dE.a, dE.yaw)
+            tel["explorer_att_ok"] = 1
         for k, d in self.drones.items():
             fsm = d.fsm if self.version == 2 else flight_state_tierra(d.fsm, d.aterrizo)
             tel["drones"][k] = {

@@ -67,7 +67,8 @@ def test_historial_de_pose_interpola():
     h = PoseHistory()
     h.add(10.0, 0.0, 0.0, 1.0, math.radians(170))
     h.add(10.2, 0.2, -0.2, 1.2, math.radians(-170))   # cruza ±180°
-    x, y, z, yaw = h.at(10.1)
+    x, y, z, yaw, roll, pitch = h.at(10.1)
+    assert roll is None and pitch is None               # sin actitud (y(63) = 0): no se inventa
     assert (round(x, 6), round(y, 6), round(z, 6)) == (0.1, -0.1, 1.1)
     assert abs(math.degrees(math.atan2(math.sin(yaw), math.cos(yaw)))) > 179.9
     assert h.at(12.0) is None                           # demasiado viejo

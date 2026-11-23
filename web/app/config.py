@@ -47,7 +47,43 @@ VISION_FILTROS_DEFAULTS = {
     "tam_min_m": 0.0,               # 0 = desactivado
     "dist_max_tubo_toma_m": 0.25,   # una toma va abrazada al tubo: más lejos de la polilínea pista.vertices se descarta
     "dist_max_tubo_fuego_m": None,  # null = desactivado (un fuego puede estar fuera del tubo)
+    "inclinacion_max_deg": 15.0,    # explorador más inclinado que esto (con actitud y(61:63) válida): se descarta
 }
+
+# Actitud del explorador (roll/pitch de y(61:63)) en la geolocalización (vision_service, geo.R_mundo_cuerpo).
+ACTITUD_DEFAULTS = {
+    "usar_actitud": True,            # false = suponer el dron nivelado (comportamiento anterior) y no descartar por inclinación
+    "actitud_signos": [1, 1],        # [roll, pitch]: -1 invierte ese ángulo si la prueba del libro sale al revés
+    "actitud_offset_deg": [0.0, 0.0],  # [roll, pitch] que marca el dron nivelado en el piso (se resta)
+}
+
+
+def actitud_vision(cfg):
+    """Cómo usar la actitud del explorador, leído de ``cfg['vision']`` (estacion.json completo).
+
+    Devuelve ``{"usar": bool, "signo_roll", "signo_pitch": ±1.0, "offset_roll", "offset_pitch": rad}``.
+    ``usar_actitud`` solo acepta true/false (cualquier otro valor -> true); un signo que no sea ±1 o un
+    offset no numérico se ignoran (valor por defecto), igual que en ``filtros_vision``."""
+    vis = cfg.get("vision") if isinstance(cfg, dict) else None
+    vis = vis if isinstance(vis, dict) else {}
+    usar = vis.get("usar_actitud", ACTITUD_DEFAULTS["usar_actitud"])
+    usar = usar if isinstance(usar, bool) else ACTITUD_DEFAULTS["usar_actitud"]
+
+    def par(key, ok):
+        val = vis.get(key)
+        dflt = ACTITUD_DEFAULTS[key]
+        if not isinstance(val, (list, tuple)) or len(val) != 2:
+            return [float(a) for a in dflt]
+        out = []
+        for a, d in zip(val, dflt):
+            good = not isinstance(a, bool) and isinstance(a, (int, float)) and math.isfinite(float(a)) and ok(float(a))
+            out.append(float(a) if good else float(d))
+        return out
+
+    sr, sp = par("actitud_signos", lambda a: a in (1.0, -1.0))
+    orr, op = par("actitud_offset_deg", lambda a: abs(a) <= 30.0)
+    return {"usar": usar, "signo_roll": sr, "signo_pitch": sp,
+            "offset_roll": math.radians(orr), "offset_pitch": math.radians(op)}
 
 
 def filtros_vision(cfg):
