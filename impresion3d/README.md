@@ -4,7 +4,7 @@ Impresora: Creality K2 Plus, PLA, boquilla 0.4 mm. Las piezas se diseñaron para
 Todas las piezas pasaron una revisión independiente: piezas watertight, sin islas flotantes, ajustes y cinemática verificados por cálculo.
 
 ## Lo más rápido: abrir las placas en Creality Print
-En `placas/` hay archivos 3MF con las piezas ya acomodadas y en su orientación de impresión. Cada placa produce **3 juegos**.
+En `placas/` hay archivos 3MF con las piezas ya acomodadas y en su orientación de impresión. Las placas 1 a 4 producen **3 juegos**; la 5 es el soporte de la cámara.
 
 | Placa | Filamento | Contenido | Ajustes |
 |---|---|---|---|
@@ -12,6 +12,7 @@ En `placas/` hay archivos 3MF con las piezas ya acomodadas y en su orientación 
 | `placa2_AMARILLO_fuegos_flama.3mf` | Amarillo | Flamas centrales A, B y C | Capa 0.2 (0.16 para puntas más finas), 3 perímetros, gyroid 15 %, **brim 5–8 mm** |
 | `placa3_ROJO_valvulas_cuerpo_tuerca_zapata.3mf` | Rojo | 3 cuerpos, 3 tuercas, 3 zapatas con balero y 1 probeta de calibración | Cuerpos: capa 0.2, 4 perímetros, gyroid 25 %, brim 5 mm. Tuercas: idealmente capa 0.12–0.16 y 100 % de relleno (ajústalo por objeto) |
 | `placa4_ROJO_valvulas_vastago_volante.3mf` | Rojo | 3 vástagos con volante (llevan rosca M16) | **Capa 0.12–0.16**, 4 perímetros, 30 %, **brim 5–8 mm** |
+| `placa5_PETG_soporte_camara_A_B.3mf` | PETG o ASA (PLA solo para probar el ajuste) | Soporte de la cámara: adaptador **A** (de pie) y abrazadera **B** (de lado), 1 de cada uno. Solo se monta uno; antes imprime `stl/soporte_camara_probeta.stl` | Capa 0.2, 4 perímetros, 5 capas arriba y abajo, gyroid 40 %, sin soportes, **brim 5 mm** |
 
 Las piezas sueltas están en `stl/`, para imprimir más o rearmar las placas. Las versiones editables están en `step/` (se abren en FreeCAD o SolidWorks), y los scripts paramétricos en `cad/` (`fuegos.py`, `valvula.py`, `soporte_camara.py`).
 

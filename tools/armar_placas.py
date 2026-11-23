@@ -1,15 +1,23 @@
-"""Arma placas 3MF (orientacion de impresion) para Creality Print, 350x350 mm."""
+"""Arma placas 3MF (orientacion de impresion) para Creality Print, 350x350 mm.
+
+Uso:  python armar_placas.py <dir_stl> <dir_salida> [placa ...]
+Sin nombres arma todas; con nombres arma solo esas (para no sobrescribir placas editadas a mano).
+"""
 import sys, trimesh, numpy as np
 from pathlib import Path
-STL = Path(sys.argv[1]); OUT = Path(sys.argv[2]); OUT.mkdir(exist_ok=True)
+STL = Path(sys.argv[1]); OUT = Path(sys.argv[2]); OUT.mkdir(exist_ok=True); SOLO = set(sys.argv[3:])
 GAP = 18.0
 PLACAS = {
     "placa1_ROJO_fuegos_base": ["fuego_A_rojo", "fuego_B_rojo", "fuego_C_rojo"],
     "placa2_AMARILLO_fuegos_flama": ["fuego_A_amarillo", "fuego_B_amarillo", "fuego_C_amarillo"],
     "placa3_ROJO_valvulas_cuerpo_tuerca_zapata": ["valvula_cuerpo"]*3 + ["valvula_tuerca"]*3 + ["valvula_zapata_balero"]*3 + ["valvula_probeta_perno"],
     "placa4_ROJO_valvulas_vastago_volante": ["valvula_vastago_volante"]*3,
+    "placa5_PETG_soporte_camara_A_B": ["soporte_camara_A_adaptador", "soporte_camara_B_abrazadera"],
 }
+faltan = SOLO - set(PLACAS)
+if faltan: sys.exit(f"placas desconocidas: {sorted(faltan)}")
 for nombre, piezas in PLACAS.items():
+    if SOLO and nombre not in SOLO: continue
     mallas = [trimesh.load(STL / f"{p}.stl", force="mesh") for p in piezas]
     # acomodo en filas (shelf packing) dentro de 330 mm
     x = y = fila_h = 0.0; esc = trimesh.Scene()
