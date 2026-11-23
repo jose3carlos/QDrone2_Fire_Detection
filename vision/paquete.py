@@ -13,7 +13,8 @@ Qué lleva: modelos/mejor.pt, mejor.onnx (+ .json), métricas, y datos_reales/im
 Al importar:
   - un modelo distinto al local se respalda antes como <nombre>_local_<fecha>.<ext>;
   - las fotos y etiquetas se copian; si una etiqueta local es distinta, se queda la MÁS RECIENTE;
-  - revisadas.txt se une (unión de ambos lados).
+  - revisadas.txt se une (unión de ambos lados);
+  - avisa si llega un .onnx de entrada 480x640 y el vision/detector.py local es anterior (sólo maneja 640x640).
 """
 import argparse
 import datetime
@@ -101,7 +102,29 @@ def importar(a):
             nuevos += 1
     print("importado %s: %d copiados/actualizados, %d ya iguales, %d locales más nuevos conservados, "
           "%d modelos locales respaldados" % (a.zip, nuevos, iguales_n, conservados, resp))
+    avisar_forma_onnx()
     return 0
+
+
+def avisar_forma_onnx():
+    """El paquete trae modelos, no código: un .onnx de entrada no cuadrada (p. ej. 480x640) necesita el
+    detector.py que lee la forma del .onnx (desde el 22-nov-2026); con uno más viejo la estación no lo carga."""
+    import json
+    try:
+        with open(os.path.join(AQUI, "detector.py"), encoding="utf-8") as f:
+            detector_nuevo = "forma_entrada_onnx" in f.read()
+    except OSError:
+        return
+    for js in glob.glob(os.path.join(AQUI, "modelos", "*.onnx.json")):
+        try:
+            with open(js, encoding="utf-8") as f:
+                imgsz = json.load(f).get("imgsz")
+        except Exception:
+            continue
+        if isinstance(imgsz, list) and len(imgsz) == 2 and imgsz[0] != imgsz[1] and not detector_nuevo:
+            print("AVISO: %s tiene entrada %sx%s y este vision/detector.py sólo maneja 640x640: actualiza el "
+                  "repositorio (git pull) o reexporta con python vision/exportar_onnx.py --imgsz 640"
+                  % (os.path.basename(js)[:-5], imgsz[0], imgsz[1]))
 
 
 def main():

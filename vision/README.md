@@ -11,7 +11,7 @@ y de webcam) contra falsos positivos; faltan las fotos reales del laboratorio (�
 | `entrenar.py` | Entrena YOLO11n y guarda `modelos/mejor.pt` + `modelos/metricas.json` + `modelos/mejor.onnx` |
 | `evaluar.py` | mAP por clase, P/R con la confianza de operación, velocidad (ms/imagen) de cada motor |
 | `detector.py` | `Detector(model_path, conf).detect(frame_bgr) -> [(cls, conf, x1, y1, x2, y2), ...]` (lo usa `web/`) |
-| `exportar_onnx.py` | `mejor.pt` → `mejor.onnx` para correr sin torch (cv2.dnn) |
+| `exportar_onnx.py` | `mejor.pt` → `mejor.onnx` (entrada 480×640) para correr sin torch (cv2.dnn) |
 | `negativos_coco.py` | Arma las fotos negativas de COCO val2017 (sin piezas, etiqueta vacía) para entrenar y para medir falsos positivos |
 | `capturar_fotos.py` | Captura fotos reales desde el stream QDF1 del dron (:18800) o una webcam |
 | `etiquetar.py` | Pre-etiqueta fotos reales con el modelo y abre un editor OpenCV para corregirlas |
@@ -32,7 +32,7 @@ Las métricas (`modelos/metricas*.json`, `modelos/evaluacion_*.json`) sí, menos
    estándar, sirve cualquier Python 3.10+). También se puede copiar a mano `vision\modelos\mejor.pt`,
    `mejor.onnx` y `mejor.onnx.json`.
 2. **Arrancar la estación normal** (`web\iniciar_web.bat`). Su venv (`qd2_web`) **no tiene torch**; en ese caso
-   `detector.py` usa solo `mejor.onnx` con OpenCV (cv2.dnn, CPU, ~35–45 ms por imagen de 640×480 en esta laptop, ver §3) y detecta **fuegos y tomas**.
+   `detector.py` usa solo `mejor.onnx` con OpenCV (cv2.dnn, CPU, mediana ~28 ms por imagen de 640×480 en esta laptop, ver §3) y detecta **fuegos y tomas**.
    En la interfaz el detector aparece como `vision/detector.py (mejor.pt)`; si en cambio dice
    `fomo (Edge Impulse) — respaldo, solo fuego`, falta `mejor.onnx`: corre el paso 1 o
    `%PY% vision\exportar_onnx.py`. Prueba rápida desde `web\`:
@@ -96,29 +96,48 @@ Velocidad medida (Cycles + OptiX, 24 muestras con denoiser, RTX 4060 Laptop): ~1
 - `detector.py` guarda las imágenes con cajas en `vision\runs\detector\` (nunca dentro de la carpeta de datos) e ignora los `*_det.jpg`.
 - `evaluar.py` necesita `images/val` (o la estructura de `datos_reales`); nunca evalúa sobre todas las imágenes.
 
-### Resultados del modelo actual `mejor.pt` / `mejor.onnx` (22-nov-2026, afinado con negativos)
+### Resultados del modelo actual `mejor.pt` / `mejor.onnx` (22-nov-2026, afinado con negativos; `.onnx` de 480×640)
 
 - **Qué es:** el modelo sintético de 80 épocas (respaldado como `modelos/mejor_20261122_134604.pt`) **afinado 25 épocas con negativos**: 1 500 fotos de COCO sin piezas y 82 capturas de webcam sin piezas, más 16 capturas de webcam con fuego (las 98 capturas ×3), junto con todo el sintético. Corrida `runs/ft_negativos_v2_20261122`, 44.2 min en la RTX 4060. `mejor.pt` es el **`last.pt` de la época 25**, no el `best.pt`. Comando, datos y por qué: sección **Negativos** (abajo).
-- **Evaluación externa** (confianza ≥ 0.5; cuenta fotos con al menos una detección). Cifras con el **motor de la estación** (OpenCV-ONNX en CPU, venv `qd2_web`); entre paréntesis, con ultralytics y el `.pt` (son las que guarda `metricas.json → evaluacion_externa`). "Anterior" = `mejor_20261122_134604`.
+- **Evaluación externa** (confianza ≥ 0.5; cuenta fotos con al menos una detección). Cifras con el **motor de la estación** (OpenCV-ONNX en CPU, venv `qd2_web`, con el `mejor.onnx` de entrada 480×640); entre paréntesis, con ultralytics y el `.pt` (son las que guarda `metricas.json → evaluacion_externa`). Las del `.onnx` anterior de 640×640 están en **ONNX a 480×640** (abajo). "Anterior" = `mejor_20261122_134604`.
 
   | Fotos | Qué se cuenta | Anterior | Actual |
   |---|---|---|---|
   | 500 de COCO apartadas (`coco_negativos_eval`, ninguna se usó al entrenar) | con "toma" falsa | 28.8 % (27.6 %) | **0 %** (0 %) |
-  | las mismas 500 | con "fuego" falso | 12.2 % (11.2 %) | **0.4 % = 2/500** (0 %) |
+  | las mismas 500 | con "fuego" falso | 12.2 % (11.2 %) | **0.2 % = 1/500** (0 %) |
   | 50 capturas de webcam con la cara y sin piezas | con cualquier detección | 44/50 (45/50) | **0/50** (0/50) |
-  | 56 capturas de webcam con fuego (de frente, en la mano) | con el fuego detectado (recall) | 50/56 (51/56) | **47/56** (49/56) |
+  | 56 capturas de webcam con fuego (de frente, en la mano) | con el fuego detectado (recall) | 50/56 (51/56) | **49/56** (49/56) |
   | las mismas 56 | con "toma" falsa | 41/56 | **0/56** |
 
 - **Ojo, no es la prueba del laboratorio:** son fotos de webcam en interiores, de frente, no la cámara cenital del dron sobre el tapete; lo que decide es `evaluar.py` con fotos del laboratorio (§4). Además no son del todo independientes del entrenamiento:
   - las 50 caras son exactamente la validación del afinado (`datos_reales/images/val`): no dieron gradientes, pero se vigilaron época por época;
   - 3 de las 56 fotos de fuego también están en esa validación;
-  - 22 de las 56 son de la sesión `webcam_20261122_120648`, de la que salen las 98 capturas de train (fotogramas a ~2 s entre sí, muy parecidos). Sólo con la otra sesión (`120159`, 34 fotos, ninguna en train): 30 → 28 con OpenCV, 31 → 30 con ultralytics;
+  - 22 de las 56 son de la sesión `webcam_20261122_120648`, de la que salen las 98 capturas de train (fotogramas a ~2 s entre sí, muy parecidos). Sólo con la otra sesión (`120159`, 34 fotos, ninguna en train): 31 → 30 con ultralytics y con el `.onnx` de 480×640 (con el de 640×640, 30 → 28);
   - las 500 COCO apartadas no coinciden con las de train/val ni por nombre ni por contenido (md5).
-- **Fuegos que el actual no detecta** (9 de 56 con OpenCV, 7 con ultralytics): 5 son puntas o trozos cortados por el borde de la imagen (4 de ellos tampoco los detectaba el anterior); 2 son fuegos cortados abajo que sólo se pierden con OpenCV; y **2 son fallos claros**: un fuego grande y bien visible con la base cortada por el borde (`webcam_20261122_120159/t0090.8`, `webcam_20261122_120648/t0074.7`), que el actual no detecta ni a 0.25. Parece que el afinado lo volvió más conservador con fuegos muy cerca y recortados: hay que vigilarlo en el laboratorio.
-- **Por qué OpenCV y ultralytics no dan lo mismo:** no es el `.onnx`. Con la misma entrada de 640×640, `.onnx` y `.pt` dan los mismos scores (diferencia ≤ 1.3e-5, en el actual y en el anterior). Cambia el preprocesado: ultralytics infiere una imagen de 640×480 a 640×480 sin relleno y `detector.py` con OpenCV la rellena a 640×640 con bandas grises. Se podría igualar exportando el ONNX a 480×640 (o con forma dinámica) y adaptando el letterbox de `_MotorOpenCV`; no está hecho.
-- **Validación del entrenamiento** (`modelos/metricas.json`, ultralytics, val completo de 1 609 imágenes: 1 456 sintéticas + 100 COCO + 53 webcam): mAP50 = 0.9945, mAP50-95 = 0.9375 (P = 0.991, R = 0.984); fuego AP50 = 0.9945, toma AP50 = 0.9946. Sólo las 1 456 sintéticas, con OpenCV: mAP50 0.9946 (anterior) → 0.9944 (actual), es decir, el afinado no empeoró lo sintético. Esta validación está saturada y no mide falsos positivos: para eso está la tabla de arriba.
-- **Velocidad:** misma arquitectura y mismo costo que el anterior. `Detector.detect()` con OpenCV-ONNX en CPU, 640×480: mediana ~38 ms con 16 hilos (~26 FPS); sólo la red con 1 hilo, 144 ms. Las cifras de ultralytics GPU/CPU son las del modelo de `sintetico_smoke` (abajo; misma arquitectura).
-- `mejor.onnx.json` guarda el md5 del `mejor.pt` del que salió (`92e8dec0…`); `detector.py` avisa si el `.onnx` quedó desactualizado.
+- **Fuegos que el actual no detecta** (7 de 56, los mismos con OpenCV 480×640 y con ultralytics; con el `.onnx` de 640×640 eran 9: se perdían además 2 fuegos cortados abajo): 5 son puntas o trozos cortados por el borde de la imagen (4 de ellos tampoco los detectaba el anterior) y **2 son fallos claros**: un fuego grande y bien visible con la base cortada por el borde (`webcam_20261122_120159/t0090.8`, `webcam_20261122_120648/t0074.7`), que el actual no detecta ni a 0.25. Parece que el afinado lo volvió más conservador con fuegos muy cerca y recortados: hay que vigilarlo en el laboratorio.
+- **ONNX a 480×640 (hecho el 22-nov-2026).** Con la misma entrada, `.onnx` y `.pt` dan los mismos scores (diferencia ≤ 1.3e-5); lo que cambiaba era el preprocesado: ultralytics infiere una imagen de 640×480 a 640×480 sin relleno (letterbox `rect`) y `detector.py` con el `.onnx` de 640×640 la rellenaba con bandas grises de 80 px arriba y abajo. Ahora `mejor.onnx` se exporta del **mismo `mejor.pt`** con entrada fija **480×640** (alto × ancho, opset 12, sin NMS; es lo que hace `exportar_onnx.py` por defecto) y `_MotorOpenCV` hace el letterbox a la forma del `.onnx`, que lee de sus metadatos o de `mejor.onnx.json → imgsz` (sirve igual con un `.onnx` cuadrado viejo). Medido con el motor OpenCV, mismo criterio que la tabla de arriba (los scripts de la medición no están en el repo):
+
+  | | `.onnx` 640×640 (antes) | `.onnx` 480×640 (ahora) |
+  |---|---|---|
+  | 56 capturas con fuego: recall a conf ≥ 0.5 | 47/56 | **49/56** (= ultralytics) |
+  | 500 COCO: fotos con "fuego" / "toma" falsos | 2/500 / 0/500 | **1/500** / 0/500 |
+  | 50 capturas sin piezas: con alguna detección | 0/50 | 0/50 |
+  | 1 456 val sintéticas (1 390 `sintetico_10k` + 66 `sintetico_smoke`): mAP50 (conf 0.001, NMS 0.7, IoU 0.5) | 0.9944 | **0.9946** (ultralytics: 0.9946) |
+  | las mismas, P / R a conf 0.5, fuego | 0.985 / 0.987 | 0.981 / 0.987 (ultralytics: igual) |
+  | las mismas, P / R a conf 0.5, toma | 0.988 / 0.985 | 0.984 / 0.989 (ultralytics: 0.987 / 0.988) |
+  | `Detector.detect()` en CPU, 100 capturas 640×480 ×4, mediana (p90) | 38.8 ms (51.9) | **28.3 ms (35.1)** |
+  | sólo la red, 1 hilo, mediana | 138 ms | 101 ms |
+  | cajas iguales a ultralytics CPU (conf ≥ 0.25, ±1 px), 106 capturas 640×480 | 3/60 (mediana 11 px) | **60/60** (0 px, misma confianza) |
+  | ídem, 200 val sintéticas (640×480 y 1280×720) | 262/283 | 282/283 (máx. 2 px) |
+  | las 56 capturas con fuego **giradas 90°** (480×640 vertical) | 45/56 | **41/56** |
+
+  - En la sintética a conf 0.5 hay unos pocos falsos más (fuego 16 → 21, toma 12 → 15 en 1 456 imágenes), los mismos que da ultralytics: 10 de los 11 que sólo da el nuevo son tiras de 5–11 px de alto pegadas al borde de la imagen (piezas cortadas por el borde que el generador no etiqueta); con el relleno de 640×640 ese borde quedaba junto a la banda gris. En COCO y en las capturas sin piezas no hay más falsos.
+  - **Imágenes verticales** (480 de ancho × 640 de alto, p. ej. si el dron gira la imagen con `--rotar 90`): el letterbox las reduce a 360×480 (escala 0.75) con bandas de 140 px a los lados. Funcionan, pero los objetos quedan 25 % más chicos y el recall bajó de 45/56 a 41/56 en la prueba de arriba. Por eso conviene no girar la imagen en el dron y declarar el giro en `camara.rotacion_montaje` (lo recomendado en `web/README.md`); si hace falta girarla ahí, reexporta cuadrado con `%PY% vision\exportar_onnx.py --imgsz 640` (`detector.py` toma la forma del `.onnx` solo).
+  - El `.onnx` anterior (mismo `.pt`, 640×640) quedó como `modelos/mejor_640x640_20261122.onnx` (no va a git).
+  - Un `detector.py` anterior a este cambio no carga bien el `.onnx` de 480×640 (forzaba 640×640): el `.onnx` y el código van juntos en git, así que el `.onnx` de 480×640 exige actualizar **todo** el repositorio (`git pull`), no solo copiar el modelo. Con un `detector.py` viejo la estación no falla en silencio: OpenCV da un error de `reshape` y cae al FOMO con aviso rojo. El aviso de `paquete.py importar` (y de `preflight_lab.py`) solo cubre el caso raro de un `paquete.py` nuevo junto a un `detector.py` viejo; un repositorio viejo corre su `paquete.py` viejo, que no avisa.
+- **Validación del entrenamiento** (`modelos/metricas.json`, ultralytics, val completo de 1 609 imágenes: 1 456 sintéticas + 100 COCO + 53 webcam): mAP50 = 0.9945, mAP50-95 = 0.9375 (P = 0.991, R = 0.984); fuego AP50 = 0.9945, toma AP50 = 0.9946. Sólo las 1 456 sintéticas, con OpenCV: mAP50 0.9946 (anterior) → 0.9946 (actual, `.onnx` 480×640; 0.9944 con el de 640×640), es decir, el afinado no empeoró lo sintético. Esta validación está saturada y no mide falsos positivos: para eso está la tabla de arriba.
+- **Velocidad:** misma arquitectura que el anterior. `Detector.detect()` con OpenCV-ONNX (480×640) en CPU, 640×480: mediana 28 ms con 16 hilos (~35 FPS); sólo la red con 1 hilo, 101 ms (con el `.onnx` de 640×640, 39 ms y 138 ms medidos en la misma corrida). Las cifras de ultralytics GPU/CPU son las del modelo de `sintetico_smoke` (abajo; misma arquitectura).
+- `mejor.onnx.json` guarda el md5 del `mejor.pt` del que salió (`92e8dec0…`) y la forma de entrada (`"imgsz": [480, 640]`, alto × ancho); `detector.py` avisa si el `.onnx` quedó desactualizado.
 - **Modelos anteriores** (los pesos sólo están en esta laptop, no van a git; las métricas sí):
   - `modelos/mejor_20261122_134604.pt` / `.onnx` + `metricas_20261122_134604.json` (el que se afinó): `entrenar.py --forzar --datos C:\Users\ezequ\datasets\qdrone2_vision\sintetico_10k vision\datos\sintetico_smoke --epocas 80`, corrida `runs/yolo11n_20261122_0545`, desde `yolo11n.pt` de COCO, 111.6 min. Train: 8 610 + 534 imágenes sintéticas; val: 1 390 + 66. **0 fotos reales.** Validación sintética: mAP50 = 0.995, mAP50-95 = 0.937 (P = 0.992, R = 0.985). Con OpenCV-ONNX (conf 0.5, IoU ≥ 0.5, 200 imágenes val de `sintetico_10k`): P = 0.977, R = 0.992. Con la webcam confundía caras y objetos con "toma" (tabla de arriba).
   - `modelos/mejor_20261122_073731.pt` + `metricas_20261122_073731.json`: sólo `sintetico_smoke` (600 imágenes, 30 épocas, 3.7 min), mAP50 = 0.960 sobre 66 imágenes val. Velocidad medida entonces (`modelos/evaluacion_sintetico_smoke.json`, 640×480, GPU compartida con Blender): ultralytics GPU media 21–26 ms (17–19 ms con la GPU libre); ultralytics CPU (Ryzen 9 8945HS) media 39 ms; OpenCV-ONNX CPU media 32–43 ms.
@@ -307,6 +326,6 @@ sólo con fotos reales se puede perder lo aprendido contra falsos positivos.
 ## 5. Notas técnicas
 
 - **Campo de visión.** La D435i color tiene un VFOV de 42.5°. El HFOV de 69.4° vale **sólo para 16:9**. En 640×480 el sensor recorta los lados y el HFOV real es ~55° (fx ≈ fy ≈ 617 px). Para geolocalizar hay que usar fx/fy: `config/estacion.json → vision.intrinsecos_nominales` (o mejor los reales de `rs2::video_stream_profile::get_intrinsics()`). `docs/ARQUITECTURA.md` §7 ya lo dice así.
-- Desde 1.5 m, un fuego (~10 cm) mide ~40 px y una toma ~35–45 px en 640×480. Por eso se usa `imgsz=640` sin reducir la imagen.
+- Desde 1.5 m, un fuego (~10 cm) mide ~40 px y una toma ~35–45 px en 640×480. Por eso se usa `imgsz=640` sin reducir la imagen: `mejor.onnx` tiene entrada 480×640 (alto × ancho), así que un cuadro de 640×480 entra a la red tal cual, sin escalar ni rellenar. Otros tamaños se ajustan con letterbox (escala sin deformar + gris 114 centrado, como ultralytics): 1280×720 → 640×360 con bandas de 60 px; vertical 480×640 → 360×480 (ver §3).
 - `detector.detect()` devuelve las cajas en píxeles del frame original, ordenadas por confianza.
 - Al importar ultralytics, OpenCV queda en un hilo (`cv2.setNumThreads(0)`); el motor OpenCV usa todos los núcleos sólo durante su inferencia.

@@ -71,6 +71,10 @@ def test_red_y_comandos(client):
     assert d1["uri_host"] == "-URI_Host tcpip://192.168.2.11:18001" and not d1["pendiente"]
     assert "tcpip://192.168.2.16:17000" in d1["quarc_run"] and "QD2_DroneStack_PID_2021a.rt-linux_qdrone2" in d1["quarc_run"]
     assert d2["pendiente"] and "<IP_DRON2>" in d2["quarc_run"] and d2["uri_host"].endswith(":18002")
+    # ExtModeMexArgs como el modelo del dron del Equipo2: cadenas de MATLAB entre comillas (dobladas en el set_param)
+    assert d1["ext_mode_args"] == ("set_param('QD2_DroneStack_PID_2021a', 'ExtModeMexArgs', "
+                                   "'''-w -d /tmp -uri %u -URI_Host tcpip://192.168.2.11:18001'',"
+                                   "''tcpip://192.168.2.16:17001?retries=10''')")
     red = client.get("/api/red").json()
     assert isinstance(red["interfaces"], list)
 

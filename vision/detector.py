@@ -13,7 +13,9 @@ Dos motores (se elige solo, ver `backend`):
   - "ultralytics": PyTorch + ultralytics con mejor.pt. Usa la GPU (CUDA) si existe. Es el del entrenamiento.
   - "opencv":      cv2.dnn con mejor.onnx (exportado de mejor.pt con `python vision/exportar_onnx.py`).
                    Sólo necesita opencv-python + numpy, así que funciona en el venv de la estación web
-                   (qd2_web) SIN instalar torch. Corre en CPU.
+                   (qd2_web) SIN instalar torch. Corre en CPU. La forma de entrada (480x640 = alto x ancho desde
+                   el 22-nov-2026; antes 640x640) se lee del propio .onnx o de su .onnx.json; `imgsz` sólo
+                   se usa si no está en ninguno de los dos.
   backend="auto" (por defecto) intenta ultralytics y, si torch/ultralytics no están instalados, usa opencv
   con el .onnx que está junto al .pt. Se puede forzar con config/estacion.json -> vision.backend.
 
@@ -58,28 +60,73 @@ def _hay_ultralytics():
         return False
 
 
+def forma_entrada_onnx(ruta_onnx, defecto=640):
+    """(alto, ancho) de la entrada fija del .onnx exportado por ultralytics.
+
+    Se lee de los metadatos del propio .onnx (ultralytics guarda "imgsz": "[480, 640]"); si no están, del
+    <nombre>.onnx.json que escribe exportar_onnx.py ("imgsz": [480, 640], o 640 en los exportados antes);
+    si tampoco, `defecto` (cuadrada). No necesita el paquete onnx (la estación sólo tiene opencv + numpy).
+    """
+    import re
+
+    def par(v):
+        if isinstance(v, (int, float)):
+            return int(v), int(v)
+        if isinstance(v, (list, tuple)) and len(v) == 2:
+            return int(v[0]), int(v[1])
+        return None
+    try:
+        with open(ruta_onnx, "rb") as f:
+            f.seek(0, 2)
+            f.seek(max(0, f.tell() - (1 << 16)))   # metadata_props va al final del archivo
+            cola = f.read()
+        m = re.search(rb"\x0a\x05imgsz\x12.\[(\d+), ?(\d+)\]", cola, re.S)
+        if m:
+            return int(m.group(1)), int(m.group(2))
+    except OSError:
+        pass
+    try:
+        with open(ruta_onnx + ".json", encoding="utf-8") as f:
+            r = par(json.load(f).get("imgsz"))
+        if r:
+            return r
+    except Exception:
+        pass
+    return par(defecto)
+
+
 class _MotorOpenCV:
-    """YOLO11 exportado a ONNX (entrada fija 1x3xSxS, salida 1x(4+nc)x8400) con cv2.dnn, en CPU."""
+    """YOLO11 exportado a ONNX (entrada fija 1x3xHxW, salida 1x(4+nc)xN, sin NMS) con cv2.dnn, en CPU.
+
+    La imagen se ajusta a HxW (la forma del .onnx) con letterbox igual que ultralytics: se escala sin deformar
+    (r = min(H/h, W/w)) y se rellena con gris 114 centrado. Con el .onnx de 480x640 una imagen de 640x480 entra
+    tal cual (r = 1, sin bandas), como en ultralytics con el .pt; con el .onnx viejo de 640x640 lleva bandas de
+    80 px arriba y abajo. Una imagen vertical (480 de ancho x 640 de alto) en el .onnx de 480x640 se reduce a
+    360x480 (r = 0.75) con bandas de 140 px a los lados: funciona, pero los objetos quedan 25 % más chicos.
+    """
 
     def __init__(self, ruta_onnx, imgsz):
         import cv2
         self.cv2 = cv2
         # motor y destino por defecto de OpenCV = CPU (en OpenCV 5 setPreferableTarget sólo genera avisos)
         self.net = cv2.dnn.readNetFromONNX(ruta_onnx)
-        self.s = int(imgsz)
+        self.h, self.w = forma_entrada_onnx(ruta_onnx, imgsz)
+        # anclas de YOLO11 (pasos 8, 16 y 32): 8400 con 640x640, 6300 con 480x640
+        self.n_anclas = sum((self.h // e) * (self.w // e) for e in (8, 16, 32))
 
     def predecir(self, img, conf, iou, max_det=300):
         cv2 = self.cv2
         h, w = img.shape[:2]
-        # letterbox igual que ultralytics (relleno gris 114 centrado)
-        r = min(self.s / h, self.s / w)
+        # letterbox igual que ultralytics (relleno gris 114 centrado) a la forma HxW del .onnx
+        r = min(self.h / h, self.w / w)
         nw, nh = int(round(w * r)), int(round(h * r))
-        dw, dh = (self.s - nw) / 2.0, (self.s - nh) / 2.0
+        dw, dh = (self.w - nw) / 2.0, (self.h - nh) / 2.0
         im = cv2.resize(img, (nw, nh), interpolation=cv2.INTER_LINEAR) if (nw, nh) != (w, h) else img
         top, bottom = int(round(dh - 0.1)), int(round(dh + 0.1))
         left, right = int(round(dw - 0.1)), int(round(dw + 0.1))
-        im = cv2.copyMakeBorder(im, top, bottom, left, right, cv2.BORDER_CONSTANT, value=(114, 114, 114))
-        blob = cv2.dnn.blobFromImage(im, 1 / 255.0, (self.s, self.s), swapRB=True, crop=False)
+        if top or bottom or left or right:
+            im = cv2.copyMakeBorder(im, top, bottom, left, right, cv2.BORDER_CONSTANT, value=(114, 114, 114))
+        blob = cv2.dnn.blobFromImage(im, 1 / 255.0, (self.w, self.h), swapRB=True, crop=False)
         self.net.setInput(blob)
         # importar ultralytics hace cv2.setNumThreads(0) (un solo hilo): cv2.dnn se vuelve ~4x más lento.
         # Se usan todos los núcleos sólo durante la inferencia y se deja como estaba.
@@ -91,7 +138,10 @@ class _MotorOpenCV:
         finally:
             if hilos < 2:
                 cv2.setNumThreads(hilos)
-        p = out.reshape(out.shape[-2], out.shape[-1]).T            # (8400, 4 + nc)
+        if out.shape[-1] != self.n_anclas:
+            raise ValueError("el .onnx entrega %d anclas y con entrada %dx%d deberían ser %d: revisa \"imgsz\" "
+                             "en el .onnx.json" % (out.shape[-1], self.h, self.w, self.n_anclas))
+        p = out.reshape(out.shape[-2], out.shape[-1]).T            # (N anclas, 4 + nc)
         sc = p[:, 4:]
         cls = sc.argmax(1)
         cf = sc[np.arange(len(sc)), cls]

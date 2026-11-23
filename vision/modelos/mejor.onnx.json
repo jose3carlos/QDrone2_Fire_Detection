@@ -1,6 +1,9 @@
 {
   "origen": "mejor.pt",
   "md5_pt": "92e8dec03be77cd9fae837108c77a6f2",
-  "imgsz": 640,
+  "imgsz": [
+    480,
+    640
+  ],
   "opset": 12
 }

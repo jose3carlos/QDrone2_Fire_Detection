@@ -66,13 +66,19 @@
         "fp_fuego_coco": 0.122,
         "fp_caras_webcam": "44/50"
       },
-      "nuevo": {
+      "nota": "desde el 22-nov-2026 mejor.onnx tiene entrada 480x640 (alto x ancho): una imagen 640x480 entra sin relleno y OpenCV da las mismas cajas que ultralytics (60/60 cajas iguales a 0 px en 106 capturas de webcam). nuevo_onnx_640x640 = el mismo mejor.pt exportado a 640x640 (respaldo mejor_640x640_20261122.onnx), con bandas grises de relleno. Ver vision/README.md §3.",
+      "nuevo_onnx_640x640": {
         "recall_fuego_webcam": "47/56",
         "fp_toma_coco": 0.0,
         "fp_fuego_coco": 0.004,
         "fp_caras_webcam": "0/50"
       },
-      "nota": "la diferencia con ultralytics viene del relleno a 640x640 del backend opencv, no del .onnx"
+      "nuevo": {
+        "recall_fuego_webcam": "49/56",
+        "fp_toma_coco": 0.0,
+        "fp_fuego_coco": 0.002,
+        "fp_caras_webcam": "0/50"
+      }
     }
   }
 }

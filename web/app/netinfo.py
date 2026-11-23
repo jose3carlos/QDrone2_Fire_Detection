@@ -103,7 +103,10 @@ def comandos(cfg, ip_pc=None):
             "uri_host": f"-URI_Host {uri_host}",
             "quarc_run": f"quarc_run -r -t tcpip://{host}:{tport} {exe} -uri tcpip://{host}:{eport}?retries=10 -URI_Host {uri_host}",  # -r = descargar y ejecutar (-D y -r son alternativas en QUARC); ?retries=10 = default del _main.c original
             "quarc_stop": f"quarc_run -q -t tcpip://{host}:{tport} {exe}",
-            "ext_mode_args": f"set_param('{model}', 'ExtModeMexArgs', '-w -d %d -uri %u -URI_Host {uri_host}')",
+            # Mismo formato que el modelo del dron del Equipo2: lista de cadenas de MATLAB entre comillas
+            # ('<args>','<URI del modelo>'); dentro del set_param las comillas van dobladas.
+            "ext_mode_args": (f"set_param('{model}', 'ExtModeMexArgs', '''-w -d /tmp -uri %u -URI_Host {uri_host}'','"
+                              f"'tcpip://{host}:{eport}?retries=10''')"),
             "ping": f"ping {host}",
             "scp_camara": f"scp web/drone/qdrone2_camera_streamer.py nvidia@{host}:~/",
             "ssh_camara": f"ssh nvidia@{host} \"python3 ~/qdrone2_camera_streamer.py --camara auto --puerto {int(red.get('puerto_video', 18800))}\"",

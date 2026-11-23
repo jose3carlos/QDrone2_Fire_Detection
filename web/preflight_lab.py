@@ -138,6 +138,13 @@ def main(argv=None):
                 guardado = next((v for k, v in meta.items() if "md5" in k.lower()), None)
                 if guardado and guardado != md5(mp):
                     rep("AVISO", "el .onnx no corresponde al .pt de al lado: corre vision/exportar_onnx.py")
+                # .onnx de entrada no cuadrada (480x640): necesita el detector.py que lee la forma del .onnx
+                imgsz = meta.get("imgsz")
+                if isinstance(imgsz, list) and len(imgsz) == 2 and imgsz[0] != imgsz[1]:
+                    with open(os.path.join(RAIZ, "vision", "detector.py"), encoding="utf-8") as f:
+                        if "forma_entrada_onnx" not in f.read():
+                            rep("FALLA", f"el .onnx tiene entrada {imgsz[0]}x{imgsz[1]} y vision/detector.py es una "
+                                         "versión vieja (sólo 640x640): actualiza el repositorio")
             except Exception:
                 pass
 

@@ -22,6 +22,14 @@ if isempty(which('qd2_mission_step'))
     addpath(lib);
 end
 C = sim3d_config(raiz);
+% uso de la actitud en la geolocalización del detector interno ([] = config/estacion.json, vision.*)
+if ~isempty(opc.usar_actitud), C.vis.usar_actitud = logical(opc.usar_actitud); end
+if ~isempty(opc.inclinacion_max_deg)
+    C.vis.incl_max_deg = double(opc.inclinacion_max_deg);
+    if ~(isfinite(C.vis.incl_max_deg) && C.vis.incl_max_deg > 0), C.vis.incl_max_deg = []; end
+end
+sb_ = deg2rad(opc.sesgo_montaje_deg);
+R_montaje = rot_zyx(0, sb_(2), sb_(1));   % error del soporte (solo la cámara real; la estación no lo conoce)
 p = C.p;
 if ~isempty(opc.auto_land), p.auto_land = double(opc.auto_land); end
 version = 1 + double(strcmpi(char(opc.version), 'MPC'));
@@ -382,10 +390,14 @@ end
                 pm = in.pose2; trk_e = in.tracked2;
             end
             if trk_e > 0.5 && any(s.estado == C.vis.estados) && pm(3) >= C.vis.z_min
-                det = sim3d_detector('cuadro', det, C, esc, X(1:9, ie), pm, t, opc);
+                % roll/pitch que recibe la estación en y(61:62) (NaN = y(63) = 0, modelo viejo)
+                att_e = [NaN NaN];
+                if opc.actitud_en_tel, att_e = in.att(2*ie - 1:2*ie); end
+                det = sim3d_detector('cuadro', det, C, esc, X(1:9, ie), [pm(:); att_e(:)], t, opc);
                 objetivos_det = sim3d_detector('objetivos', det);
             else
                 det.ultimas = zeros(0, 4);
+                det.ult_act = [];
             end
         end
         % ---- métricas de separación
@@ -448,9 +460,15 @@ end
         end
         aux = [in_ult.tracked1 in_ult.tracked2 fsm_tel(1) fsm_tel(2) bat(1) bat(2) 1 1];
         % 61-63: roll, pitch y válido del explorador (actitud real de la planta, la misma
-        % convención R = Rz(yaw)Ry(pitch)Rx(roll) que OptiTrack); 0 0 0 sin rastreo
-        y = qd2_telemetry_pack(t, tel, version, ga, pose1, pose2, sp_rl(1, :), sp_rl(2, :), ...
-            X(4:6, 1), X(4:6, 2), aux, in_ult.att);
+        % convención R = Rz(yaw)Ry(pitch)Rx(roll) que OptiTrack); 0 0 0 sin rastreo.
+        % opc.actitud_en_tel = false: como un llamador viejo (sin att), y(61:63) = 0
+        if opc.actitud_en_tel
+            y = qd2_telemetry_pack(t, tel, version, ga, pose1, pose2, sp_rl(1, :), sp_rl(2, :), ...
+                X(4:6, 1), X(4:6, 2), aux, in_ult.att);
+        else
+            y = qd2_telemetry_pack(t, tel, version, ga, pose1, pose2, sp_rl(1, :), sp_rl(2, :), ...
+                X(4:6, 1), X(4:6, 2), aux);
+        end
         if est.py_visto
             y(54) = est.ack_py;      % ack en la numeración de cmd_seq de Python
         end
@@ -479,15 +497,31 @@ end
         E.dh_min = dh_min;
         E.estela = estela;
         ie = max(s.explorer_id, 1);
-        E.huella = sim3d_camara('huella', C.cam, [X(1:3, ie); X(9, ie)]);
+        % lo que ve la cámara REAL: actitud de la planta, pivote de Motive y error del soporte
+        E.huella = sim3d_camara('huella', C.cam, X([1:3 9 7 8], ie), R_montaje);
         R_wb = rot_zyx(X(9, ie), X(8, ie), X(7, ie));
-        E.lente = (X(1:3, ie) + R_wb*G.malla.lente(:)).';
+        piv = [0; 0; C.cam.pivote];           % la malla gira alrededor del pivote (sim3d_escena)
+        E.lente = (X(1:3, ie) + piv + R_wb*(G.malla.lente(:) - piv)).';
         E.obs_ult = det.ultimas;
         [E.estado_real, E.err_obj] = cruzar_objetivos();
         E.n_pend = sum(det.cl(:, 6) == 0);
         E.n_falsos = det.n_falsos;
         E.txt_vision = sprintf('%d cuadros, %d observaciones (radio %.2f m, mín. %d obs.)', ...
             det.n_cuadros, det.n_obs, det.radio, det.min_obs);
+        % actitud con la que geolocalizó el último cuadro (como la tarjeta de Visión de la UI)
+        E.txt_actitud = '';
+        if isfield(det, 'ult_act') && ~isempty(det.ult_act)
+            a = det.ult_act;
+            if a.inclinado
+                E.txt_actitud = sprintf('INCLINADO %.1f° > %g°: %d descartadas', rad2deg(a.incl), ...
+                    C.vis.incl_max_deg, det.n_desc_incl);
+            elseif a.ok
+                E.txt_actitud = sprintf('roll %.1f° pitch %.1f° (incl. %.1f°, máx. %.1f°)', rad2deg(a.roll), ...
+                    rad2deg(a.pitch), rad2deg(a.incl), rad2deg(det.incl_max));
+            else
+                E.txt_actitud = 'nivelada (sin actitud o usar_actitud = false)';
+            end
+        end
         if opc.use_vision_python
             E.txt_vision = [E.txt_vision ' · objetivos de PYTHON'];
         end
@@ -590,6 +624,11 @@ end
         M.n_falsos_publicados = s.n_obj - numel(e);
         M.det_cuadros = det.n_cuadros;
         M.det_obs = det.n_obs;
+        M.det_con_actitud = det.n_con_actitud;      % cuadros geolocalizados con roll/pitch
+        M.det_nivelado = det.n_nivelado;            % cuadros geolocalizados nivelados
+        M.det_desc_incl = det.n_desc_incl;          % observaciones descartadas por inclinación
+        M.det_incl_max_deg = rad2deg(det.incl_max); % inclinación máxima usada al geolocalizar
+        M.err_obs = det.err_obs;                    % m, error de cada observación real que entró al cluster
         if ~isempty(pt)
             M.tcp_rx = pt.n_rx; M.tcp_tx = pt.n_tx; M.tcp_conex = pt.n_conex;
         end

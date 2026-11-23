@@ -5,6 +5,13 @@ Levanta ``app.server`` (el mismo proceso que abre el operador), lee el estado po
 START → objetivo manual → PAUSE → RESUME → LAND ALL en home. Toma capturas de la UI con Chrome
 headless (misión en curso, objetivo visitado, alerta, DONE) y al final revisa cada corrida.
 
+Actitud del explorador (y(61:63)): cuenta la telemetría con y(63) = 1, la inclinación máxima que muestra la
+UI (``actitud_explorador``), los frames geolocalizados con / sin actitud, las detecciones descartadas por
+inclinación y el error de geolocalización contra la VERDAD de la cámara sintética (``web.mock_anomalias`` o
+``mock_world.default_anomalies``): por observación (cada detección que entra al cluster) y por objetivo
+publicado. ``--sin-actitud`` corre lo mismo con ``vision.usar_actitud = false`` (para comparar) y
+``--actitud-esperada si|no`` exige y(63) = 1 en MISSION o y(63) = 0 siempre (modelo viejo).
+
 Lo de MATLAB se corre aparte, en otra terminal (ver docs/PRUEBA_E2E.md):
   * ``simulink_qdrone2/sim/qd2_e2e_web.m``  (QD2_Sim_Dual en tiempo real, COMMAND SOURCE = 2)
   * ``simulador3d/sim3d_e2e_web.m``         (simulador 3D, escenario 'web', use_vision_python)
@@ -12,6 +19,7 @@ Lo de MATLAB se corre aparte, en otra terminal (ver docs/PRUEBA_E2E.md):
 Uso (desde la carpeta web, con el venv qd2_web):
   python e2e\\e2e_estacion.py --fuente simulink --corridas pid,mpc,falla
   python e2e\\e2e_estacion.py --fuente sim3d --corridas PID,MPC
+  python e2e\\e2e_estacion.py --fuente simulink --corridas pid,mpc --sin-actitud --salida %TEMP%\\qd2_e2e_nivelado
 
 La configuración de la prueba es una COPIA de config/estacion.json en la carpeta de salida: la real no se
 toca. En la copia la cámara es la sintética (anomalías inventadas de mock_world); con la fuente simulink se
@@ -62,6 +70,13 @@ ap.add_argument("--pausa", default="pid,mpc,PID,MPC", help="corridas con PAUSE/R
 ap.add_argument("--manual", default="0.8,-0.5,1", help="objetivo manual x,y,clase ('' = ninguno)")
 ap.add_argument("--sin-capturas", action="store_true")
 ap.add_argument("--ventana", default="1680,1050", help="tamaño de la ventana de Chrome headless")
+ap.add_argument("--sin-actitud", action="store_true",
+                help="vision.usar_actitud = false en la copia de la config (geolocalización nivelada)")
+ap.add_argument("--inclinacion-max", type=float, default=None,
+                help="vision.inclinacion_max_deg en la copia (p. ej. 1.5 para ejercitar el descarte por inclinación)")
+ap.add_argument("--actitud-esperada", choices=("si", "no", ""), default="",
+                help="si = exige y(63) = 1 en MISSION y la actitud en la UI; no = exige y(63) = 0 siempre "
+                     "(modelo viejo) y el aviso amarillo; '' = no lo revisa")
 a = ap.parse_args()
 
 OUT = os.path.abspath(a.salida)
@@ -81,15 +96,42 @@ cfg["camara"]["fuente"] = "sintetica"
 if a.fuente == "simulink":
     web["permitir_sintetica_en_simulink"] = True
 web["fuente"] = a.fuente
+if a.sin_actitud:
+    cfg.setdefault("vision", {})["usar_actitud"] = False
+if a.inclinacion_max is not None:
+    cfg.setdefault("vision", {})["inclinacion_max_deg"] = a.inclinacion_max
 with open(cfg_path, "w", encoding="utf-8") as fh:
     json.dump(cfg, fh, indent=2, ensure_ascii=False)
 TOL_XY = float(cfg.get("mision", {}).get("tol_xy", 0.12))
+RADIO = float(cfg.get("vision", {}).get("radio_cluster_m", 0.25) or 0.25)
+# verdad de la cámara sintética: lo mismo que dibuja la estación (server.Station._start_source)
+sys.path.insert(0, WEB)
+from app.mock_world import default_anomalies  # noqa: E402
+VERDAD = web.get("mock_anomalias") or default_anomalies(cfg["pista"]["vertices"])
+
+
+def err_verdad(cls, x, y):
+    """(distancia, índice) a la anomalía verdadera más cercana de la misma clase, o (None, None)."""
+    return min(((math.hypot(x - v["x"], y - v["y"]), i) for i, v in enumerate(VERDAD) if int(v["cls"]) == int(cls)),
+               default=(None, None))
+
+
+def stats(v):
+    if not v:
+        return None
+    v = sorted(v)
+    return {"n": len(v), "media": round(sum(v) / len(v), 4), "mediana": round(v[len(v) // 2], 4),
+            "p95": round(v[min(len(v) - 1, int(0.95 * len(v)))], 4), "max": round(v[-1], 4)}
 p_obj = os.path.join(OUT, "objetivos_estacion.json")
 if os.path.exists(p_obj):
     os.remove(p_obj)
 
 LOG = open(os.path.join(OUT, f"e2e_{a.fuente}.log"), "w", encoding="utf-8")
 T0 = time.time()
+# Con la salida redirigida a un archivo, Windows usa cp1252: un carácter de un aviso de la estación
+# que no exista ahí (p. ej. "≈" en el de actitud no disponible) tumbaba la prueba en print().
+if hasattr(sys.stdout, "reconfigure"):
+    sys.stdout.reconfigure(errors="replace")
 
 
 def log(msg):
@@ -160,7 +202,11 @@ def nueva(nombre):
     return {"nombre": nombre, "estados": [], "alertas": {}, "fsm": {"1": set(), "2": set()},
             "fsm_falla": {"1": set(), "2": set()}, "t_estado": {}, "start": False, "pausa": None, "resume": False,
             "land": False, "manual": None, "caps": set(), "obj": {}, "visit_t": {}, "n_ws": 0, "t_ws0": None,
-            "done": None, "cmd_http": [], "fin": None, "version": None, "avisos": set(), "dh_min_aire": None}
+            "done": None, "cmd_http": [], "fin": None, "version": None, "avisos": set(), "dh_min_aire": None,
+            # actitud y(61:63) y geolocalización contra la verdad
+            "att": {"n": 0, "ok": 0, "n_mision": 0, "ok_mision": 0, "max_roll_deg": 0.0, "max_pitch_deg": 0.0,
+                    "ui_cruda_vista": False, "max_incl_vision_deg": 0.0},
+            "obs_err": [], "obs_frames": set(), "vis0": None, "vis_fin": None, "geo": None}
 
 
 async def lazo():
@@ -196,6 +242,33 @@ async def lazo():
                     c["avisos"].add(av["msg"])
                     log(f"AVISO {av['nivel']}: {av['msg']}")
             st = tel["mission_state_name"]
+            # ---- actitud del explorador: y(63) y lo que muestra la UI
+            at = c["att"]
+            at["n"] += 1
+            at["ok"] += bool(tel.get("explorer_att_ok"))
+            if st == "MISSION":
+                at["n_mision"] += 1
+                at["ok_mision"] += bool(tel.get("explorer_att_ok"))
+            cruda = (s.get("actitud_explorador") or {}).get("cruda")
+            if cruda:
+                at["ui_cruda_vista"] = True
+                at["max_roll_deg"] = max(at["max_roll_deg"], abs(cruda[0]))
+                at["max_pitch_deg"] = max(at["max_pitch_deg"], abs(cruda[1]))
+            vis = s.get("vision") or {}
+            va = vis.get("actitud") or {}
+            cont = {"con_actitud": va.get("frames_con_actitud", 0), "nivelados": va.get("frames_nivelados", 0)}
+            c["vis0"] = c["vis0"] or cont
+            c["vis_fin"] = dict(cont, descartadas=vis.get("descartadas"), texto=va.get("texto"))
+            if va.get("inclinacion_deg") is not None:
+                at["max_incl_vision_deg"] = max(at["max_incl_vision_deg"], va["inclinacion_deg"])
+            ult = vis.get("ultimo") or {}
+            if vis.get("activo") and ult.get("frame_id") and ult["frame_id"] not in c["obs_frames"]:
+                c["obs_frames"].add(ult["frame_id"])
+                for d in ult.get("dets") or []:     # las que entraron al cluster (no descartadas)
+                    if d.get("xy") and not d.get("descartada"):
+                        e, _ = err_verdad(d["cls"], *d["xy"])
+                        if e is not None:
+                            c["obs_err"].append(e)
             if not c["estados"] or c["estados"][-1] != st:
                 c["estados"].append(st)
                 c["t_estado"][st] = t
@@ -273,6 +346,15 @@ async def lazo():
                             "cmd_resultados": [(r["cmd"], r["estado"]) for r in s["puente"]["cmd_resultados"]],
                             "ws_hz": c["n_ws"] / max(now - c["t_ws0"], 1e-6)}
                 log(f"DONE (t_sim {t:.2f}): {c['fin']}")
+                c["geo"] = []
+                for o in s["objetivos"]:
+                    if o.get("manual"):
+                        continue
+                    e, i = err_verdad(o["cls"], o["x"], o["y"])
+                    c["geo"].append({"id": o["id"], "cls": o["cls"], "x": o["x"], "y": o["y"],
+                                     "err": None if e is None else round(e, 4), "verdad": i})
+                    log(f"geolocalización objetivo #{o['id']} ({o['x']:+.3f}, {o['y']:+.3f}) -> verdad #{i} "
+                        f"{VERDAD[i] if i is not None else '—'}: error {e if e is None else round(e, 4)} m")
                 captura(f"{a.fuente}_{c['nombre']}_done")
                 if idx == len(CORRIDAS) - 1:
                     await asyncio.sleep(10)
@@ -319,6 +401,20 @@ def revisar(c):
         f.append(f"objetivo manual: {c['manual']}")
     if c["nombre"] in PAUSA and not c["resume"]:
         f.append("no se probó PAUSE/RESUME")
+    lejos = [g["id"] for g in c["geo"] or [] if g["err"] is None or g["err"] > RADIO]
+    if lejos:
+        f.append(f"objetivos a más de {RADIO} m de toda anomalía verdadera de su clase: {lejos}")
+    at = c["att"]
+    if a.actitud_esperada == "si":
+        if not at["n_mision"] or at["ok_mision"] < at["n_mision"]:
+            f.append(f"y(63) = 1 solo en {at['ok_mision']} de {at['n_mision']} mensajes en MISSION")
+        if not at["ui_cruda_vista"]:
+            f.append("la UI nunca mostró la actitud del explorador (actitud_explorador.cruda)")
+    elif a.actitud_esperada == "no":
+        if at["ok"]:
+            f.append(f"y(63) = 1 en {at['ok']} mensajes (se esperaba un modelo sin actitud)")
+        if not any("Actitud del explorador no disponible" in m for m in c["avisos"]):
+            f.append("no apareció el aviso amarillo de actitud no disponible")
     if esperada is None and (c["fsm_falla"]["1"] or c["fsm_falla"]["2"]):
         f.append(f"la UI marcó una falla del dron: {c['fsm_falla']}")
     return f
@@ -344,9 +440,28 @@ for c in resultados:
         f"{' -> '.join(c['estados'])} | alertas {c['alertas']} | visitados (t_sim) {c['visit_t']} | "
         f"objetivos {[(o['id'], o['clase'], o['origen'], o['estado']) for o in c['obj'].values()]} | "
         f"dh mín en el aire {c['dh_min_aire']} | DONE {c['done']}")
+    at = c["att"]
+    vf, v0 = c["vis_fin"] or {}, c["vis0"] or {}
+    geo_err = [g["err"] for g in c["geo"] or [] if g["err"] is not None]
+    actitud = {"usar_actitud": not a.sin_actitud, "y63_mensajes": f"{at['ok']}/{at['n']}",
+               "y63_en_mision": f"{at['ok_mision']}/{at['n_mision']}", "ui_cruda_vista": at["ui_cruda_vista"],
+               "max_roll_deg": round(at["max_roll_deg"], 2), "max_pitch_deg": round(at["max_pitch_deg"], 2),
+               "max_incl_vision_deg": round(at["max_incl_vision_deg"], 2),
+               "frames_con_actitud": vf.get("con_actitud", 0) - v0.get("con_actitud", 0),
+               "frames_nivelados": vf.get("nivelados", 0) - v0.get("nivelados", 0),
+               "descartadas": vf.get("descartadas"), "texto_vision": vf.get("texto")}
+    verdad_vista = sorted({g["verdad"] for g in c["geo"] or [] if g["verdad"] is not None})
+    geo = {"error_obs_m": stats(c["obs_err"]), "error_objetivos_m": stats(geo_err), "objetivos": c["geo"],
+           "verdad_detectada": f"{len(verdad_vista)}/{len(VERDAD)}"}
+    log(f"ACTITUD {c['nombre']}: {actitud}")
+    log(f"GEOLOCALIZACIÓN {c['nombre']}: verdad detectada {geo['verdad_detectada']} | por observación "
+        f"{geo['error_obs_m']} | por objetivo {geo['error_objetivos_m']}")
     for x in fallas:
         log(f"   - {x}")
-    c = dict(c, fallas=fallas, fsm={d: sorted(v, key=str) for d, v in c["fsm"].items()})
+    c = dict(c, fallas=fallas, fsm={d: sorted(v, key=str) for d, v in c["fsm"].items()}, actitud=actitud,
+             geolocalizacion=geo)
+    for k in ("obs_err", "obs_frames"):
+        c.pop(k)
     salida.append(c)
 if len(resultados) < len(CORRIDAS):
     ok = False

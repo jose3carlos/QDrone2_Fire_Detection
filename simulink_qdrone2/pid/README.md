@@ -33,7 +33,7 @@ Si MATLAB corre con `-batch`, la ventana "QUARC Tip of the Day" lo bloquea (ver 
    - `optitrack.rigid_body_dron1` y `optitrack.rigid_body_dron2`: van a `rigid_body_ids` del bloque OptiTrack Trackables. **Si son iguales, `qd2_cargar_config` da error** y el modelo no arranca.
    - `optitrack.bias_z_dron1` y `optitrack.bias_z_dron2`: van al Bias de cada Measurement Conditioning.
    - `optitrack.archivo_cal` y `optitrack.archivo_motive`: el `InitFcn` los escribe en el bloque OptiTrack. Si están vacíos, se conservan las rutas del Equipo2.
-   - `red.puerto_*`: van a `ExtModeMexArgs` (`-URI_Host` / `-URI_Host2`) y al PYTHON BRIDGE.
+   - `red.puerto_*`: van a `ExtModeMexArgs` (`'-w -d %d -uri %u -URI_Host … -URI_Host2 …'`, entre comillas como el original del Equipo2) y al PYTHON BRIDGE.
    - `mision.*` y `pista.vertices`: van a `QD2P`.
    - El `.motive` debe definir **los dos** rigid bodies (el del Equipo2 del 20-nov solo tiene uno).
    - **Motive tiene que estar cerrado** al correr el modelo: OptiTrack Trackables usa la API de Motive con el `.cal` y el `.motive`, no NatNet.

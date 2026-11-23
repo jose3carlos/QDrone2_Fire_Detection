@@ -2,7 +2,7 @@
 
 Funciones MATLAB compatibles con codegen (tamaños fijos, sin cell arrays, sin strings, sin `containers.Map`) para los bloques **MATLAB Function** de los modelos de tierra, del dron (MPC) y de la simulación, y también para el simulador 3D. Implementa el contrato de `docs/ARQUITECTURA.md` §4. Unidades SI en todo.
 
-Probado en R2025a (MATLAB + Simulink): 30/30 pruebas pasan (22-nov-2026, después de la revisión de la reacción a falla a bordo), y un modelo Simulink generado por código compila y simula todas las funciones (ver `../tests/README.md` y la sección "Resultados" al final). Solo usa funciones disponibles en R2022a, pero en R2022a no se probó.
+Probado en R2025a (MATLAB + Simulink): 32/32 pruebas pasan (22-nov-2026; 30 tras la revisión de la reacción a falla a bordo, más `test_actitud_y61` y `test_ext_mode_args`), y un modelo Simulink generado por código compila y simula todas las funciones (ver `../tests/README.md` y la sección "Resultados" al final). Solo usa funciones disponibles en R2022a, pero en R2022a no se probó.
 
 ## Cómo usarla en un bloque MATLAB Function
 
@@ -168,7 +168,7 @@ ctx = tel.ctx_guard;
   - `qd2_quad_plant` modela la actitud solo como primer orden (`tau_att = 0.12 s`), sin el retardo puro de ~0.10 s que se identificó. Por eso las pruebas de misión son algo optimistas. En una sonda aparte, con retardo de 0.10 s, el MPC no tuvo sobrepaso; a 0.14 s aparece una oscilación de unos 3 mm.
   - La fuerza de downwash `F0 = 5.9 N` es un **supuesto** (unos 20 % del peso a 1 m), no una medición. Hay que medirla en el laboratorio.
 
-## Resultados (última corrida, R2025a, esta laptop, 22-nov-2026, tras la revisión): 30/30
+## Resultados (última corrida, R2025a, esta laptop, 22-nov-2026, tras la revisión): 30/30 (hoy 32/32, ver arriba)
 
 - **Misión PID** (limitador por norma):
   - Distancia horizontal mínima medida: 1.135 m. Entre consignas: 1.200 m. Tras el rate limiter: 1.109 m.

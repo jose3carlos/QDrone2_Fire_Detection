@@ -57,7 +57,7 @@ Luego `web\iniciar_web.bat --fuente sim3d`.
 **Laboratorio (drones reales).** Sigue la checklist imprimible [`CHECKLIST_LABORATORIO.md`](CHECKLIST_LABORATORIO.md) (orden, tiempos y criterios de seguir / no seguir). En corto:
 1. Copia el proyecto a una ruta corta fuera de OneDrive (p. ej. `C:\QD2`) y corre `%USERPROFILE%\.venvs\qd2_web\Scripts\python web\preflight_lab.py`.
 2. Motive: calibra, crea los **dos** rigid bodies, exporta `.cal` y `.motive` y **cierra Motive**. Vincúlalos en la pestaña **Motive** de la UI.
-3. Abre `simulink_qdrone2/pid/QD2_MissionCtrl_Dual_PID.slx` o `mpc/QD2_MissionCtrl_Dual_MPC.slx` (en R2022a, el de `versiones/R2022a/`), haz el **build QUARC**, Connect y Start. Después de cualquier cambio de `estacion.json` hay que **volver a compilar**.
+3. Abre `simulink_qdrone2/pid/QD2_MissionCtrl_Dual_PID.slx` o `mpc/QD2_MissionCtrl_Dual_MPC.slx` (en R2022a, el de `versiones/R2022a/`), haz el **build QUARC**, Connect y Start. Después de cualquier cambio de `estacion.json` hay que **volver a compilar**. Requisitos, comandos y errores típicos del build: [`GUIA_BUILD_QUARC_LAB.md`](GUIA_BUILD_QUARC_LAB.md).
 4. `web\iniciar_web.bat --fuente simulink`.
 5. Lanza cada dron con el `quarc_run` de la pestaña **Conexiones** (`-URI_Host tcpip://<IP_PC>:18001` / `:18002`), desde un `cmd` abierto en `simulink_qdrone2\binarios_dron`. PID: binario original del Equipo2 (ya está ahí). MPC: `QD2_DroneStack_MPC.rt-linux_qdrone2`, compilado en el laboratorio, de la misma construcción que tierra.
 6. En el explorador (el de menor x): `ssh nvidia@<IP> "python3 ~/qdrone2_camera_streamer.py --camara auto --serie <serie de la D435i de abajo>"`.
@@ -73,12 +73,12 @@ La estación no necesita torch: corre `vision/modelos/mejor.onnx` con OpenCV.
 **Pruebas.**
 ```matlab
 % cada línea, desde la raíz del repositorio
-cd simulink_qdrone2/tests; correr_pruebas; cd ../..          % librería: 31 pruebas
+cd simulink_qdrone2/tests; correr_pruebas; cd ../..          % librería: 32 pruebas
 cd simulink_qdrone2/pid;   qd2_probar_operador; cd ../..     % capa del operador: 27 casos
-cd simulador3d;            res = probar_sim3d(false); cd ..  % simulador 3D: 14 pruebas (15 con figura)
+cd simulador3d;            res = probar_sim3d(false); cd ..  % simulador 3D: 18 pruebas (19 con figura)
 ```
 ```bat
-cd web && %USERPROFILE%\.venvs\qd2_web\Scripts\python -m pytest -q tests   :: 163 pruebas
+cd web && %USERPROFILE%\.venvs\qd2_web\Scripts\python -m pytest -q tests   :: 167 pruebas
 ```
 Con `matlab -batch`, la ventana "QUARC Tip of the Day" bloquea MATLAB: usa `matlab -sd <carpeta> -batch "..."` con un `startup.m` que solo haga `error('fin')` (ver `simulink_qdrone2/tests/README.md`).
 
@@ -89,6 +89,7 @@ Con `matlab -batch`, la ventana "QUARC Tip of the Day" bloquea MATLAB: usa `matl
 | [`ARQUITECTURA.md`](ARQUITECTURA.md) | **Contrato**: misión, protocolos PC⇄dron (16/1 y 24/8 doubles), puente Simulink⇄Python (64/32 doubles), alertas y(55) 0..10, objetivos y(56:60), librería, modelos, UI y visión |
 | [`PRUEBA_E2E.md`](PRUEBA_E2E.md) | Prueba punta a punta de la estación real contra `QD2_Sim_Dual` y el simulador 3D, defectos corregidos y resumen del paso a los drones reales (§7) |
 | [`CHECKLIST_LABORATORIO.md`](CHECKLIST_LABORATORIO.md) | **Checklist imprimible del día de laboratorio**: copia, Motive, builds, red, cámara, fotos reales, prueba en seco, vuelos uno por uno, PID, MPC y abortos, con tiempos y criterios de seguir / no seguir |
+| [`GUIA_BUILD_QUARC_LAB.md`](GUIA_BUILD_QUARC_LAB.md) | Build QUARC en la PC del laboratorio: licencia y targets, compiladores, firewall, tierra PID/MPC (`quarc_win64`) y dron MPC (`quarc_linux_qdrone2`), orden de arranque, errores típicos y un prompt listo para Claude Code |
 | `simulink_qdrone2/binarios_dron/README.md` | Binarios `.rt-linux_qdrone2` de los drones y opciones de `quarc_run` |
 | [`diagrama_flujo.mmd`](diagrama_flujo.mmd) | Diagrama de flujo Mermaid de la misión (se pega tal cual en Lucid o en mermaid.live) |
 | `simulink_qdrone2/lib/README.md` | Firmas exactas de la librería, comportamiento del supervisor (falla a bordo, aterrizaje apilado, START rechazado, ABORT antes de despegar) y resultados |
@@ -109,14 +110,14 @@ Todo lo que sigue se probó **en software (SIL) en la laptop de desarrollo, con 
 
 | Qué | Dónde está el resultado |
 |---|---|
-| Librería: 31/31 pruebas (misiones PID y MPC, guard, MPC contra `quadprog`, downwash, ABORT/LAND_ALL antes de despegar, homes cerca, timeouts, pérdida de rastreo, falla a bordo apilada, enlace perdido, protocolo, y(56:60), actitud y(61:63), codegen en Simulink) | `simulink_qdrone2/lib/README.md` "Resultados" |
+| Librería: 32/32 pruebas (misiones PID y MPC, guard, MPC contra `quadprog`, downwash, ABORT/LAND_ALL antes de despegar, homes cerca, timeouts, pérdida de rastreo, falla a bordo apilada, enlace perdido, protocolo, y(56:60), actitud y(61:63), codegen en Simulink, `ExtModeMexArgs` de tierra entre comillas) | `simulink_qdrone2/lib/README.md` "Resultados" |
 | Modelos de tierra PID y MPC: Update Diagram, 246 bloques originales sin mover, `qd2_probar_operador` 27/27, `qd2_probar_tierra` (nominal PID y MPC, falla a bordo, protocolo, enlace caído) | `simulink_qdrone2/pid/README.md` |
 | Dron MPC: COMMANDER real en lazo cerrado con la planta; PROTOCOL CHECK estricto (solo índice 24 = 2) con tramas sintéticas | `simulink_qdrone2/sim/README.md` §1 y "Resultados" |
 | `QD2_Sim_Dual`: misión completa PID y MPC, fallas a bordo (apilados, protocolo, enlace caído en los dos sentidos), pérdida de rastreo | `simulink_qdrone2/sim/README.md` "Resultados" |
-| Simulador 3D: 14/14 pruebas sin capturas (15 con figura), incluida la telemetría y(61:63) | `simulador3d/README.md`, `PRUEBA_E2E.md` §5.3 |
-| Estación web: 163 pruebas (pytest), incluida la geolocalización con roll y pitch del explorador (y(61:63)) | `web/README.md` |
-| E2E en tiempo real con la estación real: `QD2_Sim_Dual` PID, MPC y MPC con falla a bordo; simulador 3D PID y MPC (todas PASA) | `PRUEBA_E2E.md` §5 |
-| YOLO11n: 10 000 imágenes sintéticas, afinado con negativos (COCO y capturas de webcam sin piezas). Con OpenCV-ONNX (conf 0.5): fotos de COCO apartadas con "toma" falsa 28.8 % → 0 %, capturas de la cara sin piezas con detección 44/50 → 0/50, fuego detectado en capturas de webcam 50/56 → 47/56; la estación lo carga con OpenCV-ONNX en CPU | `vision/README.md` §3 y "Negativos" |
+| Simulador 3D: 18/18 pruebas sin capturas (19 con figura), incluida la telemetría y(61:63), el modelo viejo sin ella y el detector interno, que ahora geolocaliza con roll/pitch igual que la estación (comparado contra `web/app/geo.py`) | `simulador3d/README.md` |
+| Estación web: 167 pruebas (pytest), incluida la geolocalización con roll y pitch del explorador (y(61:63)) y el ONNX de 480×640 | `web/README.md` |
+| E2E en tiempo real con la estación real: `QD2_Sim_Dual` PID, MPC y MPC con falla a bordo; simulador 3D PID y MPC (todas PASA). Repetida con la actitud y(61:63): error de geolocalización por observación de 22–47 mm (nivelada) a 6–8 mm (mediana) | `PRUEBA_E2E.md` §5 y §5.5 |
+| YOLO11n: 10 000 imágenes sintéticas, afinado con negativos (COCO y capturas de webcam sin piezas). Con OpenCV-ONNX (conf 0.5): fotos de COCO apartadas con "toma" falsa 28.8 % → 0 %, capturas de la cara sin piezas con detección 44/50 → 0/50, fuego detectado en capturas de webcam 50/56 → 49/56 y COCO con "fuego" falso en 1/500, con el `.onnx` de 480×640 (con el de 640×640 eran 47/56 y 2/500); la estación lo carga con OpenCV-ONNX en CPU | `vision/README.md` §3 y "Negativos" |
 
 **Falta (hardware y laboratorio)**
 

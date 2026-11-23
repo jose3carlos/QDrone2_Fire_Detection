@@ -3,7 +3,7 @@ function res = probar_sim3d(con_capturas)
 %   res = probar_sim3d()        corre todo y guarda PNG en capturas/
 %   res = probar_sim3d(false)   sin capturas (más rápido)
 %
-%   1. Malla del QDrone 2 contra las medidas del manual.
+%   1. Malla del QDrone 2 contra las medidas del manual (aros concéntricos con los motores).
 %   2. Cámara y clusters contra la estación Python (pruebas/referencia_estacion.json,
 %      generado con pruebas/generar_referencia_estacion.py desde web/app/geo.py).
 %   3. Misión PID completa (más rápido que tiempo real): DONE, todos los objetos
@@ -18,6 +18,14 @@ function res = probar_sim3d(con_capturas)
 %  11. El detector solo trabaja en MISSION/PAUSED (como _vision_gate de la estación).
 %  12. Misma corrida con y sin figura (flujo aleatorio propio): resultados idénticos.
 %  13. Telemetría y(61:63): roll y pitch de la planta del explorador y válido (misión PID).
+%  14. actitud_en_tel = false (emula un modelo de Simulink viejo): y(61:63) = 0 y el
+%      detector interno geolocaliza nivelado.
+%  15. Geolocalización con roll/pitch, pivote de Motive, signos/offsets y descarte por
+%      inclinación contra la estación (casos con actitud de referencia_estacion.json).
+%  16. Detector interno, un cuadro sin ruido: ida y vuelta exacta con actitud; error
+%      nivelado y con el error del soporte; descarte por inclinación.
+%  17. Misión PID con usar_actitud = false y con inclinacion_max_deg = 1.5: error por
+%      observación con y sin actitud, y descartadas por inclinación.
 %   La prueba TCP con Python está en prueba_cliente_puente.py (ver README).
 
 if nargin < 1, con_capturas = true; end
@@ -30,12 +38,21 @@ base = struct('mostrar', false, 'tiempo_real', false, 'usar_tcp', false, 'auto_s
     'graficas_finales', false, 't_final', 300, 'verbose', false);
 
 % ---- 1. malla
+% Motores en (±101.6, ±127) mm (thrust parametrization, tabla 1) con aros concéntricos de 119 mm:
+% el manual no se puede cumplir exacto en x y en y a la vez con aros circulares (119.7 vs 118.4 mm),
+% así que se acepta hasta 2 mm por eje.
 M = sim3d_malla_qdrone2();
 manual = [0.44258 0.4908 0.13553];
-err = max(abs(M.medidas - manual));
-res = anotar(res, 'malla QDrone 2 = medidas del manual', err < 1e-3, ...
-    sprintf('malla %.4f x %.4f x %.4f m (manual 0.4426 x 0.4908 x 0.1355), %d caras + 4 hélices', ...
-    M.medidas, sum(arrayfun(@(g) size(g.F, 1), M.grupos))));
+dif = M.medidas - manual;
+err = max(abs(dif));
+mot_ok = max(abs(abs(M.motores(:, 1:2)) - [0.1016 0.127]), [], 'all') < 1e-12 ...
+    && isequal(M.cen_aros, M.motores(:, 1:2));
+lente_ok = M.lente(1) < max(abs(M.motores(:, 1))) + M.r_aro;     % la RealSense no sale de los aros
+res = anotar(res, 'malla QDrone 2 = medidas del manual', err < 2e-3 && mot_ok && lente_ok, ...
+    sprintf(['malla %.4f x %.4f x %.4f m (manual 0.4426 x 0.4908 x 0.1355; diferencia %+.1f / %+.1f / %+.1f mm), ' ...
+    'motores en (±%.1f, ±%.1f) mm con aros concéntricos R %.0f mm = %d, %d caras + 4 hélices'], ...
+    M.medidas, 1e3*dif, 1e3*max(abs(M.motores(:, 1))), 1e3*max(abs(M.motores(:, 2))), 1e3*M.r_aro, mot_ok, ...
+    sum(arrayfun(@(g) size(g.F, 1), M.grupos))));
 
 % ---- 2. cámara y clusters vs estación
 ref_f = fullfile(aqui, 'pruebas', 'referencia_estacion.json');
@@ -66,6 +83,13 @@ if exist(ref_f, 'file')
     res = anotar(res, 'píxel -> suelo = web/app/geo.py', ep < 1e-9, sprintf('error máx. %.2g m', ep));
     res = anotar(res, 'clusters = Clusterer de la estación', ec < 1e-9, ...
         sprintf('%d objetivos (Python %d), error máx. %.2g', size(T, 1), size(Tr, 1), ec));
+    % ---- 15. geolocalización con actitud vs estación
+    if isfield(ref, 'pose_geo')
+        res = prueba_geo_actitud(res, ref, C, raiz);
+    else
+        res = anotar(res, 'geolocalización con actitud = estación', false, ...
+            'referencia_estacion.json sin casos con actitud: córrela con pruebas/generar_referencia_estacion.py');
+    end
     % ---- 8. escenario 'web'
     if isfield(ref, 'anomalias_web')
         aw = ref.anomalias_web;
@@ -163,6 +187,40 @@ amp = max(abs(L.tel_att(1:2, kt(val))), [], 'all');
 res = anotar(res, 'telemetría y(61:63) actitud del explorador', any(val) && ok_val && err < 1e-12 && amp > 0.005, ...
     sprintf(['%d mensajes (%d con explorador): y(63) coherente = %d, error vs planta %.1e rad, ' ...
     '|roll|,|pitch| máx. %.2f°'], numel(kt), sum(val), ok_val, err, rad2deg(amp)));
+% ---- 14. actitud_en_tel = false (modelo de Simulink viejo): y(61:63) = 0 aunque haya explorador
+o = base; o.t_final = 30; o.actitud_en_tel = false;
+Rv = sim3d_correr(o);
+Lv = Rv.log;
+kv = find(~isnan(Lv.tel_att(1, :)));
+ev = Lv.explorer_id(kv);
+amp_v = max(abs(Lv.att(1:2, :, :)), [], 'all');   % la planta sí se inclinó
+mv = Rv.met;
+res = anotar(res, 'actitud_en_tel = false: y(61:63) = 0 (modelo viejo)', ...
+    any(ev == 1 | ev == 2) && all(Lv.tel_att(:, kv) == 0, 'all') && amp_v > 0.005 ...
+    && mv.det_con_actitud == 0 && mv.det_nivelado == mv.det_cuadros, ...
+    sprintf(['%d mensajes (%d con explorador), todos con y(61:63) = 0; la planta llegó a %.2f°; ' ...
+    'detector interno: %d cuadros, %d nivelados, %d con actitud'], numel(kv), sum(ev == 1 | ev == 2), ...
+    rad2deg(amp_v), mv.det_cuadros, mv.det_nivelado, mv.det_con_actitud));
+% ---- 16. detector interno: un cuadro sin ruido con el dron inclinado
+res = prueba_cuadro_actitud(res, raiz);
+% ---- 17. misión PID sin actitud (usar_actitud = false) y con inclinacion_max_deg = 1.5
+mc = R.met;
+o = base; o.usar_actitud = false;
+Rn = sim3d_correr(o);
+mn = Rn.met;
+o = base; o.inclinacion_max_deg = 1.5; o.t_final = 60;
+Ri = sim3d_correr(o);
+mi = Ri.met;
+ok = mc.det_con_actitud > 0 && mc.det_nivelado == 0 && mc.det_desc_incl == 0 ...
+    && mn.det_con_actitud == 0 && mn.det_nivelado > 0 && mn.estado_final == 8 ...
+    && median(mc.err_obs) < median(mn.err_obs) && mi.det_desc_incl > 0 && mi.det_con_actitud > 0;
+res = anotar(res, 'misión PID con y sin actitud (detector interno)', ok, sprintf(['error por observación ' ...
+    'mediana/p95/máx.: con actitud %.1f/%.1f/%.1f mm (n=%d, %d cuadros, incl. máx. %.2f°, %d descartadas), ' ...
+    'usar_actitud=false %.1f/%.1f/%.1f mm (n=%d, %d cuadros nivelados; DONE %d); con inclinacion_max_deg=1.5 ' ...
+    '(60 s): %d descartadas por inclinación, %d observaciones al cluster'], 1e3*median(mc.err_obs), ...
+    1e3*pct(mc.err_obs, 95), 1e3*max(mc.err_obs), numel(mc.err_obs), mc.det_con_actitud, mc.det_incl_max_deg, ...
+    mc.det_desc_incl, 1e3*median(mn.err_obs), 1e3*pct(mn.err_obs, 95), 1e3*max(mn.err_obs), numel(mn.err_obs), ...
+    mn.det_nivelado, mn.estado_final == 8, mi.det_desc_incl, mi.det_obs));
 % ---- 12. misma corrida con y sin figura
 if con_capturas
     Rb = sim3d_correr(base);
@@ -233,6 +291,123 @@ fprintf('%d de %d pruebas pasan\n', sum([res.ok]), numel(res));
 end
 
 % -------------------------------------------------------------------------
+function res = prueba_geo_actitud(res, ref, C, raiz)
+% Casos con actitud generados con web/app/geo.py y vision_service.pose_para_geo (ver
+% pruebas/generar_referencia_estacion.py).
+ok_piv = abs(C.cam.pivote - ref.camara.pivote) < 1e-12;
+ep = 0; nn = 0;
+for k = 1:numel(ref.pixeles_actitud)
+    c = ref.pixeles_actitud(k);
+    g = sim3d_camara('a_suelo', C.cam, c.uv(:), c.pose(:));
+    [e, n1] = comparar_suelo(g, c.suelo);
+    ep = max(ep, e); nn = nn + n1;
+end
+eh = 0;
+for k = 1:numel(ref.huellas_actitud)
+    c = ref.huellas_actitud(k);
+    h = sim3d_camara('huella', C.cam, c.pose(:));
+    hr = c.huella;
+    if iscell(hr) || isempty(h)
+        eh = inf;          % una esquina no corta el piso: estos casos no deberían tenerla
+    else
+        eh = max(eh, max(abs(h - hr), [], 'all'));
+    end
+end
+casos = ref.pose_geo;
+if ~iscell(casos), casos = num2cell(casos); end
+eq = 0; ei = 0; es = 0; n_mal = 0; n_incl = 0; n_ok = 0; n_desc = 0; nn2 = 0;
+n_var = numel(unique(cellfun(@(c) jsonencode(struct('v', c.vision, 'o', c.optitrack)), casos, 'UniformOutput', false)));
+for k = 1:numel(casos)
+    c = casos{k};
+    cfg = C.cfg;
+    vj = c.vision;
+    if isfield(c, 'vision_json'), vj = sim3d_leer_json(c.vision_json); end   % null y [] distintos
+    f = fieldnames(vj);
+    for i = 1:numel(f), cfg.vision.(f{i}) = vj.(f{i}); end
+    f = fieldnames(c.optitrack);
+    for i = 1:numel(f), cfg.optitrack.(f{i}) = c.optitrack.(f{i}); end
+    Cv = sim3d_config(raiz, cfg);
+    [q, act] = sim3d_detector('pose_geo', [], c.pose(:), Cv.vis);
+    eq = max([eq, max(abs(q(:) - c.q6(:))), abs(Cv.cam.pivote - c.pivote)]);
+    lim_ok = isequal(isempty(Cv.vis.incl_max_deg), isempty(c.lim_incl_deg)) ...
+        && (isempty(c.lim_incl_deg) || Cv.vis.incl_max_deg == c.lim_incl_deg);
+    if act.ok ~= c.ok || act.disponible ~= c.disponible || act.inclinado ~= c.inclinado || ~lim_ok
+        n_mal = n_mal + 1;
+    end
+    if c.ok, ei = max(ei, abs(rad2deg(act.incl) - c.incl_deg)); end
+    g = sim3d_camara('a_suelo', Cv.cam, c.uv(:), q);
+    [e, n1] = comparar_suelo(g, c.suelo);
+    es = max(es, e); nn2 = nn2 + n1;
+    n_ok = n_ok + c.ok; n_incl = n_incl + c.inclinado; n_desc = n_desc + ~c.disponible;
+end
+ok = ok_piv && ep < 1e-9 && eh < 1e-9 && eq < 1e-12 && ei < 1e-9 && es < 1e-9 && n_mal == 0 && nn == 0 && nn2 == 0;
+res = anotar(res, 'geolocalización con actitud = estación (geo.py + pose_para_geo)', ok, sprintf(['pivote %.3f m; ' ...
+    '%d píxeles con roll/pitch hasta 20°: error máx. %.2g m; %d huellas: %.2g m; %d casos con %d variantes de ' ...
+    'vision/optitrack (%d con actitud, %d sin y(63), %d descartados por inclinación): pose %.2g, inclinación ' ...
+    '%.2g°, suelo %.2g m, %d diferencias de ok/disponible/inclinado/límite; NaN distintos %d'], C.cam.pivote, ...
+    numel(ref.pixeles_actitud), ep, numel(ref.huellas_actitud), eh, numel(casos), n_var, n_ok, n_desc, n_incl, eq, ei, ...
+    es, n_mal, nn + nn2));
+end
+
+function [e, n_mal] = comparar_suelo(g, ref)
+% g 2x1 (NaN si no corta) contra la referencia de Python ([] = None)
+n_mal = 0; e = 0;
+if isempty(ref)
+    n_mal = double(all(isfinite(g)));
+elseif any(~isfinite(g))
+    n_mal = 1;
+else
+    e = max(abs(g(:) - ref(:)));
+end
+end
+
+function res = prueba_cuadro_actitud(res, raiz)
+% Un cuadro del detector con el explorador inclinado 5° (roll 4°, pitch -3°), sin ruido ni falsos
+% positivos y objetos de 4 cm de alto (su centro está en el plano z = 0.02 m de la estación): con la
+% actitud, la estación debe devolver los objetos EXACTOS.
+C = sim3d_config(raiz);
+xr = [0.1; -0.2; 1.5; 0; 0; 0; deg2rad(4); deg2rad(-3); 0.7];
+qr = xr([1:3 9 7 8]);
+[uu, vv] = meshgrid(linspace(170, 470, 4), linspace(130, 350, 3));
+G = sim3d_camara('a_suelo', C.cam, [uu(:) vv(:)].', qr);
+obj = struct('clase', num2cell(mod(1:size(G, 2), 2)), 'x', num2cell(G(1, :)), 'y', num2cell(G(2, :)), ...
+    'h', 0.04, 'r', 0.05);
+esc.obj = obj;
+opc = sim3d_opciones(struct('p_deteccion', 1, 'ruido_px', 0, 'p_falso', 0, 'p_confusion', 0, ...
+    'sesgo_montaje_deg', [0 0]));
+err_de = @(det) max(hypot(det.ultimas(:, 2) - [obj.x].', det.ultimas(:, 3) - [obj.y].'));
+uno = @(Cx, o) sim3d_detector('cuadro', setfield(sim3d_detector('init', [], Cx, o), 'rs', ...
+    RandStream('mt19937ar', 'Seed', 1)), Cx, esc, xr, qr, 0, o); %#ok<SFLD>
+d1 = uno(C, opc);                               % con actitud
+Cn = C; Cn.vis.usar_actitud = false;
+d2 = uno(Cn, opc);                              % estación sin actitud (nivelado)
+d3 = sim3d_detector('cuadro', setfield(sim3d_detector('init', [], C, opc), 'rs', ...
+    RandStream('mt19937ar', 'Seed', 1)), C, esc, xr, qr(1:4), 0, opc); %#ok<SFLD>  sin y(61:63)
+os = opc; os.sesgo_montaje_deg = [0.8 -0.6];
+d4 = uno(C, os);                                % con actitud, error del soporte
+Ci = C; Ci.vis.incl_max_deg = 4.9;
+d5 = uno(Ci, opc);                              % 5.0° > 4.9°: se descarta todo
+n = numel(obj);
+e1 = err_de(d1); e2 = err_de(d2); e3 = err_de(d3); e4 = err_de(d4);
+ok = size(d1.ultimas, 1) == n && d1.n_obs == n && e1 < 1e-9 && d1.n_con_actitud == 1 ...
+    && e2 > 0.08 && d2.n_nivelado == 1 && abs(e3 - e2) < 1e-12 && d3.n_nivelado == 1 ...
+    && e4 > 0.01 && e4 < 0.05 && d5.n_desc_incl == n && d5.n_obs == 0 && isempty(d5.cl);
+res = anotar(res, 'detector interno con actitud (cuadro sin ruido)', ok, sprintf(['explorador a 1.5 m, roll 4°, ' ...
+    'pitch -3° (%.2f° de inclinación), %d objetos: con actitud error máx. %.1e m; nivelado (usar_actitud=false) ' ...
+    '%.3f m, sin y(61:63) %.3f m; con el error del soporte [0.8 -0.6]° %.3f m; inclinacion_max_deg=4.9: %d de %d ' ...
+    'descartadas, %d al cluster'], rad2deg(d1.incl_max), n, e1, e2, e3, e4, d5.n_desc_incl, n, d5.n_obs));
+end
+
+function v = pct(x, p)
+% percentil sin Statistics Toolbox (interpolación lineal, como numpy por defecto)
+x = sort(x(:));
+if isempty(x), v = NaN; return; end
+r = 1 + (numel(x) - 1)*p/100;
+i = floor(r); f = r - i;
+v = x(i);
+if i < numel(x), v = v + f*(x(i + 1) - x(i)); end
+end
+
 function res = anotar(res, nombre, ok, detalle)
 res(end+1) = struct('nombre', nombre, 'ok', logical(ok), 'detalle', detalle);
 fprintf('[%s] %s: %s\n', ternario(ok, ' OK ', 'FALLO'), nombre, detalle);

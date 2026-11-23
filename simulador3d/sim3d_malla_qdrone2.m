@@ -3,9 +3,10 @@ function M = sim3d_malla_qdrone2()
 %   M = sim3d_malla_qdrone2()
 %
 %   Medidas del manual "QDrone 2 User Manual - System Hardware" (tabla 10):
-%   largo 442.58 mm (x), ancho 490.8 mm (y), alto 135.53 mm. Cuatro aros
-%   de protección de fibra de carbono (doble aro: abajo y arriba, unidos por
-%   postes), brazos en X, placas centrales con el Jetson Xavier NX y su
+%   largo 442.58 mm (x), ancho 490.8 mm (y), alto 135.53 mm. Motores en
+%   (±101.6, ±127) mm ("qdrone2_thrust_parametrization", tabla 1). Cuatro aros
+%   de protección de fibra de carbono concéntricos con los motores (R 119/107 mm;
+%   doble aro: abajo y arriba, unidos por postes), brazos en X, placas centrales con el Jetson Xavier NX y su
 %   ventilador, batería LiPo abajo, 4 motores con hélices de 7" y la
 %   RealSense D435 (90 x 25 x 25 mm) al frente, montada mirando hacia abajo
 %   como en este proyecto (ARQUITECTURA §3.4, camara.offset_camara_m).
@@ -21,12 +22,17 @@ function M = sim3d_malla_qdrone2()
 %   M.lente    : 1x3 posición de la lente de la RealSense
 %   M.medidas  : [largo ancho alto] (m) de la malla resultante
 
-Lx = 0.44258; Wy = 0.4908; Hz = 0.13553;
-Ro = 0.112;               % radio exterior del aro
-Ri = 0.100;               % radio interior del aro
-a = Lx/2 - Ro;            % centros de los aros en x (+-0.1093)
-b = Wy/2 - Ro;            % centros de los aros en y (+-0.1334)
-cen = [a b; a -b; -a b; -a -b];   % FL, FR, RL, RR
+Hz = 0.13553;             % alto (manual, tabla 10)
+% Ejes de los motores: "qdrone2_thrust_parametrization" tabla 1, eje de pitch 0.2032 m y eje
+% de roll 0.254 m (los mismos X_MOTOR, Y_MOTOR de impresion3d/cad/soporte_camara.py).
+a = 0.1016;               % |x| de los motores
+b = 0.127;                % |y| de los motores
+% Aros concéntricos con los motores. Con el largo y el ancho del manual (442.58 x 490.8 mm) el
+% radio exterior sale 221.29 - 101.6 = 119.7 mm en x y 245.4 - 127 = 118.4 mm en y: se usa
+% 119 mm (como R_ARO_EXT del CAD), así la malla mide 441.2 x 492.0 mm (-1.4 / +1.2 mm).
+Ro = 0.119;               % radio exterior del aro (MEDIR EN LAB)
+Ri = 0.107;               % radio interior del aro (aro de 12 mm; MEDIR EN LAB)
+cen = [a b; a -b; -a b; -a -b];   % FL, FR, RL, RR = centros de motores y de aros
 z_abajo = [0.045 0.049];  % aro inferior / placa inferior
 z_arriba = [Hz-0.004 Hz]; % aro superior
 z_helice = 0.077;

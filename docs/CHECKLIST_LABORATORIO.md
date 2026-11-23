@@ -53,9 +53,10 @@ Sigue `impresion3d/README.md`, sección "Soporte de la cámara". La pieza A tard
 - [ ] `robocopy E:\QD2 C:\QD2 /E`. **Ruta corta y fuera de OneDrive**: con rutas largas el build QUARC pasa de 260 caracteres y falla.
 - [ ] MATLAB: `version` → anotar release: ________ (se espera R2022a). Se usarán los `.slx` de `simulink_qdrone2\versiones\<release>\`.
 - [ ] QUARC instalado para ese release (menú QUARC en Simulink; `getenv('QUARC_DIR')` no vacío).
+- [ ] Comprobaciones del build de [`GUIA_BUILD_QUARC_LAB.md`](GUIA_BUILD_QUARC_LAB.md) §1 (20 min): `qc_get_target_types` incluye `win64` y `linux_qdrone2`, compilador de Visual Studio C++, firewall para 18001/18002 y `ExtModeMexArgs` de tierra con comillas (§0: ya corregido en el repositorio; solo comprobarlo). **NO SEGUIR** a las etapas de vuelo si faltan los targets.
 - [ ] Python ≥ 3.10: `py -3 --version`. Si no está, instalarlo (marcar "Add python.exe to PATH").
 - [ ] Con internet (Wi-Fi interna): `C:\QD2\web\iniciar_web.bat --fuente mock`. La primera vez crea el venv (~5 min). En `http://127.0.0.1:8080`, START del mock llega a DONE. Cerrar.
-- [ ] `cd C:\QD2\web` → `%USERPROFILE%\.venvs\qd2_web\Scripts\python -m pytest -q tests` → **163 passed**.
+- [ ] `cd C:\QD2\web` → `%USERPROFILE%\.venvs\qd2_web\Scripts\python -m pytest -q tests` → **167 passed**. Si la copia no trae `vision\datos\sintetico_smoke` ni el respaldo `vision\modelos\mejor_640x640_*.onnx` (no van a git), lo esperado es **165 passed, 2 skipped**.
 - [ ] `cd C:\QD2` → `%USERPROFILE%\.venvs\qd2_web\Scripts\python web\preflight_lab.py`. En este punto lo normal es que falten las IPs, Motive y los intrínsecos; **no** deben faltar archivos.
 - [ ] (Opcional, 15 min) SIL en esta PC: en MATLAB `cd C:\QD2\simulink_qdrone2\versiones\R2022a` **y luego** `open_system('QD2_Sim_Dual.slx')` (si abres desde otra carpeta usa la librería de R2025a y no carga). `qd2_e2e_web` **no** sirve en R2022a. Prueba a mano de `PRUEBA_E2E.md` §4 con una **copia** de la config.
 
@@ -84,11 +85,11 @@ Sigue `impresion3d/README.md`, sección "Soporte de la cámara". La pieza A tard
 
 - [ ] En MATLAB: `cd C:\QD2\simulink_qdrone2\versiones\R2022a` y abrir `QD2_MissionCtrl_Dual_PID.slx`.
 - [ ] En la consola deben salir `qd2_cargar_config: calibration_file <- …` y `rigid_body_file <- …` con las rutas del día. Si no salen, o el build falla en ese bloque, escribirlas a mano en OptiTrack Trackables (área 2) y guardar.
-- [ ] **Build QUARC** (target `quarc_win64`) → **Connect** → **Start**. Anotar si compiló a la primera: ______. *Esto nunca se ha probado.*
+- [ ] **Build QUARC** (target `quarc_win64`) → **Connect** → **Start**. Anotar si compiló a la primera: ______. *Esto nunca se ha probado.* Comandos, qué debe verse y errores típicos: [`GUIA_BUILD_QUARC_LAB.md`](GUIA_BUILD_QUARC_LAB.md) §2.1 y §3.
 - [ ] `C:\QD2\web\iniciar_web.bat --fuente simulink`: "Puente 50 Hz", "Modelo PID", los dos drones **rastreados**. Los drones están encendidos en el piso, sin lanzar sus binarios.
 - [ ] Cada dron en el piso marca **z = 0 ± 0.02 m**: el autoland a bordo exige z ≤ 0.05 m. Si no, corregir `optitrack.bias_z_dronN` en `estacion.json`.
 - [ ] Mover cada dron a mano hacia +x y hacia +y: la UI lo sigue en el mismo sentido y el yaw ≈ 0 cuando mira a +x.
-- [ ] **Actitud del explorador, y(61:63): llega y los signos son correctos** (2 min, sin volar, Motive cerrado). Se mira en la tarjeta del explorador (el de menor x), fila *actitud (cruda)* (φ = roll, θ = pitch): y(61:62) tal como llegan de OptiTrack, sin signos ni offset de la estación. Si dice "no disponible (y(63) = 0)" con el dron rastreado, el modelo de tierra es viejo: regenerarlo (`construir_modelos`). Mientras tanto la estación geolocaliza suponiendo el dron nivelado. Con el explorador en el piso mirando a +x:
+- [ ] **Actitud del explorador, y(61:63): llega y los signos son correctos** (2 min, sin volar, Motive cerrado). Se mira en la tarjeta del explorador (el de menor x), fila *actitud (cruda)* (φ = roll, θ = pitch): y(61:62) tal como llegan de OptiTrack, sin signos ni offset de la estación. Si dice "no disponible (y(63) = 0)" con el dron rastreado, el modelo de tierra es viejo: abrir el de `simulink_qdrone2\versiones\<release>\` de esta copia; si aun así sale viejo, anotarlo y regenerarlo **en la laptop** (`construir_modelos`), no en el laboratorio. Mientras tanto la estación geolocaliza suponiendo el dron nivelado. Con el explorador en el piso mirando a +x:
   1. Nivelado: φ ≈ 0° y θ ≈ 0° (± 1°). Anotar φ ______ θ ______. Si alguno pasa de ~1°, el rigid body se creó inclinado: escribir esos dos valores en `vision.actitud_offset_deg` (`[roll, pitch]` en grados) de `estacion.json` y reiniciar la estación.
   2. Un libro de ~3 cm bajo las patas **izquierdas** (lado izquierdo arriba): φ debe salir **positivo** (≈ +5° a +10°). Anotar ______.
   3. El libro bajo las patas **traseras** (cola arriba, nariz abajo): θ debe salir **positivo**. Anotar ______.
@@ -196,9 +197,10 @@ No hay misión con un solo dron. Se usa el modo MANUAL original: Command Source 
 ## Etapa 9. Versión MPC — 90 min
 
 - [ ] UI → Misión → versión **MPC** (`version_control`). `preflight_lab.py --version MPC`.
-- [ ] Compilar el dron MPC:
+- [ ] Compilar el dron MPC (detalle en [`GUIA_BUILD_QUARC_LAB.md`](GUIA_BUILD_QUARC_LAB.md) §2.4–§2.5, que explica cómo compilar sin descargar al dron):
   1. En MATLAB, `cd C:\QD2\simulink_qdrone2\binarios_dron`.
   2. Abrir `..\versiones\R2022a\QD2_DroneStack_MPC.slx` y hacer el build (`quarc_linux_qdrone2`). Puede fallar al **descargar** a 192.168.2.16; da igual si el archivo `QD2_DroneStack_MPC.rt-linux_qdrone2` quedó en `binarios_dron`.
+  3. **Solo la flecha ▾ de Monitor & Tune → Build for Monitoring. NO pulsar el botón grande Monitor & Tune ni Deploy en este modelo**: descargan y arrancan el modelo en 192.168.2.16. Compilar con los dos drones en el piso y sus binarios detenidos ("Detener" en Conexiones).
 - [ ] Build de tierra `versiones\R2022a\QD2_MissionCtrl_Dual_MPC.slx` (**misma construcción** que el dron) → Connect → Start → estación ("Modelo MPC", sin aviso amarillo).
 - [ ] En seco: "FSM a bordo: 1 · IDLE" en los dos, **sin alerta 10**, batería visible en la tarjeta: dron 1 ______ V, dron 2 ______ V (no despegar con menos de ~15.5 V).
 

@@ -36,6 +36,7 @@ d.puerto         = [];         % [] = config/estacion.json -> red.puerto_puente 
 d.host_tcp       = '127.0.0.1';% '127.0.0.1' = solo esta PC; '0.0.0.0' = toda la red
 d.backend_tcp    = 'auto';     % 'auto' | 'java' | 'tcpserver'
 d.hz_telemetria  = 50;         % Hz de la telemetría de 64 doubles
+d.actitud_en_tel = true;       % false = emula un modelo de Simulink viejo: y(61:63) = 0 (sin actitud)
 d.use_vision_python = false;   % true = los objetivos vienen de la estación Python (ranuras 5-19)
 d.t_toma_interna = 3.0;        % s de RELOJ sin paquetes de Python -> la estación interna retoma el heartbeat
 d.t_hb_python    = 0.5;        % s de RELOJ: Python cuenta como vivo si mandó un heartbeat nuevo en esta ventana
@@ -48,6 +49,8 @@ d.p_falso        = 0.01;       % probabilidad de un falso positivo por cuadro
 d.p_confusion    = 0.02;       % probabilidad de confundir la clase
 d.tam_min_px     = 10;         % px, tamaño aparente mínimo para detectar
 d.sesgo_montaje_deg = [0.8 -0.6]; % [roll pitch] error del soporte de la cámara que la estación NO conoce
+d.usar_actitud   = [];         % [] = config (vision.usar_actitud); false = geolocalizar nivelado, como antes
+d.inclinacion_max_deg = [];    % [] = config (vision.inclinacion_max_deg, 15); 0 o Inf = sin descarte
 % ---- Gráficos -------------------------------------------------------------
 d.mostrar        = true;       % figura visible
 d.vista          = 1;          % 1 general, 2 cenital, 3 sigue al explorador, 4 primer plano del dron 1

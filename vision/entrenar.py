@@ -15,7 +15,8 @@ Entrena YOLO11n (clases 0 fuego, 1 toma) UNA SOLA VEZ y guarda vision/modelos/me
   --peso_reales K repite las fotos reales K veces en train (son pocas frente al sintético).
 - --solo_reales entrena/afina sólo con las fotos reales (p. ej. partiendo de --base vision/modelos/mejor.pt).
 - Las métricas van junto al modelo con su nombre: mejor.pt -> metricas.json; otro.pt -> metricas_otro.json.
-- Al terminar exporta también <modelo>.onnx (para la estación web sin torch).
+- Al terminar exporta también <modelo>.onnx (para la estación web sin torch), con entrada 3/4 x imgsz de alto
+  por imgsz de ancho (480x640 con --imgsz 640), la forma de las imágenes 640x480 de la cámara.
 """
 import argparse
 import datetime
@@ -273,7 +274,8 @@ def main():
     try:
         sys.path.insert(0, AQUI)
         from exportar_onnx import exportar
-        print("ONNX guardado en", exportar(destino, a.imgsz))
+        # 4:3 apaisado como la cámara (640 -> 480x640), alto redondeado hacia arriba a múltiplo de 32
+        print("ONNX guardado en", exportar(destino, (-(-a.imgsz * 3 // 128) * 32, a.imgsz)))
     except Exception as e:
         print("AVISO: no se exportó el ONNX (%s: %s); corre python vision/exportar_onnx.py --modelo %s"
               % (type(e).__name__, e, destino))

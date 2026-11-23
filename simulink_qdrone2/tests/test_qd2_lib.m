@@ -111,6 +111,21 @@ tc.verifyEqual(p.T_trim, 1.504*9.81, 'AbsTol', 1e-12);
 fprintf('[config] estacion.json -> z_E=%.2f z_R=%.2f d_min_h=%.2f, %d vertices\n', p.z_E, p.z_R, p.d_min_h, p.n_vertices);
 end
 
+function test_ext_mode_args(tc)
+% ExtModeMexArgs de tierra: QUARC lo evalúa como lista de cadenas de MATLAB (como el original
+% del Equipo2, '-w -d %d -uri %u -URI_Host ...'). Sin comillas, qc_get_model_arguments falla
+% con "This statement is incomplete." y el build/Connect de tierra no arrancaría.
+cfg = qd2_cargar_config();
+a = cfg.ext_mode_args;
+tc.verifyTrue(startsWith(a, '''') && endsWith(a, ''''), 'ExtModeMexArgs debe ir entre comillas simples');
+c = eval(['{' a '}']);
+tc.verifyEqual(numel(c), 1);
+tc.verifyTrue(startsWith(c{1}, '-w -d %d -uri %u '));
+tc.verifyTrue(contains(c{1}, sprintf('-URI_Host tcpip://localhost:%d', cfg.puerto_dron1)));
+tc.verifyTrue(contains(c{1}, sprintf('-URI_Host2 tcpip://localhost:%d', cfg.puerto_dron2)));
+fprintf('[config] ExtModeMexArgs = %s -> %d argumento(s)\n', a, numel(c));
+end
+
 % =========================================================================
 %  Supervisor: comandos, deduplicación
 % =========================================================================

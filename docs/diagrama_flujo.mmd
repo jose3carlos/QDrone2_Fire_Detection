@@ -31,7 +31,7 @@ HOV --> PAR[MISSION: E y R en paralelo]
 subgraph EXPLORADOR
 E1[Ir al siguiente waypoint de la N a 1.5 m] --> E2[RealSense D435i hacia abajo, video :18800 a la estacion, YOLO11n]
 E2 --> E3{Fuego o toma detectada?}
-E3 -- Si --> E4[Geolocalizar: rayo de camara + pose OptiTrack al plano z = 0.02 m. Agrupar en 0.25 m con 3 o mas observaciones]
+E3 -- Si --> E4[Geolocalizar: rayo de camara + pose OptiTrack completa x y z yaw roll pitch al plano z = 0.02 m. Descartar si mide mas de 35 cm, si es toma a mas de 25 cm del tubo o si el dron iba inclinado mas de 15 grados. Agrupar en 0.25 m con 3 o mas observaciones]
 E4 --> E5[Publicar objetivo a Simulink: id 1 a 32, clase, x, y. Sin ids libres no se publica y sale aviso rojo]
 E5 --> E6{Fin de la N?}
 E3 -- No --> E6

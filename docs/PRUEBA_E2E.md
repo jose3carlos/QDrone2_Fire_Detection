@@ -31,7 +31,18 @@ Contrato: `docs/ARQUITECTURA.md`. Última corrida: **22-nov-2026, R2025a, en est
 |---|---|
 | `web/e2e/e2e_estacion.py` | Levanta la estación real en el puerto 8090 con una **copia** de `estacion.json`. Lee `/ws` como la página y manda los comandos por `/api/cmd` y `/api/objetivos/manual`. Toma capturas con Chrome headless y revisa cada corrida (código de salida 0 = pasa). |
 | `simulink_qdrone2/sim/qd2_e2e_web.m` | Corre `QD2_Sim_Dual` en tiempo real con COMMAND SOURCE = 2: corridas `pid`, `mpc` y `falla` (falla a bordo del dron 2 en t = 45 s). |
-| `simulador3d/sim3d_e2e_web.m` | Corre el simulador 3D en tiempo real, sin ventana, con escenario `'web'` y `use_vision_python = true`: corridas `PID` y `MPC`. |
+| `simulador3d/sim3d_e2e_web.m` | Corre el simulador 3D en tiempo real, sin ventana, con escenario `'web'` y `use_vision_python = true`: corridas `PID` y `MPC`. Con `struct('actitud_en_tel', false)` emula un modelo de Simulink viejo (y(61:63) = 0). |
+
+**Opciones de `e2e_estacion.py` para la actitud y(61:63)** (la sección 5.5 las usa):
+
+| Opción | Qué hace |
+|---|---|
+| `--actitud-esperada si` | Exige y(63) = 1 en todos los mensajes de MISSION y que la UI muestre la actitud del explorador (`actitud_explorador.cruda`). |
+| `--actitud-esperada no` | Exige y(63) = 0 siempre y el aviso amarillo "Actitud del explorador no disponible" (modelo viejo). |
+| `--sin-actitud` | `vision.usar_actitud = false` en la copia de la config: geolocalización nivelada, para comparar. La cámara sintética sigue dibujando con la actitud real. |
+| `--inclinacion-max G` | `vision.inclinacion_max_deg = G` en la copia (p. ej. 1.5 para ver el descarte por inclinación con los ~3° de la simulación). |
+
+En todas las corridas el script compara cada detección que entra al cluster y cada objetivo publicado (sin el manual) con la **verdad** de la cámara sintética (`web.mock_anomalias` o `mock_world.default_anomalies`). Imprime `ACTITUD <corrida>` y `GEOLOCALIZACIÓN <corrida>` al final y lo guarda en `resumen_<fuente>.json` (`actitud`, `geolocalizacion`).
 
 **La copia de la config.** La prueba **no toca** `config/estacion.json`: escribe `estacion_e2e.json` en la carpeta de salida. En la copia:
 
@@ -86,7 +97,9 @@ Al final, la bitácora imprime `RESUMEN <corrida>: PASA/FALLA` y la lista de fal
 - los dos drones quedan en el suelo, a < 0.15 m de su home (salvo en `falla`);
 - todos los comandos llegan como "recibido" (ack) y responden HTTP 200;
 - el WebSocket llega a ≥ 10 Hz;
-- la UI no marca una falla en una corrida sin falla.
+- la UI no marca una falla en una corrida sin falla;
+- cada objetivo publicado por la estación (sin el manual) queda a ≤ `vision.radio_cluster_m` (0.25 m) de una anomalía verdadera de su clase;
+- con `--actitud-esperada`, lo de y(63) descrito arriba.
 
 ## 3. Prueba automática contra el simulador 3D (PID y MPC)
 
@@ -165,7 +178,7 @@ Corrida final después de las correcciones. Estación real (`app.server`, fuente
 | Paquetes de Python recibidos / comandos | 2912 / 4 | 1992 / 4 |
 
 ### 5.3 Pruebas automáticas después de las correcciones
-- `web`: **122 passed** (cifra de esa fecha; hoy son 163 con las pruebas de actitud y(61:63)). Son las 117 anteriores, más 5 nuevas en `web/tests/test_frontera_e2e.py`.
+- `web`: **122 passed** (cifra de esa fecha; hoy son 167, con las pruebas de actitud y(61:63) y del ONNX 480×640). Son las 117 anteriores, más 5 nuevas en `web/tests/test_frontera_e2e.py`.
 - `QD2_Sim_Dual` reconstruido:
   - Update Diagram OK.
   - El bloque nuevo no se solapa con ningún otro bloque (0 solapes).
@@ -187,6 +200,45 @@ Corrida final después de las correcciones. Estación real (`app.server`, fuente
 | `sim3d_PID_mision_en_curso.png`, `sim3d_PID_tabla_objetivos.png`, `sim3d_MPC_mision_en_curso.png`, `sim3d_MPC_done.png` | Lo mismo con el simulador 3D |
 | `antes_simulink_pid_flight_state_mal.png` | **Antes** de la corrección: "Flight State (tierra): 5 · estado 5" en PID (defecto 1) |
 
+### 5.5 Con la actitud del explorador y(61:63) (22-nov-2026, después del commit de la corrección por inclinación)
+
+Misma prueba (estación real `app.server` en :8090, puente :18700, tiempo real, R2025a), ahora con y(61:63) llenos: `QD2_Sim_Dual` y el simulador 3D mandan el roll y pitch **reales** de la planta del explorador. Todas las corridas con `--actitud-esperada si`, salvo la del modelo viejo (`no`). Error = distancia a la anomalía verdadera de la misma clase; "por observación" es cada detección que entró al cluster; "por objetivo" es la posición publicada al llegar a DONE (3 objetivos: 2 fuegos y la toma; el manual no cuenta).
+
+| Corrida | Resultado | DONE (t sim) | Objetivos | y(63) = 1 en MISSION | \|roll\| / \|pitch\| máx. en la UI | Frames con actitud / nivelados | Descartadas por inclinación | Error por observación: mediana / p95 / máx. | Error por objetivo (máx.) |
+|---|---|---|---|---|---|---|---|---|---|
+| `QD2_Sim_Dual` PID | **PASA** | 141.3 s | 4/4 visitados, verdad 3/3 | 1360/1360 | 1.63° / 2.40° | 1285 / 0 | 0 | 6.4 / 31 / 57 mm (n = 528) | 8.9 mm |
+| `QD2_Sim_Dual` PID, `--sin-actitud` | **PASA** | 136.5 s | 4/4, verdad 3/3 | 1336/1336 | 1.61° / 2.68° | 0 / 1266 | 0 | 23.4 / 57 / 84 mm (n = 548) | 11.7 mm |
+| `QD2_Sim_Dual` MPC | **PASA** | 96.8 s | 4/4, verdad 3/3 | 689/689 | 2.62° / 3.54° | 864 / 0 | 0 | 8.2 / 34 / 50 mm (n = 328) | 4.0 mm |
+| `QD2_Sim_Dual` MPC, `--sin-actitud` | **PASA** | 96.3 s | 4/4, verdad 3/3 | 685/685 | 2.63° / 3.36° | 0 / 863 | 0 | 46.9 / 81 / 104 mm (n = 327) | 8.9 mm |
+| Simulador 3D PID | **PASA** | 141.7 s | 4/4, verdad 3/3 | 1409/1409 | 1.61° / 1.82° | 1306 / 0 | 0 | 7.1 / 30 / 120 mm (n = 546) | 8.1 mm |
+| Simulador 3D PID, `--sin-actitud` | **PASA** | 137.6 s | 4/4, verdad 3/3 | 1326/1326 | 1.58° / 2.59° | 0 / 1287 | 0 | 22.0 / 56 / 85 mm (n = 554) | 12.5 mm |
+| Simulador 3D MPC | **PASA** | 96.9 s | 4/4, verdad 3/3 | 693/693 | 2.41° / 3.15° | 867 / 0 | 0 | 8.2 / 36 / 53 mm (n = 323) | 6.1 mm |
+| Simulador 3D MPC, `--sin-actitud` | **PASA** | 97.1 s | 4/4, verdad 3/3 | 689/689 | 2.33° / 3.10° | 0 / 880 | 0 | 36.5 / 69 / 99 mm (n = 336) | 11.2 mm |
+| Simulador 3D MPC, `--inclinacion-max 1.5` | **PASA** | 97.0 s | 4/4, verdad 3/3 | 679/679 | 2.42° / 2.99° | 870 / 0 | **131** | 10.3 / 37 / 174 mm (n = 194) | 4.1 mm |
+| Simulador 3D MPC, **modelo viejo** (`actitud_en_tel = false`, `--actitud-esperada no`) | **PASA** | 97.1 s | 4/4, verdad 3/3 | 0/693 (y(63) = 0 siempre) | — (la tarjeta no muestra actitud) | 0 / 879 | 0 | 7.8 / 30 / 49 mm (n = 332) | 5.8 mm |
+
+**En todas las corridas:**
+- Estados 0→1→2→3→4→5→10→5→6→7→8 (con PAUSE/RESUME), **sin alertas** (y(55) = 0 todo el tiempo), los 4 objetivos salen como "ambos" y quedan visitados, y los dos drones aterrizan en su home.
+- Los únicos mensajes con y(63) = 0 en las corridas con actitud son los de INIT/WAIT_TRACKING, cuando todavía no hay explorador (p. ej. 27 de 2029 en `QD2_Sim_Dual` PID).
+- `qd2_correr_sim` compara y(61:62) con `x(7:8)` de la planta del explorador: error **0** en PID y MPC, y(63) = 1 en el 98.6 % / 98.0 % de los pasos, inclinación máxima 2.41° / 3.64°.
+- Avisos: el rojo de la cámara sintética (esperado) y, en las corridas MPC, el amarillo de "el modelo es MPC pero `version_control` = PID" (esperado: la config real dice PID). En la corrida del modelo viejo aparece además el amarillo "Actitud del explorador no disponible (y(63) = 0)" y Visión dice "no disponible (y(63) = 0 …): geolocalización nivelada".
+
+**Lo que dicen los números:**
+- **La corrección por inclinación funciona punta a punta.** Con inclinaciones de solo 2–3.5°, el error por observación baja de 22–47 mm (mediana) a 6–8 mm, y el p95 de 56–81 mm a 30–36 mm. La mejora es mayor en MPC, que se inclina más.
+- **Por objetivo la diferencia es menor** (máx. 4–9 mm con actitud contra 9–12.5 mm sin ella), porque el promedio del cluster cancela parte del error de un lado y del otro de la N. Con inclinaciones mayores (viento, maniobras bruscas, el dron real) la diferencia crecería: 5° ≈ 0.13 m a 1.5 m.
+- **El descarte por inclinación funciona en vivo.** Con el límite bajado a 1.5°, la estación descartó 131 detecciones (n = 194 entraron al cluster contra ~330 normalmente) y la misión terminó igual, con los 3 objetos publicados en el mismo orden que sin el límite. Con el límite real (15°) no se descartó nada: la simulación no pasa de 3.8°.
+- **El modelo viejo sigue funcionando** nivelado, con su aviso. En esa corrida la cámara sintética también dibuja nivelada (no tiene la actitud), así que su error no dice nada sobre la física; solo prueba que la estación no depende de y(61:63).
+- Los máximos por observación de 120 mm y 174 mm son casos aislados (el p95 queda en 30–37 mm). No investigué de qué frame salieron; no afectaron a ningún objetivo publicado.
+
+**Observación (no es defecto de la actitud):** en PID, con `--sin-actitud`, el respondedor visitó la toma central a los **88 s** en lugar de a los **27.7 s**, en las tres corridas niveladas (dos de `QD2_Sim_Dual` y una del simulador 3D). Una corrida repetida con la telemetría grabada muestra que el SEPARATION GUARD estuvo activo desde la publicación (t = 16.7 s) hasta t = 83 s (salvo en PAUSED), mientras E recorría la N: R se retiró a ~0.4 m de su home (1.28, −0.58) y solo avanzó hacia la toma cuando E se alejó (a (0.14, 0.16) entre 70 y 78 s, con el guard todavía activo). La toma se había publicado en (−0.204, −0.034); con actitud se publica en (−0.21, −0.06). Es la misma sensibilidad del guard ya anotada en §6 (el objetivo manual de 74 s): en PID, unos centímetros en la posición del objetivo pueden cambiar mucho el tiempo de visita.
+
+Bitácoras de estas corridas: `e2e_<fuente>.log` y `resumen_<fuente>.json` en la carpeta `--salida` de cada una (no están en el repositorio). Las capturas de estas corridas no se copiaron a `docs/capturas_e2e/`; en ellas la tarjeta del explorador muestra "actitud (cruda)" con la inclinación.
+
+### 5.6 Pruebas automáticas después de la E2E con actitud
+- `web`: **163 passed** (después, con `web/tests/test_detector_onnx.py` del ONNX 480×640: 167).
+- Simulador 3D, `probar_sim3d(false)`: **15 de 15 pasan** (antes 14; después, con la geolocalización con actitud del detector interno: 18 de 18, ver `simulador3d/README.md`). La nueva es la 14: con `actitud_en_tel = false`, 1500 mensajes (1399 con explorador) salen con y(61:63) = 0 aunque la planta llegó a 1.68°.
+- **Después de la revisión (22-nov-2026, `ExtModeMexArgs` entre comillas, Conexiones y lectura de `vision` en `sim3d_config`):** `web` 167 passed; `probar_sim3d(false)` 18 de 18; `runtests('test_qd2_lib')` 32 de 32; E2E simulador 3D MPC con actitud (`--actitud-esperada si`) **PASA**: DONE a 97.0 s, 4/4 visitados, verdad 3/3, y(63) = 1 en 682/682 mensajes de MISSION, 872 frames con actitud, 0 descartadas, error por observación mediana 8.9 mm (p95 35 mm, máx. 68 mm, n = 322), por objetivo máx. 6.1 mm.
+
 ## 6. Defectos encontrados en la frontera y corregidos
 
 1. **`QD2_Sim_Dual` y el simulador 3D mandaban la FSM a bordo en o+2 también en PID** (contrato §3.3: en PID va el Flight State de tierra).
@@ -207,6 +259,9 @@ Corrida final después de las correcciones. Estación real (`app.server`, fuente
 5. **Documentación desactualizada:**
    - `simulador3d/README.md` decía que la UI no lee y(56:60) y llamaba "propuesta" a 56–60;
    - `docs/ARQUITECTURA.md` §3.2 seguía con "el dron acepta 0 o 2", que dejó de ser cierto en la revisión de tierra MPC. Lo actualicé, junto con `Onboard Status [4]`, el enlace perdido como alerta 9 y la falla antes de START.
+6. **(E2E con actitud) `e2e_estacion.py` se caía con el aviso de actitud no disponible.** Con la salida redirigida a un archivo, Windows usa cp1252, y el texto del aviso amarillo ("5° de inclinación ≈ 0.13 m") tiene "≈", que no existe en cp1252: `print()` lanzaba `UnicodeEncodeError` al entrar a MISSION y la prueba del modelo viejo se cortaba (el simulador se quedaba en PAUSED sin heartbeat).
+   - **Corrección:** `sys.stdout.reconfigure(errors="replace")` al inicio del script. La bitácora `.log` ya se escribía en UTF-8 y no cambia.
+   - Se repitió la corrida del modelo viejo: **PASA** (tabla de §5.5).
 
 **Observaciones (no son defectos de frontera):**
 - **En PID el respondedor tardó 74 s en llegar al objetivo manual.** Estaba asignado a los 27.7 s y se visitó a los 101.8 s. El SEPARATION GUARD lo retuvo mientras E pasaba cerca (guard activo 86 % de MISSION). Es correcto según la regla de separación, pero alarga la misión.
@@ -222,7 +277,7 @@ La lista imprimible, con tiempos y criterios de **seguir / no seguir** en cada v
 1. **Copia el proyecto a una ruta corta fuera de OneDrive** (por ejemplo `C:\QD2`). Con rutas largas el build pasa de 260 caracteres y falla (pasó en la regresión del 22-nov). Incluye lo que no está en git: `vision/modelos/mejor.pt`, `mejor.onnx` y `mejor.onnx.json`, y `simulink_qdrone2/binarios_dron/QD2_DroneStack_PID_2021a.rt-linux_qdrone2` (binario original del Equipo2, md5 `00d4d46e…`).
 2. **Revisión automática:** `%USERPROFILE%\.venvs\qd2_web\Scripts\python web\preflight_lab.py` desde la raíz. Solo lee y dice qué falta: modelos de `versiones/`, binarios, ONNX, config, IPs, puertos, Motive abierto y QUARC.
 3. **Prueba de la máquina.** `qd2_e2e_web` **no sirve en R2022a**: carga `sim/QD2_Sim_Dual.slx` y `lib/QD2_Mission_Lib.slx`, que están guardados en R2025a. En R2022a haz la prueba a mano de la sección 4 con la copia de `versiones/R2022a/`: en MATLAB `cd simulink_qdrone2\versiones\R2022a` **antes** de `open_system('QD2_Sim_Dual.slx')`. Así se usa la librería R2022a de esa carpeta (el `PreLoadFcn` del simulador agrega `lib/`, donde está la de R2025a). En R2025a o más nuevo, `qd2_e2e_web({'pid'})` sí sirve.
-4. En `web`: `%USERPROFILE%\.venvs\qd2_web\Scripts\python -m pytest -q tests` (163 passed). La primera vez, `iniciar_web.bat` necesita internet (Wi-Fi interna) para crear el venv.
+4. En `web`: `%USERPROFILE%\.venvs\qd2_web\Scripts\python -m pytest -q tests` (167 passed; 165 passed y 2 skipped si la copia no trae `vision\datos\sintetico_smoke` ni el respaldo `mejor_640x640_*.onnx`). La primera vez, `iniciar_web.bat` necesita internet (Wi-Fi interna) para crear el venv.
 
 **Configuración real (`config/estacion.json`, desde la UI con la fuente `simulink`)**
 1. **`camara.fuente = "dron"`.** No debe existir `web.permitir_sintetica_en_simulink`, o debe ser `false`. La barra roja de "CÁMARA SINTÉTICA" **no debe aparecer**.
@@ -281,6 +336,8 @@ La lista imprimible, con tiempos y criterios de **seguir / no seguir** en cada v
 - **No se probó con hardware, QUARC ni OptiTrack reales.** Todo es SIL: `QD2_Sim_Dual` y el simulador 3D.
 - **La falla a bordo solo se probó en `QD2_Sim_Dual`.** El simulador 3D no emula 7/8, solo pasa la FSM a bordo a la misión.
 - **La prueba usa la cámara sintética con el detector falso.** No probé YOLO dentro de la E2E.
+- **La E2E con actitud no valida los signos de roll y pitch del dron real.** La cámara sintética dibuja con la misma convención con la que la estación proyecta (`geo.R_mundo_cuerpo`), así que la prueba confirma que la cadena y(61:63) → interpolación → proyección → cluster es coherente, no que OptiTrack/QUARC manden los ángulos con ese signo. Eso sigue siendo la prueba del libro en el laboratorio (`CHECKLIST_LABORATORIO.md`). Por código, la planta (`qd2_quad_plant`: R = Rz·Ry·Rx, pitch > 0 acelera hacia +x, roll > 0 hacia −y) y el mock usan la misma convención.
+- **Inclinaciones chicas.** Las simulaciones no pasan de 3.8°; con el límite real de 15° no se descartó ninguna detección. El descarte solo se ejercitó bajando el límite a 1.5°.
 - **No se volvieron a tomar las capturas de `simulink_qdrone2/capturas/`** de `QD2_Sim_Dual`. El bloque `DRONE STATUS` ahora es más alto y tiene 5 entradas.
 - **Prioridad de las alertas 9/10 frente a las del operador:** lo implementado (TELEMETRY PACK de `construir_modelos.m`) es que la del operador (5–8) prevalece también sobre 9 y 10; falta que los dos equipos lo acuerden formalmente.
 - **YOLO con fotos reales:** el modelo actual (`vision/modelos/mejor.onnx`) solo vio imágenes sintéticas (mAP50 0.995 en validación sintética). Falta capturar y etiquetar fotos del laboratorio (`vision/README.md` §4).

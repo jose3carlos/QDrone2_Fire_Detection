@@ -154,6 +154,10 @@ G.n_wp = -1;
 % ---------------- drones ---------------------------------------------------
 M = sim3d_malla_qdrone2();
 G.malla = M;
+% la pose es el punto corregido de Motive (z = 0 con el dron en el piso); el dron gira alrededor del
+% pivote del rigid body, C.cam.pivote m más arriba (web/app/geo.py, sim3d_camara 'pose')
+G.pivote = 0;
+if isfield(C.cam, 'pivote'), G.pivote = C.cam.pivote; end
 [Vd, Fd] = disco(0.0889, 28);
 for i = 1:2
     c = col.dron(i,:);
@@ -280,7 +284,8 @@ rol = [tel.role1 tel.role2];
 for i = 1:2
     D = G.D(i);
     x = X(:, i);
-    D.tr.Matrix = makehgtform('translate', x(1:3).', 'zrotate', x(9), 'yrotate', x(8), 'xrotate', x(7));
+    D.tr.Matrix = makehgtform('translate', x(1:3).' + [0 0 G.pivote], 'zrotate', x(9), 'yrotate', x(8), ...
+        'xrotate', x(7), 'translate', [0 0 -G.pivote]);
     activo = E.fsm(i) >= 3 && E.fsm(i) <= 6;
     if activo
         w = min(55, 8 + 3*X(10, i));          % rad/s "visuales" (con aliasing se ve girar)
@@ -458,6 +463,9 @@ if n > 9, T{end+1} = sprintf(' ... y %d más', n - 9); end
 T{end+1} = sprintf('reales %d · sin detectar %d · clusters pendientes %d · falsos %d', ...
     numel(E.esc.obj), sum(E.estado_real == 0), E.n_pend, E.n_falsos);
 T{end+1} = sprintf('detector: %s', E.txt_vision);
+if isfield(E, 'txt_actitud') && ~isempty(E.txt_actitud)
+    T{end+1} = sprintf('geolocalización: %s', E.txt_actitud);
+end
 setc(G.cache, 'hudobj', G.hud_obj, 'String', T);
 % vista que sigue al explorador
 v = getappdata(G.fig, 'vista');
