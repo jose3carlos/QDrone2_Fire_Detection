@@ -173,6 +173,21 @@ No hay misión con un solo dron. Se usa el modo MANUAL original: Command Source 
 
 **SEGUIR si:** cada dron hace hover estable (deriva < 0.10 m, z ± 0.05 m), aterriza solo y termina en 9 sin alertas. **NO SEGUIR si:** oscila, deriva > 0.20 m, el autoland no termina (revisar `bias_z`), o hay pérdida de enlace o de rastreo.
 
+## Etapa 7-bis. Misión SOLO EXPLORADOR (PID, un solo QDrone) — 40 min
+
+Un solo dron recorre la pista con la misión completa (despegue, N a `z_E`, detecciones, regreso, aterrizaje). El otro no se usa y nunca recibe arm/takeoff. No probado aún en vuelo real.
+- [ ] `config/estacion.json` (la de la laptop y **la misma copiada a la PC**): `mision.modo = "solo_explorador"`, `mision.dron_solo = 1`, la pista del día (`pista.vertices`, medida con **Capturar vértice**) y `red.ip_pc` = IP de la PC.
+- [ ] Motive: rigid body del explorador con el ID de `optitrack.rigid_body_dron1` (en el piso mirando a +x); `rigid_body_dron2` = otro ID distinto. **[NO VERIFICADO]** si el Build/Start falla porque el rigid body 2 no está en el `.motive`, crear uno auxiliar con ese ID y dejarlo fuera del volumen. El segundo QDrone **fuera de la arena** o sin marcadores visibles.
+- [ ] MATLAB (PC): al abrir `QD2_MissionCtrl_Dual_PID.slx` la consola dice `qd2_cargar_config: MODO SOLO EXPLORADOR -> dron 1 (rigid body …, Stream Server :18001)`. Si dice `modo dual`, la config de la PC no es la nueva: copiarla y volver a abrir. La "Roles & Homes Preview" no aplica.
+- [ ] **Command Source = 0**; Arm, Takeoff y E-Stop abajo → **Build** → Connect → Start (cambiar el modo o la pista obliga a recompilar).
+- [ ] Estación (laptop): `web\iniciar_web.bat --fuente simulink --host-puente <IP_PC>` → chip "SOLO EXPLORADOR · dron 1", dron 2 "NO USADO", estado ASSIGN_ROLES, sin avisos rojos.
+- [ ] Dron 1 encendido en su home (≈ 1.25, 0.0 mirando a +x, a ≥ 0.3 m de los tubos) → `quarc_run` del dron 1 (Conexiones; `-URI_Host tcpip://<IP_PC>:18001`) → streamer.
+- [ ] **Prueba en seco:** switches abajo → START: "START recibido" y el dron **no** despega. LAND ALL / ABORT → vuelve a ASSIGN_ROLES.
+- [ ] **Vuelo:** Arm y Takeoff arriba → START: TAKEOFF → HOVER_READY (2 s) → MISSION (recorre todos los waypoints) → RETURN_HOME ("en home") → **LAND ALL** → DONE. En la telemetría el dron 2 siempre con arm/takeoff = 0.
+- [ ] Al final: `quarc_run -q` del dron 1 con el dron en el piso → Stop de tierra si no se paró solo.
+
+**SEGUIR si:** el recorrido completo sin pausas ni alertas, las detecciones salen "detectada" y aterriza en su sitio. **NO SEGUIR si:** la UI muestra modo dual o "pista distinta", el dron 2 recibe arm, o hay pérdida de rastreo/enlace. Emergencias iguales: Takeoff/Land abajo = LAND ALL ordenado; E-Stop corta motores.
+
 ## Etapa 8. Misión PID con los dos drones — 60 min
 
 8a. **Sin anomalías** (pista sin piezas). Command Source = 0.

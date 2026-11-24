@@ -7,6 +7,8 @@ Uso (desde la carpeta ``web``):
     python -m app.server                    # fuente según config/estacion.json (web.fuente)
     python -m app.server --fuente mock      # simulación interna, sin MATLAB
     python -m app.server --fuente simulink  # se conecta a tcpip://127.0.0.1:18700
+    python -m app.server --fuente simulink --host-puente 192.168.2.11
+                                            # modelo de tierra en OTRA PC (laptop -> PC del laboratorio)
 Luego abre http://127.0.0.1:8080
 """
 from __future__ import annotations
@@ -36,9 +38,10 @@ from . import netinfo
 from . import protocol as P
 from .bridge import BridgeClient, PuenteNoListo
 from .cameras import CameraHub, FolderCamera, OpenCVCamera, QDF1Client, SyntheticCamera
-from .config import DEFAULT_PATH, PROJECT_DIR, WEB_DIR, Config, actitud_vision, validar_ip
+from .config import (DEFAULT_PATH, PROJECT_DIR, WEB_DIR, Config, actitud_vision, es_loopback, mision_modo,
+                     validar_host_puente, validar_ip)
 from .geo import CameraModel, corregir_actitud
-from .mock_sim import MockServer
+from .mock_sim import MockServer, contar_waypoints
 from .mock_world import default_anomalies, render_view
 from .vision_service import PoseHistory, VisionService, load_detector, pose_para_geo
 
@@ -51,14 +54,24 @@ SIM_TTL_S = 5.0    # s sin ver un objetivo en y(56:60) (con telemetría fresca) 
 CHOQUE_ID_M = 0.5  # m: mismo id en la estación y en Simulink pero tan lejos -> choque de ids
 
 
+class ModoDistinto(PuenteNoListo):
+    """START rechazado: el modo de misión de la config local no coincide con el del modelo de tierra (y(64))."""
+
+
 class Station:
     """Une puente, cámara, visión y configuración. Una instancia por proceso."""
 
-    def __init__(self, config_path=DEFAULT_PATH, fuente=None, mock_speed=1.0):
+    def __init__(self, config_path=DEFAULT_PATH, fuente=None, mock_speed=1.0, host_puente=None):
         self.cfg = Config(config_path)  # no se escribe nada al arrancar (defaults en memoria)
         self.fuente = fuente or self.cfg.web("fuente")
         if self.fuente not in FUENTES:
             raise ValueError(f"fuente desconocida '{self.fuente}'. Opciones: {FUENTES}")
+        # --host-puente (solo CLI, nunca se guarda): el Stream Server :18700 corre en otra PC. Solo con la fuente
+        # simulink; sim3d y mock siempre usan loopback (una sesión de prueba no se conecta por error al modelo real).
+        self.host_puente_cli = validar_host_puente(host_puente) if host_puente else None
+        if self.host_puente_cli and not es_loopback(self.host_puente_cli) and self.fuente != "simulink":
+            raise ValueError(f"--host-puente {self.host_puente_cli} solo se permite con --fuente simulink "
+                             f"(la fuente '{self.fuente}' siempre usa 127.0.0.1)")
         self.mock_speed = mock_speed
         self.mock = None
         self.bridge = None
@@ -114,10 +127,11 @@ class Station:
         self._load_targets()
         self.world = cfg.get("web", {}).get("mock_anomalias") or default_anomalies(cfg["pista"]["vertices"])
         if self.fuente == "mock":
-            self.mock = MockServer(cfg, "127.0.0.1", 0, speed=self.mock_speed).start()
+            self.mock = MockServer(cfg, "127.0.0.1", 0, speed=self.mock_speed,
+                                   cfg_fn=self.cfg.reload_if_changed).start()
             host, port = "127.0.0.1", self.mock.port
         else:
-            host, port = self.cfg.web("host_puente"), int(cfg["red"].get("puerto_puente", 18700))
+            host, port = self.host_puente(), int(cfg["red"].get("puerto_puente", 18700))
         self.bridge = BridgeClient(host, port, params_fn=self._bridge_params,
                                    cmd_timeout_s=float(self.cfg.web("cmd_timeout_s")))
         self.bridge.listeners.append(self._on_telemetry)
@@ -125,9 +139,25 @@ class Station:
         self.bridge.start()
         self.log(f"Fuente '{self.fuente}': puente {self.bridge.uri}")
 
+    def host_puente(self):
+        """Host del Stream Server :18700. simulink: --host-puente de la CLI, si no ``web.host_puente`` (defecto
+        127.0.0.1). sim3d y mock: SIEMPRE 127.0.0.1."""
+        if self.fuente == "simulink":
+            return self.host_puente_cli or self.cfg.web("host_puente") or "127.0.0.1"
+        return "127.0.0.1"
+
+    def puente_remoto(self):
+        """Host remoto del puente (str) si la estación se conecta a un modelo de tierra en otra PC; si no, None."""
+        h = getattr(self.bridge, "host", None) if self.bridge is not None and self.fuente == "simulink" else None
+        return h if h and not es_loopback(h) else None
+
     def set_fuente(self, fuente):
         if fuente not in FUENTES:
             raise ValueError(f"fuente desconocida '{fuente}'")
+        if fuente != "simulink":
+            remoto = self.host_puente_cli or self.cfg.web("host_puente")
+            if remoto and not es_loopback(remoto):
+                self.log(f"Fuente '{fuente}': el puente usa 127.0.0.1 (no el host remoto {remoto})")
         with self.lock:
             if self.bridge:
                 self.bridge.stop()
@@ -310,6 +340,13 @@ class Station:
             raise ValueError(f"comando desconocido '{name}'")
         if self.bridge is None:
             raise PuenteNoListo("el puente no está iniciado")
+        if name == "START" and self.fuente != "mock":
+            m = self.modo_info()
+            if m["tel"] is not None and m["fresca"] and not m["coincide"]:
+                self.log("START rechazado: el modo de la config local no coincide con el del modelo de tierra")
+                raise ModoDistinto("START rechazado: el modo de la config local no coincide con el del modelo de "
+                                   f"tierra (config: {_modo_txt(m['config'])}; modelo: {_modo_txt(m['tel'])}). "
+                                   "Copia estacion.json a la PC y recompila (Build).")
         seq = self.bridge.send_command(name)
         self.log(f"Comando {name} " + (f"enviado (cmd_seq {seq})" if seq else "en cola"))
         return seq
@@ -355,6 +392,77 @@ class Station:
         if kind == "carpeta":
             return FolderCamera(os.path.join(DATA_DIR, "imagenes_prueba"))
         raise ValueError(f"fuente de cámara desconocida '{kind}'")
+
+    # ------------------------------------------------------------------ modo de misión (dual / solo explorador)
+    def modo_info(self):
+        """Modo de la config local y del modelo de tierra (y(64)). La verdad del vuelo es la telemetría; la config
+        local solo sirve para avisar si no coinciden (el modelo de tierra usa el estacion.json de SU PC al compilar).
+
+        ``efectivo``: el de la telemetría si es fresca, si no el de la config. ``coincide``: telemetría fresca y
+        config dan el mismo (modo, dron_solo); sin telemetría fresca no hay con qué comparar (True)."""
+        mc = mision_modo(self.cfg.data)
+        tel = self.bridge.telemetry if self.bridge else None
+        try:
+            fresca = bool(tel) and bool(self.bridge.fresh())
+        except Exception:
+            fresca = False
+        mt = None
+        if tel and "modo_mision" in tel:
+            mt = {"modo": tel["modo_mision"], "dron_solo": int(tel.get("dron_solo") or 0)}
+        if fresca and mt is not None:
+            efectivo, ds = mt["modo"], mt["dron_solo"]
+            coincide = (mt["modo"], mt["dron_solo"]) == (mc["modo"], mc["dron_solo"])
+        else:
+            efectivo, ds, coincide = mc["modo"], mc["dron_solo"], True
+        host = getattr(self.bridge, "host", None) if self.bridge is not None else None
+        host = host or self.host_puente()
+        return {"config": mc, "tel": mt, "fresca": fresca, "efectivo": efectivo, "dron_solo": ds,
+                "coincide": coincide, "host_puente": host, "remoto": self.puente_remoto() is not None}
+
+    def _avisos_modo(self, tel):
+        out = []
+        m = self.modo_info()
+        mc, mt = m["config"], m["tel"]
+        if tel and tel.get("y64_invalido"):
+            raw = (tel.get("reserved") or [None])[0]
+            out.append({"nivel": "rojo", "msg": f"y(64) = {raw if raw is not None else 'NaN'} no es 0, 1 ni 2 "
+                        "(dron_solo): telemetría corrupta o TELEMETRY PACK mal cableado. Revisa el modelo de tierra."})
+        if tel and tel.get("dron_solo") and tel.get("explorer_id") != tel["dron_solo"]:
+            out.append({"nivel": "rojo", "msg": f"Telemetría incoherente: modo solo explorador con dron "
+                        f"{tel['dron_solo']} (y(64)) pero el explorador es el dron {tel.get('explorer_id')} (y(4))."})
+        if m["fresca"] and mt is not None and self.fuente != "mock":
+            if mc["modo"] == "solo_explorador" and mt["modo"] == "dual":
+                out.append({"nivel": "rojo", "msg": "El modelo de tierra está en DUAL: espera los dos drones rastreados "
+                            "y no despegará con uno. Copia estacion.json a la PC y recompila."})
+            elif mc["modo"] == "dual" and mt["modo"] == "solo_explorador":
+                out.append({"nivel": "amarillo", "msg": f"El modelo de tierra está en SOLO EXPLORADOR (dron "
+                            f"{mt['dron_solo']}) pero el estacion.json de esta estación dice dual: START queda "
+                            "bloqueado hasta que coincidan."})
+            elif mc["modo"] == mt["modo"] == "solo_explorador" and mc["dron_solo"] != mt["dron_solo"]:
+                out.append({"nivel": "rojo", "msg": f"Dron solo distinto: el modelo de tierra usa el dron {mt['dron_solo']} "
+                            f"y el estacion.json de esta estación el dron {mc['dron_solo']}. Copia estacion.json a la "
+                            "PC y recompila."})
+        if mc["aviso"]:
+            out.append({"nivel": "amarillo", "msg": "estacion.json: " + mc["aviso"]})
+        if tel and m["efectivo"] == "solo_explorador" and m["dron_solo"] in (1, 2):
+            da = 3 - m["dron_solo"]
+            dd = (tel.get("drones") or {}).get(da) or {}
+            if dd.get("tracked"):
+                out.append({"nivel": "amarillo", "msg": f"El dron {da} (no usado) está a la vista de OptiTrack: no "
+                            "recibe arm/takeoff, pero sácalo de la arena (afecta el paro automático y el respaldo "
+                            "del operador)."})
+            if dd.get("comm_ok") == 1:
+                out.append({"nivel": "amarillo", "msg": f"El dron {da} está conectado al modelo de tierra; no recibirá "
+                            "arm/takeoff."})
+        # pista compilada en tierra (y(7)) frente a la de esta estación (misma regla que qd2_track_waypoints)
+        if (tel and m["fresca"] and self.fuente != "mock" and (tel.get("mission_state") or 0) >= P.TAKEOFF
+                and (tel.get("explorer_wp_total") or 0) > 0):
+            n_local = contar_waypoints(self.cfg.get("pista", "vertices", default=[]),
+                                       self.cfg.get("mision", "espaciado_waypoints", default=0.25))
+            if n_local != tel["explorer_wp_total"]:
+                out.append({"nivel": "amarillo", "msg": f"La pista compilada en tierra tiene {tel['explorer_wp_total']} "
+                            f"waypoints y la de esta estación {n_local}: ¿copiaste estacion.json a la PC y recompilaste?"})
+        return out
 
     def avisos(self):
         """Avisos para la barra roja/amarilla de la página."""
@@ -409,6 +517,7 @@ class Station:
             out.append({"nivel": "amarillo", "msg": "Actitud del explorador no disponible (y(63) = 0): la "
                         "geolocalización supone el dron nivelado (5° de inclinación ≈ 0.13 m de error a 1.5 m). "
                         "¿Modelo de Simulink sin y(61:63)? Regenera los modelos (construir_modelos)."})
+        out.extend(self._avisos_modo(tel))
         return out
 
     def _cam_model(self):
@@ -570,7 +679,7 @@ class Station:
             "mision": cfg.get("mision", {}), "version_config": cfg.get("version_control", "PID"),
             "verdad_mock": self.world if self.fuente == "mock" else [],
             "mock": self.mock.estado_pruebas() if self.mock is not None else None,
-            "eventos": list(self.events)[:15], "avisos": self.avisos(),
+            "eventos": list(self.events)[:15], "avisos": self.avisos(), "modo": self.modo_info(),
         }
 
 
@@ -837,11 +946,12 @@ def create_app(station: Station, start=True):
     def red():
         cfg = station.cfg.data
         return {"interfaces": netinfo.interfaces(cfg["red"].get("interfaz_preferida", "Wi-Fi 2")),
-                "ip_recomendada": netinfo.ip_recomendada(cfg), "red": cfg["red"]}
+                "ip_recomendada": netinfo.ip_recomendada(cfg, station.puente_remoto()), "red": cfg["red"]}
 
     @app.get("/api/comandos")
     def comandos(ip_pc: str = ""):
-        return netinfo.comandos(station.cfg.data, ip_pc or None)
+        cfg = station.cfg.data
+        return netinfo.comandos(cfg, ip_pc or None, mision_modo(cfg), station.puente_remoto())
 
     # -------------------------------------------------------------- video
     def _no_signal(text):
@@ -918,24 +1028,54 @@ def _clean(o):
     return o
 
 
-def main(argv=None):
+def _modo_txt(m):
+    if not m:
+        return "?"
+    return f"solo explorador (dron {m.get('dron_solo')})" if m.get("modo") == "solo_explorador" else "dual"
+
+
+def _host_puente_arg(v):
+    try:
+        return validar_host_puente(v)
+    except ValueError as exc:
+        raise argparse.ArgumentTypeError(str(exc))
+
+
+def build_parser():
     ap = argparse.ArgumentParser(description="Estación web 2× QDrone 2")
     ap.add_argument("--config", default=DEFAULT_PATH)
     ap.add_argument("--fuente", choices=FUENTES)
     ap.add_argument("--host", help="IP donde escucha la web (por defecto 127.0.0.1, solo esta PC)")
     ap.add_argument("--puerto", type=int)
     ap.add_argument("--velocidad-mock", type=float, default=1.0)
+    ap.add_argument("--host-puente", type=_host_puente_arg, default=None,
+                    help="IP de la PC donde corre el modelo de tierra (Stream Server :18700), p. ej. 192.168.2.11. "
+                         "Solo con --fuente simulink; no se guarda en estacion.json")
     ap.add_argument("--imprimir-puerto", action="store_true", help="solo imprime el puerto web y sale (lo usa el .bat)")
+    return ap
+
+
+def main(argv=None):
+    ap = build_parser()
     a = ap.parse_args(argv)
     if a.imprimir_puerto:
         print(a.puerto or int(Config(a.config).get("red", "puerto_web", default=8080)))
         return
     import uvicorn
-    station = Station(a.config, a.fuente, a.velocidad_mock)
+    try:
+        station = Station(a.config, a.fuente, a.velocidad_mock, host_puente=a.host_puente)
+    except ValueError as exc:
+        ap.error(str(exc))
     host = a.host or station.cfg.web("host") or "127.0.0.1"
     port = a.puerto or int(station.cfg.get("red", "puerto_web", default=8080))
     if host not in ("127.0.0.1", "localhost"):
         print(f"  AVISO: la estación queda accesible desde la red en {host}:{port} (sin contraseña).")
+    if station.fuente == "simulink" and not es_loopback(station.host_puente()):
+        print(f"  Puente remoto: modelo de tierra en tcpip://{station.host_puente()}:"
+              f"{int(station.cfg.get('red', 'puerto_puente', default=18700))}")
+    m = mision_modo(station.cfg.data)
+    print(f"  Modo de misión (estacion.json de esta estación): {_modo_txt(m)}"
+          + (f"  AVISO: {m['aviso']}" if m["aviso"] else ""))
     print(f"\n  Estación QDrone 2 ({station.fuente}) en  http://127.0.0.1:{port}\n")
     uvicorn.run(create_app(station), host=host, port=port, log_level="warning")
 

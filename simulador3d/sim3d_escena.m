@@ -281,9 +281,25 @@ if isfinite(G.t_ultimo), dt_cuadro = max(E.t - G.t_ultimo, 0); end
 G.t_ultimo = E.t;
 th = linspace(0, 2*pi, 40);
 rol = [tel.role1 tel.role2];
+% modo solo explorador: un dron vuela; el otro ("ausente") no se usa
+solo = isfield(E, 'solo') && E.solo;
+ausente = 0;
+if solo, ausente = 3 - E.dron_solo; end
+oculto = solo && isfield(E, 'aus_fuera') && E.aus_fuera;
 for i = 1:2
     D = G.D(i);
     x = X(:, i);
+    es_aus = (i == ausente);
+    % ausente fuera de OptiTrack: oculto; rastreado en el piso: "fantasma" gris
+    setc(G.cache, sprintf('vis%d', i), [D.tr D.sombra D.etiqueta D.estela G.mm_dron(i) G.mm_txt(i)], ...
+        'Visible', onoff(~(es_aus && oculto)));
+    if es_aus && ~oculto && ~isKey(G.cache, sprintf('gris%d', i))
+        set(findobj(D.tr, 'Type', 'patch'), 'FaceColor', [0.55 0.56 0.60], 'FaceAlpha', 0.35);
+        set(D.etiqueta, 'Color', [0.70 0.71 0.74], 'EdgeColor', [0.45 0.46 0.50]);
+        set(G.mm_dron(i), 'MarkerFaceColor', [0.55 0.56 0.60]);
+        set(G.mm_txt(i), 'Color', [0.70 0.71 0.74]);
+        G.cache(sprintf('gris%d', i)) = true;
+    end
     D.tr.Matrix = makehgtform('translate', x(1:3).' + [0 0 G.pivote], 'zrotate', x(9), 'yrotate', x(8), ...
         'xrotate', x(7), 'translate', [0 0 -G.pivote]);
     activo = E.fsm(i) >= 3 && E.fsm(i) <= 6;
@@ -298,7 +314,7 @@ for i = 1:2
     esc_s = 1 + 0.6*min(x(3), 2);            % la sombra crece y se aclara con la altura
     set(D.sombra, 'XData', x(1) + 0.24*esc_s*cos(th), 'YData', x(2) + 0.22*esc_s*sin(th), ...
         'FaceAlpha', 0.38/esc_s);
-    if E.version == 1 && s.estado >= 3
+    if E.version == 1 && s.estado >= 3 && ~solo          % (solo explorador: no aplica)
         r = s.d_min_h/2;
         cb = col.dron(i,:);
         if E.dh < s.d_min_h, cb = [1 0.2 0.2]; end
@@ -308,7 +324,7 @@ for i = 1:2
         set(D.burbuja, 'XData', NaN, 'YData', NaN, 'ZData', NaN);
     end
     sp = E.sp(i, :);
-    if s.estado >= 3 && E.fsm(i) >= 3
+    if s.estado >= 3 && E.fsm(i) >= 3 && ~es_aus
         set(D.sp, 'XData', sp(1), 'YData', sp(2), 'ZData', sp(3));
         set(D.sp_linea, 'XData', [x(1) sp(1)], 'YData', [x(2) sp(2)], 'ZData', [x(3) sp(3)]);
     else
@@ -321,6 +337,7 @@ for i = 1:2
         set(G.mm_estela(i), 'XData', e(:,2), 'YData', e(:,1));
     end
     txt = sprintf('D%d · %s', i, roles{rol(i) + 1});
+    if es_aus, txt = sprintf('D%d · NO USADO', i); end
     set(D.etiqueta, 'Position', [x(1) x(2) x(3) + 0.27]);
     setc(G.cache, sprintf('etq%d', i), D.etiqueta, 'String', txt);
     set(G.mm_dron(i), 'XData', x(2), 'YData', x(1));
@@ -365,8 +382,8 @@ if s.n_wp > 0 && s.estado == 5 && s.explorer_done < 0.5
 else
     set(G.wp_act, 'XData', NaN, 'YData', NaN, 'ZData', NaN);
 end
-% distancia entre drones
-if all(X(3, :) > 0.12)
+% distancia entre drones (solo explorador: no aplica)
+if ~solo && all(X(3, :) > 0.12)
     set(G.dist_linea, 'XData', X(1,:), 'YData', X(2,:), 'ZData', X(3,:));
     cd = [1 1 1];
     if E.version == 1 && E.dh < s.d_min_h, cd = [1 0.3 0.3]; end
@@ -411,7 +428,9 @@ col_est = [0.7 0.7 0.7; 0.7 0.7 0.7; 0.4 0.8 1; 1 0.85 0.3; 0.4 1 0.6; 0.3 1 0.5
 e = min(max(s.estado, 0), 10);
 modo = 'tiempo real';
 if ~E.tiempo_real, modo = 'rápido'; end
-setc(G.cache, 'titulo', G.hud_titulo, 'String', sprintf('QDrone 2 · simulador 3D   [%s]', ternario(E.version == 1, 'PID', 'MPC')));
+txt_ver = ternario(E.version == 1, 'PID', 'MPC');
+if solo, txt_ver = sprintf('%s · SOLO', txt_ver); end
+setc(G.cache, 'titulo', G.hud_titulo, 'String', sprintf('QDrone 2 · simulador 3D   [%s]', txt_ver));
 setc(G.cache, 'estado', G.hud_estado, 'String', est_es{e + 1}, 'Color', col_est(e + 1, :));
 alertas = {'', 'homes demasiado cerca: START rechazado', 'pausa por pérdida de rastreo', ...
     'timeout de despegue', 'timeout de aterrizaje'};
@@ -420,6 +439,9 @@ L = {};
 L{end+1} = sprintf('t = %6.1f s   x%.2g (%s)   sim/real %.2f', E.t, E.vel, modo, E.factor_real);
 L{end+1} = sprintf('estación: %s', E.txt_estacion);
 L{end+1} = sprintf('%s', E.txt_tcp);
+if solo
+    L{end+1} = sprintf('modo: SOLO EXPLORADOR (dron %d; el dron %d no se usa)', E.dron_solo, ausente);
+end
 if tel.alerta > 0
     L{end+1} = sprintf('ALERTA %d: %s', tel.alerta, alertas{min(tel.alerta, 4) + 1});
 else
@@ -428,7 +450,9 @@ end
 L{end+1} = '';
 for i = 1:2
     f = E.fsm(i);
-    L{end+1} = sprintf('D%d %-11s z %4.2f m  %-11s %4.1f V', i, roles{rol(i) + 1}, X(3,i), ...
+    nr = roles{rol(i) + 1};
+    if i == ausente, nr = 'NO USADO'; end
+    L{end+1} = sprintf('D%d %-11s z %4.2f m  %-11s %4.1f V', i, nr, X(3,i), ...
         fsm_n{min(max(f,1),9)}, E.bat(i)); %#ok<AGROW>
 end
 L{end+1} = '';
@@ -437,17 +461,22 @@ if s.explorer_id > 0 && s.n_wp > 0
 else
     L{end+1} = 'E: N sin generar (falta START)';
 end
-if tel.responder_target_id > 0
-    L{end+1} = sprintf('R: objetivo T%d  marcando %3.0f %%  cola %d', tel.responder_target_id, ...
-        100*tel.marking_progress, tel.queue_length);
+if solo
+    L{end+1} = sprintf('R: sin respondedor (solo explorador)  detectados %d', tel.queue_length);
+    L{end+1} = 'separación entre drones: no aplica (un solo dron)';
 else
-    L{end+1} = sprintf('R: libre  cola %d', tel.queue_length);
-end
-L{end+1} = sprintf('dist. horizontal %4.2f m (mín. en vuelo %s)', E.dh, num2txt(E.dh_min));
-if E.version == 1
-    L{end+1} = sprintf('  regla PID: dh >= %.2f m   guard: %s', s.d_min_h, ternario(E.ga > 0.5, 'ACTIVO', 'inactivo'));
-else
-    L{end+1} = sprintf('dist. vertical %4.2f m   regla MPC: dz >= %.2f m apilados', E.dz, p.dz_min);
+    if tel.responder_target_id > 0
+        L{end+1} = sprintf('R: objetivo T%d  marcando %3.0f %%  cola %d', tel.responder_target_id, ...
+            100*tel.marking_progress, tel.queue_length);
+    else
+        L{end+1} = sprintf('R: libre  cola %d', tel.queue_length);
+    end
+    L{end+1} = sprintf('dist. horizontal %4.2f m (mín. en vuelo %s)', E.dh, num2txt(E.dh_min));
+    if E.version == 1
+        L{end+1} = sprintf('  regla PID: dh >= %.2f m   guard: %s', s.d_min_h, ternario(E.ga > 0.5, 'ACTIVO', 'inactivo'));
+    else
+        L{end+1} = sprintf('dist. vertical %4.2f m   regla MPC: dz >= %.2f m apilados', E.dz, p.dz_min);
+    end
 end
 L{end+1} = sprintf('alturas: z_E %.2f  z_R %.2f  t_mark %.1f s', s.z_E, s.z_R, s.t_mark);
 setc(G.cache, 'hud', G.hud_txt, 'String', L);

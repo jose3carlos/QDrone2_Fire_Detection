@@ -19,7 +19,13 @@ function y = qd2_telemetry_pack(t, tel, version, guard_active, pose1, pose2, sp1
 %                (llamadores viejos) y(61:63) = 0.
 %   y          : 64x1 (índices base 1 como en ARQUITECTURA.md; 55 = alerta;
 %                61 = roll y 62 = pitch del EXPLORADOR, 63 = 1 si son válidos,
-%                64 = reservado).
+%                64 = dron_solo: 0 = modo dual (o modelo viejo), 1 o 2 = modo
+%                solo explorador con ese dron).
+%   Modo solo explorador: se reconoce por tel.explorer_id = 1 o 2 con
+%   tel.responder_id = 0 (firma que nunca ocurre en dual: qd2_assign_roles da
+%   (0,0), (1,2) o (2,1)). Entonces y(64) = explorer_id e y(12) = y(13) = 0
+%   (no hay respondedor). Así sirve con el 'tel' que arman los bloques de
+%   tierra desde Mission Info, sin campos nuevos.
 %#codegen
 
 y = zeros(64,1);
@@ -80,7 +86,7 @@ end
 % 61-63: actitud del EXPLORADOR [roll pitch válido] (rad), de la misma pose
 % OptiTrack que y(o+3:o+6). Válido = hay explorador (1 o 2), está rastreado
 % (aux) y los dos ángulos son finitos; si no, 0 0 0 y la estación geolocaliza
-% nivelada. 64: reservado (0).
+% nivelada.
 if nargin >= 12
     ie = round(tel.explorer_id);
     if ie == 1 || ie == 2
@@ -92,5 +98,14 @@ if nargin >= 12
             y(63) = 1;
         end
     end
+end
+% 64: dron_solo (0 = dual). Solo explorador = explorador 1 o 2 sin respondedor:
+% y(64) = ese dron y las distancias E-R (12, 13) en 0.
+ie2 = round(tel.explorer_id);
+ir2 = round(tel.responder_id);
+if (ie2 == 1 || ie2 == 2) && ir2 == 0
+    y(64) = ie2;
+    y(12) = 0;
+    y(13) = 0;
 end
 end

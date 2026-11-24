@@ -15,6 +15,12 @@ d.n_tomas        = 2;          % solo con escenario 'aleatorio'
 d.semilla        = [];         % semilla del escenario aleatorio ([] = al azar)
 d.semilla_ruido  = 1;          % semilla del ruido de sensores y del detector
 d.homes          = [];         % [x1 y1; x2 y2] para forzar los home (si no, los del escenario)
+d.config         = [];         % [] = config/estacion.json; struct = estacion.json ya decodificado
+% ---- Modo de misión (mision.modo / mision.dron_solo de la config) -----------
+d.modo_mision    = [];         % [] = config; 'dual' o 'solo_explorador' para forzarlo
+d.dron_solo      = [];         % [] = config; 1 o 2 (dron que vuela en solo explorador)
+d.dron_ausente   = 'fuera';    % solo explorador: 'fuera' = el otro dron sin rastreo (oculto en la figura);
+                               % 'piso' = rastreado, en el piso en su home (en gris, "NO USADO")
 % ---- Tiempo ---------------------------------------------------------------
 d.t_final        = 400;        % s de simulación como máximo
 d.dt             = 0.02;       % s, paso de la simulación (50 Hz, igual que el MPC)

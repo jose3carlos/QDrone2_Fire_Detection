@@ -56,6 +56,9 @@ h2 { font-size: 13px; font-weight: 600; margin: 0; letter-spacing: .02em; text-t
   background: var(--muted); vertical-align: 0; }
 .chip.ok::before { background: var(--ok); } .chip.warn::before { background: var(--warn); } .chip.bad::before { background: var(--bad); }
 .chip.neutral::before { display: none; }
+.chip.solo { border-color: var(--explorer); color: var(--explorer); font-weight: 700; }
+.chip.solo.warn, .chip.solo.bad { color: var(--text); }
+.chip.solo.warn { border-color: var(--warn); } .chip.solo.bad { border-color: var(--bad); }
 .source { margin-left: auto; display: flex; gap: 8px; align-items: center; color: var(--muted); }
 select, input { background: var(--panel-2); color: var(--text); border: 1px solid var(--line); border-radius: 6px;
   padding: 5px 8px; font: inherit; min-width: 0; }
@@ -115,6 +118,15 @@ input.mono { font-family: var(--mono); }
 .dcard td { padding: 1px 0; } .dcard td:first-child { color: var(--muted); font-family: inherit; padding-right: 6px; }
 .flag { font-size: 11px; color: var(--muted); }
 .flag.ok { color: var(--ok); } .flag.bad { color: var(--bad); }
+/* modo solo explorador: el dron que no se usa sale en gris */
+.dcard.no-usado { opacity: .55; filter: grayscale(1); }
+.kv[hidden], .bar-block[hidden], .aviso-remoto[hidden] { display: none; }
+.role.nu { background: var(--line); color: var(--text); }
+.modo-info { font-size: 12px; color: var(--muted); margin: 8px 0; line-height: 1.4; }
+.modo-info b { color: var(--text); }
+.aviso-remoto { margin: 0 0 8px; padding: 6px 8px; border-radius: 8px; font-size: 12px; font-weight: 600;
+  color: #fff; background: color-mix(in srgb, var(--bad) 75%, transparent); }
+.btn[disabled] { opacity: .45; cursor: not-allowed; }
 
 /* ---------- barra lateral ---------- */
 .sidebar { background: var(--panel); border: 1px solid var(--line); border-radius: var(--radius); padding: 10px;

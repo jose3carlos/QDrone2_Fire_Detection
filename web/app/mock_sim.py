@@ -35,6 +35,12 @@ Lo que emula (versión simplificada; el supervisor "de verdad" vive en Simulink 
   = nariz abajo al acelerar hacia adelante, roll > 0 = lado izquierdo arriba al acelerar hacia la
   derecha); 0 en el piso; y(63) = 0 sin explorador o sin rastreo. ``actitud_en_tel = False`` emula un
   modelo de Simulink viejo (y(61:63) = 0).
+* modo SOLO EXPLORADOR (``mision.modo = "solo_explorador"``, ``mision.dron_solo`` = 1 o 2; reglas de
+  ``config.mision_modo``): vuela un solo dron. El dron solo sale de ``homes[dron_solo - 1]`` y es el explorador
+  desde INIT (y(4) = dron_solo, y(5) = 0, y(64) = dron_solo); el otro (ausente) sale sin rastreo (pose NaN en la
+  trama), ``role`` = 0, ``comm_ok`` = 0 y nunca se mueve ni recibe arm/takeoff. Sin respondedor ni separation
+  guard: los objetivos se registran y se quedan "pendientes" (y(53) = cuántos); al terminar la N + 2 s de gracia
+  -> RETURN_HOME -> (``auto_land`` o LAND_ALL) -> LANDING (E en su sitio) -> DONE. En dual nada cambia.
 
 También se puede correr solo, para que otros (p. ej. el simulador MATLAB o pruebas) tengan
 un servidor :18700 de referencia:   ``python -m app.mock_sim --puerto 18700``
@@ -51,6 +57,7 @@ import time
 import numpy as np
 
 from . import protocol as P
+from .config import mision_modo
 
 # Estados de la FSM a bordo (aprox. a los del DroneStack del Equipo2)
 FSM_IDLE, FSM_ARM, FSM_TO_THROTTLE, FSM_TO_HEIGHT, FSM_FLIGHT, FSM_AUTOLAND = 1, 2, 3, 4, 5, 6
@@ -82,6 +89,35 @@ def densify(vertices, spacing, z):
             p = a + (b - a) * k / n
             out.append([p[0], p[1], z, 0.0])
     return np.array(out[:128])
+
+
+def contar_waypoints(vertices, spacing, max_wp=128):
+    """Número de waypoints que da ``qd2_track_waypoints.m`` (y(7) = explorer_wp_total) para esta pista:
+    misma regla exacta (``ceil(L/spacing - 1e-9)`` por tramo, tramos de longitud 0 ignorados y espaciado
+    agrandado si no caben en 128). La usa el aviso de "pista distinta" de la estación."""
+    try:
+        V = [(float(a), float(b)) for a, b in vertices]
+    except (TypeError, ValueError):
+        return 0
+    nv = 0
+    for v in V:
+        if all(math.isfinite(c) for c in v):
+            nv += 1
+        else:
+            break
+    if nv < 1:
+        return 0
+    spacing = float(spacing) if spacing and float(spacing) > 0 else 0.25
+    L = [math.hypot(V[k][0] - V[k - 1][0], V[k][1] - V[k - 1][1]) for k in range(1, nv)]
+    disponible = max_wp - 1 - (nv - 1)
+    if sum(L) / spacing > disponible:
+        spacing = sum(L) / disponible
+    n = 1
+    for seg in L:
+        if seg < 1e-9:
+            continue
+        n += int(math.ceil(seg / spacing - 1e-9))
+    return min(n, max_wp)
 
 
 def hdist(a, b):
@@ -214,6 +250,14 @@ class MockMission:
         self.state_t = 0.0
         self.track_t = 0.0
         self.E = self.R = 0
+        # modo solo explorador: un solo dron (ds); el otro (da) sin rastreo, sin rol, sin comm y quieto
+        modo = mision_modo(cfg)
+        self.solo = modo["modo"] == "solo_explorador"
+        self.ds = modo["dron_solo"] if self.solo else 0
+        if self.solo:
+            self.da = 3 - self.ds
+            self.drones[self.da].tracked = 0
+            self.E = self.ds          # explorer_id fijo desde INIT (y(4) = y(64) = dron_solo)
         self.wps = densify(self.vertices, self.spacing, self.z_E)
         self.wp_idx = 0
         self.explorer_done = False
@@ -369,6 +413,14 @@ class MockMission:
 
         if s == P.INIT and self.t > 0.2:
             self._goto(P.WAIT_TRACKING)
+        elif s == P.WAIT_TRACKING and self.solo:
+            # solo: basta el dron solo rastreado 1 s; sin chequeo de distancia entre homes (nunca alerta 1)
+            self.track_t = self.track_t + dt if dE.tracked else 0.0
+            if self.track_t >= 1.0:
+                dE.home = dE.p[:2].copy()
+                dE.role = P.ROLE_EXPLORER
+                self.home_ok, self.alerta = True, 0
+                self._goto(P.ASSIGN_ROLES)
         elif s == P.WAIT_TRACKING:
             ok = all(d.tracked for d in self.drones.values())
             self.track_t = self.track_t + dt if ok else 0.0
@@ -386,7 +438,7 @@ class MockMission:
             # se arma al entrar y takeoff se da T_ARM_A_DESPEGUE después (p.t_arm_a_despegue)
             if not self.takeoff_dado and self.state_t >= T_ARM_A_DESPEGUE:
                 self.takeoff_dado = True
-            for d, z in ((dE, self.z_E), (dR, self.z_R)):
+            for d, z in self._volando(((dE, self.z_E), (dR, self.z_R))):
                 if self.takeoff_dado:
                     d.flying = True
                     d.fsm = FSM_TO_HEIGHT
@@ -394,10 +446,10 @@ class MockMission:
                 else:
                     d.fsm = FSM_ARM
                     d.sp = np.array([d.home[0], d.home[1], 0.0])
-            if self.takeoff_dado and all(abs(d.p[2] - d.sp[2]) < self.tol_z for d in (dE, dR)):
+            if self.takeoff_dado and all(abs(d.p[2] - d.sp[2]) < self.tol_z for d in self._volando((dE, dR))):
                 self._goto(P.HOVER_READY)
         elif s == P.HOVER_READY:
-            for d in (dE, dR):
+            for d in self._volando((dE, dR)):
                 d.fsm = FSM_FLIGHT
             if self.state_t >= 2.0:
                 self._goto(P.MISSION)
@@ -408,6 +460,13 @@ class MockMission:
                 self.pausa_por_hb = True
             else:
                 self._mission_step(dE, dR, dt)
+        elif s in (P.RETURN_HOME, P.ABORT) and self.solo:
+            # solo: E directo a su home a z_E (sin orden de regreso ni guard)
+            dE.sp = np.array([dE.home[0], dE.home[1], self.z_E])
+            self.last_sp_E = dE.sp.copy()
+            if (hdist(dE.p, dE.home) < self.tol_xy and s == P.RETURN_HOME and self.auto_land
+                    and self.state_t > 2.0):
+                self._goto(P.LANDING)
         elif s in (P.RETURN_HOME, P.ABORT):
             spE = np.array([dE.home[0], dE.home[1], self.z_E])
             spR = np.array([dR.home[0], dR.home[1], self.z_R])
@@ -435,10 +494,36 @@ class MockMission:
         if dE is not None and dR is not None and dE.flying and dR.flying and dE.p[2] > 0.3 and dR.p[2] > 0.3:
             self.min_hdist_flying = min(self.min_hdist_flying, hdist(dE.p, dR.p))
 
+    def _volando(self, items):
+        """En solo, de las parejas (E, R) solo queda la de E (R no existe); en dual, todas."""
+        items = list(items)
+        return items[:1] if self.solo else items
+
     def _clamp(self, xy):
         return np.clip(np.asarray(xy, dtype=float), self.lim[0], self.lim[1])
 
+    def _mission_step_solo(self, dE):
+        """Solo explorador: E recorre la N y regresa; los objetivos se registran pero nadie los visita."""
+        if not self.explorer_done:
+            wp = self.wps[self.wp_idx]
+            spE = np.array([wp[0], wp[1], self.z_E])
+            if hdist(dE.p, wp) < self.tol_xy and abs(dE.p[2] - self.z_E) < self.tol_z:
+                if self.wp_idx + 1 < len(self.wps):
+                    self.wp_idx += 1
+                else:
+                    self.explorer_done = True
+                    self.t_e_done = self.t
+                    self.events.append((round(self.t, 2), "explorador terminó la N"))
+        else:
+            spE = np.array([dE.home[0], dE.home[1], self.z_E])
+        dE.sp = spE
+        self.last_sp_E = spE.copy()
+        if self.explorer_done and self.t - self.t_e_done >= 2.0:
+            self._goto(P.RETURN_HOME)
+
     def _mission_step(self, dE, dR, dt):
+        if self.solo:
+            return self._mission_step_solo(dE)
         # --- explorador: recorre la N; al terminar regresa a su home (a su altura)
         if not self.explorer_done:
             wp = self.wps[self.wp_idx]
@@ -649,8 +734,11 @@ class MockMission:
     def telemetry(self):
         dE = self.drones.get(self.E)
         dR = self.drones.get(self.R)
-        dh = hdist(dE.p, dR.p) if dE is not None else hdist(self.drones[1].p, self.drones[2].p)
-        dv = (dE.p[2] - dR.p[2]) if dE is not None else self.drones[1].p[2] - self.drones[2].p[2]
+        if self.solo:
+            dh = dv = 0.0          # sin respondedor: y(12) = y(13) = 0 (como qd2_telemetry_pack)
+        else:
+            dh = hdist(dE.p, dR.p) if dE is not None else hdist(self.drones[1].p, self.drones[2].p)
+            dv = (dE.p[2] - dR.p[2]) if dE is not None else self.drones[1].p[2] - self.drones[2].p[2]
         mask = 0
         for k in self.visited:
             mask |= 1 << (k - 1)
@@ -660,7 +748,9 @@ class MockMission:
         tel = {
             "t": self.t, "mission_state": self.state, "version": self.version,
             "explorer_id": self.E, "responder_id": self.R,
-            "explorer_wp_idx": self.wp_idx + 1 if self.E else 0, "explorer_wp_total": len(self.wps),
+            "explorer_wp_idx": (self.wp_idx + 1 if self.E and not (self.solo and self.state < P.ASSIGN_ROLES)
+                                else 0),
+            "explorer_wp_total": len(self.wps),
             "responder_target_id": self.current, "n_targets_known": len(self.targets),
             "n_targets_visited": len(self.visited), "guard_active": int(self.guard),
             "dist_horizontal": dh, "dist_vertical": dv, "explorer_done": int(self.explorer_done),
@@ -680,14 +770,23 @@ class MockMission:
                 "vx": d.v[0], "vy": d.v[1], "vz": d.v[2], "battery_V": d.battery,
                 "home_x": d.home[0], "home_y": d.home[1], "role": d.role, "comm_ok": 1,
             }
+        if self.solo:
+            tel["dron_solo"] = self.ds                     # y(64)
+            # dron ausente: sin rastreo (pose NaN en la trama), sin rol, sin enlace, sin consigna
+            blk = tel["drones"][self.da]
+            for k in ("x", "y", "z", "yaw", "xd", "yd", "zd", "yawd", "vx", "vy", "vz", "battery_V",
+                      "home_x", "home_y"):
+                blk[k] = None
+            blk.update(tracked=0, role=P.ROLE_NONE, comm_ok=0)
         return tel
 
 
 class MockServer:
     """Stream Server TCP que corre ``MockMission`` en tiempo real (50 Hz) y atiende 1 cliente."""
 
-    def __init__(self, cfg, host="127.0.0.1", port=0, rate_hz=50.0, speed=1.0):
+    def __init__(self, cfg, host="127.0.0.1", port=0, rate_hz=50.0, speed=1.0, cfg_fn=None):
         self.mission = MockMission(cfg)
+        self.cfg_fn = cfg_fn       # opcional: devuelve la config actual (reset() la vuelve a leer: modo, pista)
         self.host = host
         self.rate = float(rate_hz)
         self.speed = float(speed)
@@ -716,10 +815,17 @@ class MockServer:
 
     def reset(self):
         """Como reiniciar el modelo de Simulink: misión nueva (t = 0, tabla vacía) y se cierra la conexión
-        (el Stream Server real se vuelve a abrir); los comandos que venían en camino se descartan."""
+        (el Stream Server real se vuelve a abrir); los comandos que venían en camino se descartan. Con
+        ``cfg_fn`` se vuelve a leer la config (como Simulink al recompilar: modo de misión y pista)."""
+        cfg = self.mission.cfg
+        if self.cfg_fn is not None:
+            try:
+                cfg = self.cfg_fn() or cfg
+            except Exception:  # pragma: no cover - una config ilegible deja la anterior
+                pass
         with self._lock:
             forzada = self.mission.alerta_forzada
-            self.mission = MockMission(self.mission.cfg)
+            self.mission = MockMission(cfg)
             self.mission.alerta_forzada = forzada
             self._drop = True
 
@@ -825,7 +931,8 @@ def main(argv=None):
     ap.add_argument("--objetivo-interno", nargs=3, type=float, action="append", default=[],
                     metavar=("X", "Y", "CLS"), help="objetivo que 'detecta Simulink' (sale en y(56:60)); se repite")
     a = ap.parse_args(argv)
-    srv = MockServer(Config().data, a.host, a.puerto, speed=a.velocidad).start()
+    cfg = Config()
+    srv = MockServer(cfg.data, a.host, a.puerto, speed=a.velocidad, cfg_fn=cfg.reload_if_changed).start()
     with srv._lock:
         srv.mission.alerta_forzada = a.alerta
         for x, y, c in a.objetivo_interno:

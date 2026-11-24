@@ -100,9 +100,12 @@ export class Mapa2D {
       g.closePath(); g.fill(); g.stroke();
     }
     const role = (id) => tel ? (tel.drones[id].role === 1 ? 'e' : tel.drones[id].role === 2 ? 'r' : 'none') : 'none';
+    // modo solo explorador (y(64)): sin círculo d_min_h ni línea E–R; el dron no usado en gris
+    const ds = S.modo && S.modo.efectivo === 'solo_explorador' && [1, 2].includes(S.modo.dron_solo) ? S.modo.dron_solo : 0;
+    const noUsado = (id) => ds && id !== ds;
     // estelas
     for (const id of [1, 2]) {
-      const tr = this.trails[id]; if (tr.length < 2) continue;
+      const tr = this.trails[id]; if (tr.length < 2 || noUsado(id)) continue;
       g.strokeStyle = COL[role(id)]; g.globalAlpha = 0.55; g.lineWidth = 1.5 * lw;
       g.beginPath(); tr.forEach(([x, y], i) => { const [u, v] = this.px(x, y); i ? g.lineTo(u, v) : g.moveTo(u, v); }); g.stroke();
       g.globalAlpha = 1;
@@ -115,7 +118,7 @@ export class Mapa2D {
     // anomalías
     for (const t of S.objetivos || []) this._target(t, lw);
     // separación y distancia
-    if (tel && tel.explorer_id && tel.responder_id) {
+    if (!ds && tel && tel.explorer_id && tel.responder_id) {
       const e = tel.drones[tel.explorer_id], r = tel.drones[tel.responder_id];
       if (e.x !== null && r.x !== null) {
         const guard = tel.guard_active === 1;
@@ -133,7 +136,12 @@ export class Mapa2D {
     }
     // drones, homes y consignas
     if (tel) for (const id of [1, 2]) {
-      const d = tel.drones[id]; if (d.x === null) continue;
+      const d = tel.drones[id]; if (d.x === null || d.y === null) continue;
+      if (noUsado(id)) {
+        if (!d.tracked) continue;
+        g.globalAlpha = 0.45; this._drone(d, COL.none, id, lw, 'none', ' NO USADO'); g.globalAlpha = 1;
+        continue;
+      }
       const col = COL[role(id)];
       if (d.home_x !== null) {
         const [hu, hv] = this.px(d.home_x, d.home_y);
@@ -159,7 +167,7 @@ export class Mapa2D {
     g.strokeStyle = col; g.lineWidth = 2 * lw; g.beginPath(); g.moveTo(a, b); g.lineTo(c, d); g.stroke();
   }
 
-  _drone(d, col, id, lw, role) {
+  _drone(d, col, id, lw, role, extra = '') {
     const g = this.g, s = this.s, [u, v] = this.px(d.x, d.y);
     const yaw = d.yaw || 0;
     g.save(); g.translate(u, v); g.rotate(-yaw);
@@ -173,7 +181,7 @@ export class Mapa2D {
     g.beginPath(); g.moveTo(0.18 * s, 0); g.lineTo(0.1 * s, -0.05 * s); g.lineTo(0.1 * s, 0.05 * s); g.fill();
     g.restore();
     g.fillStyle = '#e6edf3'; g.font = `bold ${11 * lw}px Segoe UI, sans-serif`;
-    g.fillText(`D${id}${role === 'e' ? ' E' : role === 'r' ? ' R' : ''}  z ${d.z.toFixed(2)}`, u + 0.27 * s, v - 0.12 * s);
+    g.fillText(`D${id}${role === 'e' ? ' E' : role === 'r' ? ' R' : ''}${extra}  z ${d.z === null ? '—' : d.z.toFixed(2)}`, u + 0.27 * s, v - 0.12 * s);
   }
 
   _target(t, lw) {

@@ -16,9 +16,16 @@ Lo de MATLAB se corre aparte, en otra terminal (ver docs/PRUEBA_E2E.md):
   * ``simulink_qdrone2/sim/qd2_e2e_web.m``  (QD2_Sim_Dual en tiempo real, COMMAND SOURCE = 2)
   * ``simulador3d/sim3d_e2e_web.m``         (simulador 3D, escenario 'web', use_vision_python)
 
+Modo SOLO EXPLORADOR (``--modo solo [--dron-solo N]``, en la COPIA de la config): un solo dron. Se espera DONE
+con el dron solo en el suelo cerca de su home, y(64) = N en toda la telemetría, el otro dron siempre en el piso
+(z <= 0.1 m o sin pose), objetivos "detectada" y NINGUNO visitado (no hay respondedor). ``--fuente mock`` corre
+lo mismo contra el mock interno de la estación (sin MATLAB).
+
 Uso (desde la carpeta web, con el venv qd2_web):
   python e2e\\e2e_estacion.py --fuente simulink --corridas pid,mpc,falla
   python e2e\\e2e_estacion.py --fuente sim3d --corridas PID,MPC
+  python e2e\\e2e_estacion.py --fuente sim3d --corridas PID --modo solo
+  python e2e\\e2e_estacion.py --fuente mock --corridas solo --modo solo --velocidad-mock 2
   python e2e\\e2e_estacion.py --fuente simulink --corridas pid,mpc --sin-actitud --salida %TEMP%\\qd2_e2e_nivelado
 
 La configuración de la prueba es una COPIA de config/estacion.json en la carpeta de salida: la real no se
@@ -59,7 +66,7 @@ ALERTA_ESPERADA = {"falla": 9}
 TOL_HOME = 0.15   # m: los drones deben aterrizar a menos de esto de su home (salvo una corrida con falla)
 
 ap = argparse.ArgumentParser(description="Prueba E2E de la estación web real")
-ap.add_argument("--fuente", choices=("simulink", "sim3d"), default="simulink")
+ap.add_argument("--fuente", choices=("simulink", "sim3d", "mock"), default="simulink")
 ap.add_argument("--corridas", default="pid,mpc,falla",
                 help="nombres de las corridas en el orden en que las corre MATLAB (uno por reinicio de t)")
 ap.add_argument("--puerto-web", type=int, default=8090, help="puerto HTTP de la estación de prueba")
@@ -77,6 +84,10 @@ ap.add_argument("--inclinacion-max", type=float, default=None,
 ap.add_argument("--actitud-esperada", choices=("si", "no", ""), default="",
                 help="si = exige y(63) = 1 en MISSION y la actitud en la UI; no = exige y(63) = 0 siempre "
                      "(modelo viejo) y el aviso amarillo; '' = no lo revisa")
+ap.add_argument("--modo", choices=("", "dual", "solo"), default="",
+                help="mision.modo en la copia de la config: solo = solo_explorador; '' = el de config/estacion.json")
+ap.add_argument("--dron-solo", type=int, choices=(1, 2), default=1, help="dron del modo solo (mision.dron_solo)")
+ap.add_argument("--velocidad-mock", type=float, default=1.0, help="solo con --fuente mock")
 a = ap.parse_args()
 
 OUT = os.path.abspath(a.salida)
@@ -100,13 +111,22 @@ if a.sin_actitud:
     cfg.setdefault("vision", {})["usar_actitud"] = False
 if a.inclinacion_max is not None:
     cfg.setdefault("vision", {})["inclinacion_max_deg"] = a.inclinacion_max
+if a.modo == "solo":
+    cfg.setdefault("mision", {}).update(modo="solo_explorador", dron_solo=a.dron_solo)
+elif a.modo == "dual":
+    cfg.setdefault("mision", {})["modo"] = "dual"
+    cfg["mision"].pop("dron_solo", None)
 with open(cfg_path, "w", encoding="utf-8") as fh:
     json.dump(cfg, fh, indent=2, ensure_ascii=False)
 TOL_XY = float(cfg.get("mision", {}).get("tol_xy", 0.12))
 RADIO = float(cfg.get("vision", {}).get("radio_cluster_m", 0.25) or 0.25)
 # verdad de la cámara sintética: lo mismo que dibuja la estación (server.Station._start_source)
 sys.path.insert(0, WEB)
+from app.config import mision_modo  # noqa: E402
 from app.mock_world import default_anomalies  # noqa: E402
+MODO = mision_modo(cfg)
+SOLO = MODO["dron_solo"] if MODO["modo"] == "solo_explorador" else 0    # dron solo (0 = dual)
+USADOS = ("1", "2") if not SOLO else (str(SOLO),)
 VERDAD = web.get("mock_anomalias") or default_anomalies(cfg["pista"]["vertices"])
 
 
@@ -182,9 +202,11 @@ def captura(nombre, hash_=""):
 # ---------------------------------------------------------------- estación web real
 srv_log = open(os.path.join(OUT, f"servidor_{a.fuente}.log"), "w", encoding="utf-8")
 srv = subprocess.Popen([sys.executable, "-m", "app.server", "--config", cfg_path, "--fuente", a.fuente,
-                        "--puerto", str(a.puerto_web)], cwd=WEB, stdout=srv_log, stderr=subprocess.STDOUT,
+                        "--puerto", str(a.puerto_web)]
+                       + (["--velocidad-mock", str(a.velocidad_mock)] if a.fuente == "mock" else []), cwd=WEB, stdout=srv_log, stderr=subprocess.STDOUT,
                        env=dict(os.environ, QD2_NO_BROWSER="1", PYTHONIOENCODING="utf-8"))
-log(f"estación web (pid {srv.pid}) en {BASE}, fuente {a.fuente}, config de prueba {cfg_path}")
+log(f"estación web (pid {srv.pid}) en {BASE}, fuente {a.fuente}, config de prueba {cfg_path}, modo "
+    + (f"SOLO EXPLORADOR (dron {SOLO})" if SOLO else "dual") + (f" [{MODO['aviso']}]" if MODO["aviso"] else ""))
 log("Chrome: " + (CHROME or "no encontrado (sin capturas)"))
 for _ in range(60):
     try:
@@ -206,7 +228,9 @@ def nueva(nombre):
             # actitud y(61:63) y geolocalización contra la verdad
             "att": {"n": 0, "ok": 0, "n_mision": 0, "ok_mision": 0, "max_roll_deg": 0.0, "max_pitch_deg": 0.0,
                     "ui_cruda_vista": False, "max_incl_vision_deg": 0.0},
-            "obs_err": [], "obs_frames": set(), "vis0": None, "vis_fin": None, "geo": None}
+            "obs_err": [], "obs_frames": set(), "vis0": None, "vis_fin": None, "geo": None,
+            # modo solo: y(64) visto, modo de la UI y altura máxima del dron no usado
+            "y64": set(), "modo_ui": set(), "z_aus_max": 0.0}
 
 
 async def lazo():
@@ -242,6 +266,12 @@ async def lazo():
                     c["avisos"].add(av["msg"])
                     log(f"AVISO {av['nivel']}: {av['msg']}")
             st = tel["mission_state_name"]
+            c["y64"].add(tel.get("dron_solo"))
+            c["modo_ui"].add(((s.get("modo") or {}).get("efectivo"), (s.get("modo") or {}).get("coincide")))
+            if SOLO:
+                za = tel["drones"][str(3 - SOLO)]["z"]
+                if za is not None:
+                    c["z_aus_max"] = max(c["z_aus_max"], za)
             # ---- actitud del explorador: y(63) y lo que muestra la UI
             at = c["att"]
             at["n"] += 1
@@ -330,8 +360,9 @@ async def lazo():
                 log(f"HTTP RESUME -> {c['cmd_http'][-1][1:]}")
             # LAND ALL como lo daría el operador: con los dos "en home" (< mision.tol_xy, lo que marca la
             # tarjeta de cada dron) durante 2 s seguidos. En LANDING cada dron baja EN SU SITIO.
-            en_home = all(dd["x"] is not None and math.hypot(dd["x"] - dd["home_x"], dd["y"] - dd["home_y"]) <= TOL_XY
-                          for dd in (d1, d2))
+            en_home = all(dd["x"] is not None and dd["home_x"] is not None
+                          and math.hypot(dd["x"] - dd["home_x"], dd["y"] - dd["home_y"]) <= TOL_XY
+                          for dd in (drones[k] for k in USADOS))
             c["t_en_home"] = (c.get("t_en_home") or now) if (st == "RETURN_HOME" and en_home) else None
             if st == "RETURN_HOME" and not c["land"] and c["t_en_home"] and now - c["t_en_home"] >= 2.0:
                 c["cmd_http"].append(("LAND_ALL",) + post("/api/cmd", {"cmd": "LAND_ALL"}))
@@ -340,7 +371,7 @@ async def lazo():
             if st == "DONE" and c["done"] is None:
                 c["done"] = round(t, 2)
                 c["fin"] = {"drones": {d: {k: drones[d][k] for k in ("x", "y", "z", "home_x", "home_y")}
-                                       for d in ("1", "2")},
+                                       for d in USADOS},
                             "tel": {k: tel[k] for k in ("n_targets_known", "n_targets_visited", "visited_ids",
                                                         "explorer_wp_idx", "explorer_wp_total")},
                             "cmd_resultados": [(r["cmd"], r["estado"]) for r in s["puente"]["cmd_resultados"]],
@@ -380,7 +411,18 @@ def revisar(c):
     if any(o["origen"] == "estacion" for o in propios):
         f.append("objetivos publicados que Simulink nunca confirmó en y(56:60): "
                  + str([o["id"] for o in propios if o["origen"] == "estacion"]))
-    if esperada is None:
+    if SOLO:
+        # sin respondedor: nada se visita; y(64) = dron solo en TODA la telemetría; el otro dron nunca despega
+        vis = [o["id"] for o in c["obj"].values() if o["estado"] == "visitada"]
+        if vis:
+            f.append(f"modo solo: objetivos marcados como visitados {vis}")
+        if c["y64"] != {SOLO}:
+            f.append(f"modo solo: y(64) vistos {sorted(c['y64'], key=str)} (se esperaba solo {SOLO})")
+        if c["z_aus_max"] > 0.1:
+            f.append(f"modo solo: el dron {3 - SOLO} (no usado) subió a z = {c['z_aus_max']:.2f} m")
+        if ("solo_explorador", True) not in c["modo_ui"] or any(m[1] is False for m in c["modo_ui"]):
+            f.append(f"modo solo: la UI no mostró el modo coincidente (snapshot.modo: {sorted(c['modo_ui'], key=str)})")
+    elif esperada is None:
         no_vis = [o["id"] for o in c["obj"].values() if o["estado"] != "visitada"]
         if no_vis:
             f.append(f"objetivos sin visitar al final: {no_vis}")
@@ -439,7 +481,8 @@ for c in resultados:
     log(f"RESUMEN {c['nombre']} ({c['version']}): {'PASA' if not fallas else 'FALLA'} | estados "
         f"{' -> '.join(c['estados'])} | alertas {c['alertas']} | visitados (t_sim) {c['visit_t']} | "
         f"objetivos {[(o['id'], o['clase'], o['origen'], o['estado']) for o in c['obj'].values()]} | "
-        f"dh mín en el aire {c['dh_min_aire']} | DONE {c['done']}")
+        f"dh mín en el aire {c['dh_min_aire']} | DONE {c['done']}"
+        + (f" | y(64) {sorted(c['y64'], key=str)} | z máx dron {3 - SOLO} {c['z_aus_max']:.2f} m" if SOLO else ""))
     at = c["att"]
     vf, v0 = c["vis_fin"] or {}, c["vis0"] or {}
     geo_err = [g["err"] for g in c["geo"] or [] if g["err"] is not None]

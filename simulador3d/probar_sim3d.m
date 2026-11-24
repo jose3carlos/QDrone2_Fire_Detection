@@ -26,6 +26,13 @@ function res = probar_sim3d(con_capturas)
 %      nivelado y con el error del soporte; descarte por inclinación.
 %  17. Misión PID con usar_actitud = false y con inclinacion_max_deg = 1.5: error por
 %      observación con y sin actitud, y descartadas por inclinación.
+%  18. Modo SOLO EXPLORADOR (PID) con la pista del laboratorio y el dron 2 fuera de
+%      OptiTrack: DONE, recorrido completo, el dron 2 nunca arma ni sube, y(64) = 1,
+%      >= 3 de 4 objetos detectados y 0 visitados (no hay respondedor).
+%  19. Solo explorador con el dron 2 y el dron 1 (no usado) RASTREADO en el piso debajo de
+%      la N: el guard nunca se activa y la misión termina (DONE).
+%   Las pruebas 3-17 usan la config real con mision.modo = "dual" y la N de 4 vértices
+%   fija (no dependen del modo ni de la pista del día en config/estacion.json).
 %   La prueba TCP con Python está en prueba_cliente_puente.py (ver README).
 
 if nargin < 1, con_capturas = true; end
@@ -36,6 +43,19 @@ addpath(fullfile(raiz, 'simulink_qdrone2', 'lib'));
 res = struct('nombre', {}, 'ok', {}, 'detalle', {});
 base = struct('mostrar', false, 'tiempo_real', false, 'usar_tcp', false, 'auto_start', 3, ...
     'graficas_finales', false, 't_final', 300, 'verbose', false);
+% Config de las pruebas: la real con modo dual y la N de 4 vértices fija (las pruebas no
+% dependen de mision.modo ni de la pista del día en config/estacion.json).
+cfg_real = sim3d_leer_json(fileread(fullfile(raiz, 'config', 'estacion.json')));
+cfg_dual = cfg_real;
+cfg_dual.mision.modo = 'dual';
+if isfield(cfg_dual.mision, 'dron_solo'), cfg_dual.mision = rmfield(cfg_dual.mision, 'dron_solo'); end
+cfg_dual.pista.vertices = [-1.2 1.2; 1.2 1.2; -1.2 -1.2; 1.2 -1.2];
+base.config = cfg_dual;
+% Modo solo explorador con la pista del laboratorio (23-nov)
+cfg_solo = cfg_real;
+cfg_solo.mision.modo = 'solo_explorador';
+cfg_solo.mision.dron_solo = 1;
+cfg_solo.pista.vertices = [1.02 0.41; 0.99 1.20; -0.90 1.10; -0.27 0.29; 0.47 -0.25; 0.99 -1.01; -1.02 -1.20];
 
 % ---- 1. malla
 % Motores en (±101.6, ±127) mm (thrust parametrization, tabla 1) con aros concéntricos de 119 mm:
@@ -94,7 +114,7 @@ if exist(ref_f, 'file')
     if isfield(ref, 'anomalias_web')
         aw = ref.anomalias_web;
         if ~iscell(aw), aw = num2cell(aw); end
-        escw = sim3d_escenario(sim3d_opciones(struct('escenario', 'web')), C);
+        escw = sim3d_escenario(sim3d_opciones(struct('escenario', 'web')), sim3d_config(raiz, cfg_dual));
         ew = inf;
         if numel(escw.obj) == numel(aw)
             ew = 0;
@@ -251,6 +271,35 @@ m = R3.met;
 ok = m.estado_final == 8 && m.dh_min_aire >= R3.p.d_min_h && m.reales_detectados == m.n_reales;
 res = anotar(res, 'escenario aleatorio (semilla 11, 6 objetos)', ok, sprintf(['DONE en %.1f s, detectados %d/%d, ' ...
     'visitados %d/%d, dh mín. %.3f m'], m.t_sim, m.reales_detectados, m.n_reales, m.reales_visitados, m.n_reales, m.dh_min_aire));
+% ---- 18. solo explorador PID: pista del laboratorio, dron 2 fuera de OptiTrack
+o = base; o.config = cfg_solo; o.escenario = 'escenarios/escenario_solo_lab.json';
+if con_capturas
+    o.capturas = [45 45.1]; o.capturas_vistas = [1 2]; o.graficas_finales = true; o.prefijo_capturas = 'prueba_solo';
+end
+R5 = sim3d_correr(o);
+m = R5.met; L = R5.log; s5 = R5.s_final;
+kt = ~isnan(L.y64);
+z_aus = max(L.pos(3, :, 2));
+ok = R5.modo.solo && m.estado_final == 8 && s5.n_wp == 35 && s5.wp_idx == s5.n_wp && s5.explorer_done == 1 ...
+    && z_aus == 0 && max(L.arm(2, :)) == 0 && max(L.takeoff(2, :)) == 0 && all(L.explorer_id == 1) ...
+    && any(kt) && all(L.y64(kt) == 1) && m.reales_detectados >= 3 && m.n_visitados == 0 && m.reales_visitados == 0;
+res = anotar(res, 'solo explorador PID (pista del lab, dron 2 fuera)', ok, sprintf(['DONE en %.1f s sim, %d/%d wp, ' ...
+    'detectados %d/%d (%d objetivos, 0 visitados = %d), dron 2: z máx. %.3f m, arm máx. %d, takeoff máx. %d; ' ...
+    'y(64) = 1 en %d/%d mensajes'], m.t_sim, s5.wp_idx, s5.n_wp, m.reales_detectados, m.n_reales, m.n_objetivos, ...
+    m.n_visitados == 0, z_aus, max(L.arm(2, :)), max(L.takeoff(2, :)), sum(L.y64(kt) == 1), sum(kt)));
+% ---- 19. solo explorador con el dron 2; el dron 1 (no usado) rastreado en el piso bajo la N
+o = base; o.modo_mision = 'solo_explorador'; o.dron_solo = 2; o.dron_ausente = 'piso';
+o.homes = [0.10 0.02; 1.25 0];
+R6 = sim3d_correr(o);
+m = R6.met; L = R6.log; s6 = R6.s_final;
+kt = ~isnan(L.y64);
+ok = R6.modo.solo && m.estado_final == 8 && s6.wp_idx == s6.n_wp && all(L.guard == 0) ...
+    && max(L.arm(1, :)) == 0 && max(L.takeoff(1, :)) == 0 && max(L.pos(3, :, 1)) == 0 ...
+    && all(L.explorer_id == 2) && any(kt) && all(L.y64(kt) == 2);
+d_paso = min(hypot(L.pos(1, L.estado == 5, 2) - 0.10, L.pos(2, L.estado == 5, 2) - 0.02));
+res = anotar(res, 'solo explorador dron 2 (dron 1 en el piso bajo la N)', ok, sprintf(['DONE en %.1f s sim, %d/%d wp, ' ...
+    'guard activo %d pasos, dron 1: arm máx. %d, z máx. %.3f m; E pasó a %.2f m (horizontal) del dron 1; y(64) = 2 en %d/%d'], ...
+    m.t_sim, s6.wp_idx, s6.n_wp, sum(L.guard > 0), max(L.arm(1, :)), max(L.pos(3, :, 1)), d_paso, sum(L.y64(kt) == 2), sum(kt)));
 % ---- 6. tiempo real sin figura
 close all force; drawnow; pause(1);     % que la limpieza de figuras anteriores no caiga en la medición
 o = base; o.tiempo_real = true; o.t_final = 10; o.parar_en_done = false;
@@ -260,7 +309,7 @@ res = anotar(res, 'ritmo de tiempo real (10 s, sin figura)', abs(f - 1) < 0.03, 
     '(factor %.3f, re-sincronizaciones %d)'], R4.met.t_sim, R4.met.t_reloj, f, R4.met.n_atrasos));
 
 % ---- 7. costo de dibujo
-C = sim3d_config(raiz);
+C = sim3d_config(raiz, cfg_dual);
 oo = sim3d_opciones(struct('mostrar', false));
 esc = sim3d_escenario(oo, C);
 G = sim3d_escena('crear', [], C, esc, oo, raiz);

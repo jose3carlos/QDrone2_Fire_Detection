@@ -51,6 +51,24 @@ function [s, sp_E, sp_R, tel] = qd2_mission_step(s, in, p)
 %   Comandos (py(2), se aplican cuando cambia py(3) = cmd_seq):
 %   1 START (en ASSIGN_ROLES), 2 ABORT (regresar a home y hover),
 %   3 LAND_ALL, 4 PAUSE, 5 RESUME.
+%
+%   Modo SOLO EXPLORADOR (p.modo_mision = 1, p.dron_solo = ds = 1 o 2; con
+%   p.modo_mision = 0 todo es exactamente el modo dual de siempre):
+%   - un solo dron (ds) es el explorador desde INIT (explorer_id = ds,
+%     responder_id = 0); el otro (da = 3 - ds, "ausente") ocupa el rol R
+%     interno pero NUNCA recibe arm/takeoff y su consigna es su última pose
+%     finita en el piso [x y 0 0] (regla final, en todos los estados);
+%   - WAIT_TRACKING / ASSIGN_ROLES / pérdida de rastreo / "despegado" /
+%     llegadas de TAKEOFF y LANDING solo miran al dron ds; sin chequeo de
+%     distancia entre homes (nunca alerta 1);
+%   - MISSION: E recorre la N igual; no hay respondedor (los objetivos se
+%     registran y quedan "pendientes/detectados", estado 1); termina cuando E
+%     acaba la N + p.t_fin_gracia -> RETURN_HOME (E directo a su home);
+%   - LAND_ALL / auto_land / falla a bordo: E aterriza en su sitio;
+%   - FSM a bordo, protocolo y enlace del ausente se ignoran (sin alertas
+%     9/10 ni bloqueo de START); qd2_separation_guard deja pasar todo.
+%   tel.dron_solo = ds (0 en dual) y tel.modo_mision = 1 (0 en dual); el
+%   TELEMETRY PACK lo publica en y(64) (ver qd2_telemetry_pack).
 %#codegen
 
 % ======================= Entradas y parámetros efectivos ==================
@@ -68,6 +86,23 @@ py(:) = in.py(1:32);
 py(~isfinite(py)) = 0;
 version = in.version;
 
+% Modo solo explorador: ds = dron que vuela (explorador), da = dron ausente.
+solo = es_solo(p);
+ds = 1;
+if solo
+    ds = p.dron_solo;
+end
+da = 3 - ds;
+if solo
+    s.explorer_id = ds;   % fijo desde INIT: la telemetría ya dice qué dron es (y(4), y(64))
+    s.responder_id = 0;
+end
+% disparos por ROL [E R] en los estados de vuelo: el ausente (rol R) nunca
+ar = [1 1];
+if solo
+    ar = [1 0];
+end
+
 pose1 = [in.pose1(1) in.pose1(2) in.pose1(3) in.pose1(4)];
 pose2 = [in.pose2(1) in.pose2(2) in.pose2(3) in.pose2(4)];
 trk1 = in.tracked1 > 0.5;
@@ -82,7 +117,14 @@ if fin1, s.pose_ok1 = pose1; else, pose1 = s.pose_ok1; end
 if fin2, s.pose_ok2 = pose2; else, pose2 = s.pose_ok2; end
 if val1 || s.estado <= 2, s.t_trk(1) = t; end
 if val2 || s.estado <= 2, s.t_trk(2) = t; end
-perdido = (t - s.t_trk(1) > p.t_perdida_trk) || (t - s.t_trk(2) > p.t_perdida_trk);
+if solo
+    % solo cuenta el dron que vuela; la pérdida del ausente nunca pausa
+    perdido = (t - s.t_trk(ds) > p.t_perdida_trk);
+    val_ds = (ds == 1 && val1) || (ds == 2 && val2);
+else
+    perdido = (t - s.t_trk(1) > p.t_perdida_trk) || (t - s.t_trk(2) > p.t_perdida_trk);
+    val_ds = val1 && val2;
+end
 
 % Overrides de la estación (0 = valor por defecto). Solo se leen antes de
 % START (estados 0-2); después quedan fijos durante todo el vuelo.
@@ -152,6 +194,12 @@ if isfield(in, 'proto_mal')
         sin_enl(i) = double(v > 1.5);
     end
 end
+if solo
+    % el dron ausente no vuela: su FSM, protocolo y enlace no cuentan
+    fsm_ab(da) = 0;
+    proto(da) = 0;
+    sin_enl(da) = 0;
+end
 fsm_err = [0 0];
 for i = 1:2
     fsm_err(i) = double(fsm_ab(i) >= 7 && fsm_ab(i) <= 9);
@@ -169,7 +217,7 @@ end
 est = s.estado;
 % En el aire: estados de vuelo, o TAKEOFF solo si ya se dio takeoff y
 % algún dron ya despegó (z > z_despegado).
-despegado = max(pE(3), pR(3)) > p.z_despegado;
+despegado = hay_despegado(pE, pR, p, solo);
 aire = (est == 4) || (est == 5) || (est == 6) || (est == 9) || (est == 10) || ...
     (est == 3 && s.takeoff(1) > 0.5 && despegado);
 if s.falla_fase > 0.5
@@ -256,7 +304,7 @@ if s.falla_fase < 0.5
         end
     end
     if nueva(1) + nueva(2) > 0
-        despegado = max(pE(3), pR(3)) > p.z_despegado;
+        despegado = hay_despegado(pE, pR, p, solo);
         en_aire = (est == 4) || (est == 5) || (est == 6) || (est == 9) || (est == 10) || ...
             (est == 3 && s.takeoff(1) > 0.5 && despegado);
         if est == 3 && ~en_aire
@@ -326,7 +374,7 @@ switch s.estado
         s.arm = [0 0]; s.takeoff = [0 0];
         sp_E = [pE(1) pE(2) 0 0];
         sp_R = [pR(1) pR(2) 0 0];
-        if val1 && val2
+        if val_ds          % dual: los dos rastreados; solo: el dron ds
             if s.t_ok_desde < 0
                 s.t_ok_desde = t;
             end
@@ -340,7 +388,24 @@ switch s.estado
     case 2  % ASSIGN_ROLES (se reevalúa hasta START)
         s.arm = [0 0]; s.takeoff = [0 0];
         [eid, rid, h1, h2, ok] = qd2_assign_roles(pose1, pose2, double(val1), double(val2));
-        if ok > 0.5
+        if solo
+            % sin respondedor ni chequeo de homes: basta el dron ds rastreado
+            % (el home del ausente es solo informativo)
+            if val_ds
+                s.explorer_id = ds;
+                s.responder_id = 0;
+                s.home1 = [pose1(1) pose1(2)];
+                s.home2 = [pose2(1) pose2(2)];
+                s.roles_ok = 1;
+                s.home_ok = 1;
+                if s.alerta == 1, s.alerta = 0; end
+            else
+                s.roles_ok = 0;
+                s.home_ok = 0;
+                s.t_ok_desde = -1;
+                s = entrar(s, 1, t);
+            end
+        elseif ok > 0.5
             s.explorer_id = eid;
             s.responder_id = rid;
             s.home1 = h1;
@@ -375,22 +440,24 @@ switch s.estado
         sp_R = [pR(1) pR(2) 0 0];
 
     case 3  % TAKEOFF
-        s.arm = [1 1];
+        s.arm = ar;
         % takeoff se da t_arm_a_despegue después de armar y queda fijo
         % (un RESUME desde PAUSED no lo vuelve a bajar)
         if s.takeoff(1) < 0.5 && t - s.t_entrada >= p.t_arm_a_despegue
-            s.takeoff = [1 1];
+            s.takeoff = ar;
             s.t_despegue = t;
         end
         sp_E = [hE(1) hE(2) s.z_E 0];
         sp_R = [hR(1) hR(2) s.z_R 0];
-        if s.takeoff(1) > 0.5 && abs(pE(3) - s.z_E) <= p.tol_z && abs(pR(3) - s.z_R) <= p.tol_z
+        % solo explorador: no se espera al ausente
+        r_llego = solo || abs(pR(3) - s.z_R) <= p.tol_z;
+        if s.takeoff(1) > 0.5 && abs(pE(3) - s.z_E) <= p.tol_z && r_llego
             s = entrar(s, 4, t);
         elseif s.takeoff(1) > 0.5 && (t - s.t_despegue) >= p.t_takeoff_max
             % no llegaron a la altura: si alguno despegó, ABORT (hover en
             % home hasta LAND_ALL); si nadie despegó, cancelar en tierra
             s.alerta = 3;
-            if max(pE(3), pR(3)) > p.z_despegado
+            if hay_despegado(pE, pR, p, solo)
                 s = planear_regreso(s, pE, pR, hE, hR, Dm, p);
                 s = entrar(s, 9, t);
             else
@@ -400,7 +467,7 @@ switch s.estado
         end
 
     case 4  % HOVER_READY
-        s.arm = [1 1]; s.takeoff = [1 1];
+        s.arm = ar; s.takeoff = ar;
         sp_E = [hE(1) hE(2) s.z_E 0];
         sp_R = [hR(1) hR(2) s.z_R 0];
         if t - s.t_entrada >= p.t_hover_ready
@@ -408,7 +475,7 @@ switch s.estado
         end
 
     case 5  % MISSION
-        s.arm = [1 1]; s.takeoff = [1 1];
+        s.arm = ar; s.takeoff = ar;
         solo_respaldo = 0;
         % ---- Explorador: recorre la N densificada (tolerancia + dwell)
         if s.explorer_done < 0.5
@@ -436,64 +503,71 @@ switch s.estado
             prioridad_R = 1;
         end
         % ---- Respondedor: cola de objetivos, el más cercano primero
-        if s.r_fase == 0
-            kbest = 0;
-            dbest = inf;
-            for k = 1:32
-                if k <= s.n_obj && s.obj_estado(k) == 1
-                    d = norm([s.obj_x(k) s.obj_y(k)] - pR(1:2));
-                    if d < dbest
-                        dbest = d;
-                        kbest = k;
-                    end
-                end
-            end
-            if kbest > 0
-                s.r_obj = kbest;
-                s.obj_estado(kbest) = 2;
-                s.r_fase = 1;
-                s.t_marca = 0;
-            end
-        end
-        if s.r_fase >= 1 && s.r_obj >= 1 && s.r_obj <= 32
-            k = s.r_obj;
-            tg = recortar_xy([s.obj_x(k) s.obj_y(k)], p);
-            sp_R = [tg(1) tg(2) s.z_R 0];
-            exy = norm(pR(1:2) - tg);
-            ez = abs(pR(3) - s.z_R);
-            if s.r_fase == 1
-                if exy <= p.tol_xy && ez <= p.tol_z
-                    s.r_fase = 2;
-                end
-            end
-            if s.r_fase == 2
-                r_marking = 1;
-                if exy <= p.tol_mark_factor*p.tol_xy && ez <= p.tol_mark_factor*p.tol_z
-                    s.t_marca = s.t_marca + dt;
-                end
-                marking_progress = min(s.t_marca/max(s.t_mark, 1e-6), 1);
-                if s.t_marca >= s.t_mark
-                    s.obj_estado(k) = 3;
-                    s.r_fase = 0;
-                    s.r_obj = 0;
-                    s.r_idle_xy = tg;
-                    r_marking = 0;
-                    marking_progress = 1;
-                end
-            end
-        else
+        if solo
+            % sin respondedor: los objetivos se quedan pendientes ("detectados")
             s.r_fase = 0;
             s.r_obj = 0;
-            sp_R = [s.r_idle_xy(1) s.r_idle_xy(2) s.z_R 0];
+        else
+            if s.r_fase == 0
+                kbest = 0;
+                dbest = inf;
+                for k = 1:32
+                    if k <= s.n_obj && s.obj_estado(k) == 1
+                        d = norm([s.obj_x(k) s.obj_y(k)] - pR(1:2));
+                        if d < dbest
+                            dbest = d;
+                            kbest = k;
+                        end
+                    end
+                end
+                if kbest > 0
+                    s.r_obj = kbest;
+                    s.obj_estado(kbest) = 2;
+                    s.r_fase = 1;
+                    s.t_marca = 0;
+                end
+            end
+            if s.r_fase >= 1 && s.r_obj >= 1 && s.r_obj <= 32
+                k = s.r_obj;
+                tg = recortar_xy([s.obj_x(k) s.obj_y(k)], p);
+                sp_R = [tg(1) tg(2) s.z_R 0];
+                exy = norm(pR(1:2) - tg);
+                ez = abs(pR(3) - s.z_R);
+                if s.r_fase == 1
+                    if exy <= p.tol_xy && ez <= p.tol_z
+                        s.r_fase = 2;
+                    end
+                end
+                if s.r_fase == 2
+                    r_marking = 1;
+                    if exy <= p.tol_mark_factor*p.tol_xy && ez <= p.tol_mark_factor*p.tol_z
+                        s.t_marca = s.t_marca + dt;
+                    end
+                    marking_progress = min(s.t_marca/max(s.t_mark, 1e-6), 1);
+                    if s.t_marca >= s.t_mark
+                        s.obj_estado(k) = 3;
+                        s.r_fase = 0;
+                        s.r_obj = 0;
+                        s.r_idle_xy = tg;
+                        r_marking = 0;
+                        marking_progress = 1;
+                    end
+                end
+            else
+                s.r_fase = 0;
+                s.r_obj = 0;
+                sp_R = [s.r_idle_xy(1) s.r_idle_xy(2) s.z_R 0];
+            end
         end
-        % ---- Fin de misión
+        % ---- Fin de misión (solo explorador: E terminó la N + gracia; la
+        % cola no se atiende)
         cola = 0;
         for k = 1:32
             if k <= s.n_obj && s.obj_estado(k) == 1
                 cola = cola + 1;
             end
         end
-        if s.explorer_done > 0.5 && (t - s.t_e_done) >= p.t_fin_gracia && cola == 0 && s.r_fase == 0
+        if s.explorer_done > 0.5 && (t - s.t_e_done) >= p.t_fin_gracia && (solo || (cola == 0 && s.r_fase == 0))
             s = planear_regreso(s, pE, pR, hE, hR, Dm, p);
             s = entrar(s, 6, t);
         elseif ~hb_ok
@@ -506,15 +580,15 @@ switch s.estado
         end
 
     case {6, 9}  % RETURN_HOME / ABORT
-        s.arm = [1 1]; s.takeoff = [1 1];
+        s.arm = ar; s.takeoff = ar;
         [s, sp_E, sp_R, listos] = paso_regreso(s, pE, pR, hE, hR, t, p);
         if listos && s.estado == 6 && p.auto_land > 0.5
             s = planear_aterrizaje(s, pE, pR, hE, Dm, p, t);
             s = entrar(s, 7, t);
         end
 
-    case 7  % LANDING (R primero, luego E)
-        s.arm = [1 1];
+    case 7  % LANDING (R primero, luego E; solo explorador: E en su sitio)
+        s.arm = ar;
         [s, sp_E, sp_R] = paso_aterrizaje(s, pE, pR, t, p);
         if s.land_paso == 3
             s = entrar(s, 8, t);
@@ -526,7 +600,7 @@ switch s.estado
         sp_R = [s.land_xy(2,1) s.land_xy(2,2) 0 0];
 
     case 10 % PAUSED: ambos en hover en su sitio
-        s.arm = [1 1]; s.takeoff = [1 1];
+        s.arm = ar; s.takeoff = ar;
         sp_E = s.hold_E;
         sp_R = s.hold_R;
         if s.estado_prev == 5 && s.r_fase == 2
@@ -551,6 +625,20 @@ if s.estado <= 2
     elseif s.alerta == 9 && fsm_err(1) + fsm_err(2) == 0
         s.alerta = 0;
     end
+end
+
+% Solo explorador (regla final, en todos los estados): el dron ausente
+% (rol R interno) NUNCA recibe arm/takeoff y su consigna es su última pose
+% finita en el piso.
+if solo
+    s.arm(2) = 0;
+    s.takeoff(2) = 0;
+    if da == 1
+        pa = pose1;
+    else
+        pa = pose2;
+    end
+    sp_R = [pa(1) pa(2) 0 0];
 end
 
 % recorte a la arena y techo (sin NaN: se conserva la consigna anterior)
@@ -643,7 +731,33 @@ else
     tel.arm = s.arm;
     tel.takeoff = s.takeoff;
 end
+if solo
+    % el dron ausente no tiene rol
+    if da == 1
+        tel.role1 = 0;
+    else
+        tel.role2 = 0;
+    end
+end
 tel.estop = [0 0];
+% modo de misión: dron_solo = 0 en dual (y(64) del TELEMETRY PACK)
+tel.dron_solo = double(solo)*ds;
+tel.modo_mision = double(solo);
+end
+
+function r = es_solo(p)
+% Modo solo explorador activo (parámetros válidos; si no, dual).
+r = (p.modo_mision > 0.5) && (p.dron_solo == 1 || p.dron_solo == 2);
+end
+
+function d = hay_despegado(pE, pR, p, solo)
+% Algún dron "en el aire" (z > z_despegado). Solo explorador: solo E (un
+% ausente sobre una mesa no cuenta).
+if solo
+    d = pE(3) > p.z_despegado;
+else
+    d = max(pE(3), pR(3)) > p.z_despegado;
+end
 end
 
 % =========================================================================
@@ -830,6 +944,12 @@ s.ret_r = r;
 s.ret_t_llegada = [-1 -1];
 s.ret_espera_xy = [pE(1) pE(2); pR(1) pR(2)];
 s.ret_via = [hE; hR];
+if es_solo(p)
+    % solo explorador: E va directo a su home; R (ausente) ya está "en home"
+    s.ret_orden = 0;
+    s.ret_paso = [2 3];
+    return;
+end
 dseg = qd2_dist_segmentos(pE(1:2), hE, pR(1:2), hR);
 if dseg >= r
     s.ret_orden = 0;
@@ -964,6 +1084,14 @@ s.land_paso = 1;
 s.t_land_paso = t;
 s.t_suelo = [-1 -1];
 s.land_r_baja = 0;
+if es_solo(p)
+    % solo explorador: E aterriza en su sitio (no hay R al que esperar)
+    s.land_r_baja = 1;
+    s.land_xy = [pE(1) pE(2); pR(1) pR(2)];
+    s.land_via_E = [pE(1) pE(2)];
+    s.land_usa_via_E = 0;
+    return;
+end
 xyR = [pR(1) pR(2)];
 s.land_xy(2,:) = xyR;
 if norm(pE(1:2) - xyR) >= r
@@ -1014,6 +1142,9 @@ else
     s.t_suelo(1) = -1;
 end
 r_en_suelo = s.t_suelo(2) >= 0 && (t - s.t_suelo(2)) >= p.t_aterrizado;
+if es_solo(p)
+    r_en_suelo = true;     % solo explorador: el ausente nunca voló (no se le espera)
+end
 e_en_suelo = s.t_suelo(1) >= 0 && (t - s.t_suelo(1)) >= p.t_aterrizado;
 vencido = (t - s.t_land_paso) >= p.t_land_max;
 sp_R = [xyR(1) xyR(2) 0 0];
@@ -1112,7 +1243,9 @@ if s.explorer_id == 2
 else
     pE = pose1; pR = pose2; hE = s.home1;
 end
-if s.falla(1) > 0 && s.falla(2) > 0
+if es_solo(p) || (s.falla(1) > 0 && s.falla(2) > 0)
+    % (solo explorador: solo puede fallar E; no hay dron sano que apartar:
+    % aterriza en su sitio, con takeoff = 0 en paso_aterrizaje)
     s = planear_aterrizaje(s, pE, pR, hE, Dm, p, t);
     s = entrar(s, 7, t);
     return;

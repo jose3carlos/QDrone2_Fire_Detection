@@ -22,8 +22,15 @@ function [cfg, P] = qd2_cargar_config(mdl, ruta_json)
 %     .uri_puente             tcpip://localhost:18700 (PYTHON BRIDGE)
 %     .ext_mode_args          argumentos de external mode (-URI_Host/-URI_Host2)
 %     .version_lib            1 = PID, 2 = MPC (según el modelo que la llame)
+%     .modo_mision            'dual' o 'solo_explorador' (mision.modo)
+%     .dron_solo              0 (dual) o 1/2 (mision.dron_solo en solo explorador)
 %   QD2P (struct): qd2_params_from_config(cfg) -> parámetro 'P' de los
-%   bloques de QD2_Mission_Lib (alturas, d_min_h, pista, tolerancias...).
+%   bloques de QD2_Mission_Lib (alturas, d_min_h, pista, tolerancias,
+%   modo_mision, dron_solo...). P no es ajustable: cambiar el modo o la pista
+%   obliga a recompilar (Build).
+%   Imprime una línea con el modo de misión (y un warning si mision.modo o
+%   mision.dron_solo no son válidos -> se usa dual, o si es solo explorador
+%   con la versión MPC, que solo está validado en PID).
 %
 %   Nota sobre OptiTrack Trackables (QUARC): 'rigid_body_ids' es un
 %   parámetro evaluado, así que acepta directamente QD2CFG.optitrack.rb_ids.
@@ -93,7 +100,28 @@ elseif nargin >= 1 && ~isempty(mdl) && contains(char(mdl), 'PID')
 end
 
 % ---- Parámetros de la librería -------------------------------------------------
-P = qd2_params_from_config(c);
+[P, aviso] = qd2_params_from_config(c);
+
+% ---- Modo de misión (mision.modo / mision.dron_solo) ------------------------------
+if P.modo_mision > 0.5
+    ds = P.dron_solo;
+    cfg.modo_mision = 'solo_explorador';
+    cfg.dron_solo = ds;
+    puertos = [cfg.puerto_dron1 cfg.puerto_dron2];
+    fprintf(['qd2_cargar_config: MODO SOLO EXPLORADOR -> dron %d (rigid body %d, Stream Server :%d). ' ...
+        'El dron %d no recibe arm/takeoff.\n'], ds, o.rb_ids(ds), puertos(ds), 3 - ds);
+    if cfg.version_lib == 2
+        warning('qd2_cargar_config:solo_mpc', ...
+            'Modo solo explorador con la versión MPC: solo explorador está validado solo en PID.');
+    end
+else
+    cfg.modo_mision = 'dual';
+    cfg.dron_solo = 0;
+    fprintf('qd2_cargar_config: modo dual (2 drones)\n');
+end
+if ~isempty(aviso)
+    warning('qd2_cargar_config:modo', '%s', aviso);
+end
 
 assignin('base', 'QD2CFG', cfg);
 assignin('base', 'QD2P', P);

@@ -7,6 +7,7 @@ end
 
 function setupOnce(tc)
 raiz = fileparts(fileparts(mfilename('fullpath')));
+addpath(raiz);                          % qd2_cargar_config (también con matlab -sd)
 addpath(fullfile(raiz, 'lib'));
 addpath(fullfile(raiz, 'tests'));
 tc.TestData.p = qd2_params();
@@ -1257,4 +1258,465 @@ in.tracked1 = 1;
 in.tracked2 = 1;
 in.py = zeros(32,1);
 in.version = 1;
+end
+
+% =========================================================================
+%  Modo SOLO EXPLORADOR (p.modo_mision = 1): un solo dron recorre la N
+% =========================================================================
+function test_config_modo(tc)
+% mision.modo / mision.dron_solo -> p.modo_mision / p.dron_solo (tabla del
+% contrato §1.2, la misma que prueba config.mision_modo de la estación).
+% columnas: fragmento "mision", modo (0 dual / 1 solo), dron_solo efectivo, ¿aviso?
+casos = {
+    '{}',                                                   0, 0, false
+    '{"modo": "dual", "dron_solo": 2}',                     0, 0, false
+    '{"modo": "solo_explorador"}',                          1, 1, false
+    '{"modo": "solo_explorador", "dron_solo": 1}',          1, 1, false
+    '{"modo": " SOLO_Explorador ", "dron_solo": 2}',        1, 2, false
+    '{"modo": "solo_explorador", "dron_solo": 2.0}',        1, 2, false
+    '{"modo": "solo_explorador", "dron_solo": null}',       1, 1, false
+    '{"modo": "solo_explorador", "dron_solo": 3}',          0, 0, true
+    '{"modo": "solo_explorador", "dron_solo": 0}',          0, 0, true
+    '{"modo": "solo_explorador", "dron_solo": 1.5}',        0, 0, true
+    '{"modo": "solo_explorador", "dron_solo": "1"}',        0, 0, true
+    '{"modo": "solo_explorador", "dron_solo": true}',       0, 0, true
+    '{"modo": "solo"}',                                     0, 0, true
+    '{"modo": 1}',                                          0, 0, true
+    '{"modo": null}',                                       0, 0, false
+    '{"modo": ""}',                                         0, 0, false};
+p0 = qd2_params();
+for k = 1:size(casos, 1)
+    cfg = jsondecode(['{"mision": ' casos{k,1} '}']);
+    [p, aviso] = qd2_params_from_config(cfg);
+    ds_ef = p.modo_mision*p.dron_solo;
+    tc.verifyEqual([p.modo_mision ds_ef], [casos{k,2} casos{k,3}], sprintf('caso %d: %s', k, casos{k,1}));
+    tc.verifyEqual(~isempty(aviso), casos{k,4}, sprintf('caso %d (aviso "%s")', k, aviso));
+    tc.verifyTrue(ischar(aviso));
+    if casos{k,2} == 0
+        tc.verifyEqual(p.dron_solo, p0.dron_solo);          % dual: P igual al de siempre
+    end
+end
+% una sola salida (llamadores viejos) y sin "mision"
+p = qd2_params_from_config(struct('pista', struct('vertices', [0 0; 1 1])));
+tc.verifyEqual([p.modo_mision p.dron_solo], [0 1]);
+% qd2_cargar_config: QD2CFG.modo_mision / dron_solo y warning con basura
+raiz = fileparts(fileparts(fileparts(mfilename('fullpath'))));
+c = jsondecode(fileread(fullfile(raiz, 'config', 'estacion.json')));
+c.mision.modo = 'solo_explorador'; c.mision.dron_solo = 2;
+f1 = [tempname '.json'];
+escribir(f1, jsonencode(c));
+limpiar = onCleanup(@() borrar({f1})); %#ok<NASGU>
+[cfg1, P1] = qd2_cargar_config([], f1);
+tc.verifyEqual(cfg1.modo_mision, 'solo_explorador');
+tc.verifyEqual(cfg1.dron_solo, 2);
+tc.verifyEqual([P1.modo_mision P1.dron_solo], [1 2]);
+c.mision.modo = 'solitario';
+escribir(f1, jsonencode(c));
+cfg2 = tc.verifyWarning(@() qd2_cargar_config([], f1), 'qd2_cargar_config:modo');
+tc.verifyEqual(cfg2.modo_mision, 'dual');
+tc.verifyEqual(cfg2.dron_solo, 0);
+fprintf('[config modo] %d casos de la tabla §1.2 OK; qd2_cargar_config: solo dron 2 -> QD2CFG.modo_mision=%s, basura -> dual + warning\n', ...
+    size(casos, 1), cfg1.modo_mision);
+end
+
+function test_solo_mision_pid(tc)
+% Misión completa en lazo cerrado con UN dron (el 1) sobre la pista del laboratorio;
+% el dron 2 no existe para OptiTrack (sin rastreo todo el tiempo).
+p = params_solo(1);
+obj = [0.99 1.20; -0.27 0.29; -0.015 -1.105];       % dos vértices y un punto del tramo 6
+op = struct('version', 1, 'p', p, 'home1', [1.25 0], 'home2', [1.45 -1.45], ...
+    'objetivos', obj, 'trk_off', [2 0 1e9], 't_final', 400);
+L = qd2_sim_lazo_cerrado(op);
+s = L.s_final;
+tc.verifyEqual(L.estado(end), 8);                                % DONE
+tc.verifyEqual([s.wp_idx s.n_wp], [35 35]);
+tc.verifyEqual(max(L.arm(2,:)), 0);                              % el ausente nunca arma
+tc.verifyEqual(max(L.takeoff(2,:)), 0);
+tc.verifyEqual(max(abs(L.sp_mision(3,:,2))), 0);                 % ni consigna en altura
+tc.verifyEqual(max(abs(L.sp(3,:,2))), 0);
+tc.verifyLessThan(max(L.pos(3,:,2)), 1e-6);
+tc.verifyTrue(all(L.explorer_id == 1));                          % desde el primer paso
+tc.verifyTrue(all(L.responder_id == 0));
+tc.verifyTrue(all(L.y64 == 1));                                  % y(64) = dron_solo
+tc.verifyTrue(all(L.y5 == 0) && all(L.y12 == 0));
+tc.verifyEqual(L.n_vis(end), 0);                                 % sin respondedor
+tc.verifyEqual(L.n_obj(end), 3);
+tc.verifyEqual(s.obj_estado(1:s.n_obj)', ones(1, 3));            % "detectados" (pendientes)
+tc.verifyEqual(L.queue(end), 3);
+tc.verifyFalse(any(ismember(L.alerta, [1 2 3 4])));
+tc.verifyTrue(all(L.guard == 0));
+tc.verifyFalse(any(L.estado == 10));
+k7 = find(L.estado == 7, 1);
+tc.verifyNotEmpty(k7);
+e_home = norm(L.pos(1:2,k7,1)' - op.home1);
+tc.verifyLessThan(e_home, p.tol_xy);
+k5 = find(L.estado == 5);
+zE = squeeze(L.pos(3, k5, 1));
+tc.verifyEqual(median(zE), p.z_E, 'AbsTol', 0.05);                % E recorre la N a z_E
+fprintf(['[solo PID] pista de 7 vértices, %d wp; MISSION %.1f s (t=%.1f-%.1f), DONE t=%.1f; %d objetivos detectados, 0 visitados; ' ...
+    'dron 2: arm/takeoff máx 0, z consigna 0; y(64)=1 siempre; z de E en MISSION mediana %.3f m (máx. del vuelo %.2f m); ' ...
+    'error a home al aterrizar %.3f m\n'], ...
+    s.n_wp, L.t(k5(end)) - L.t(k5(1)), L.t(k5(1)), L.t(k5(end)), L.t(end), L.n_obj(end), median(zE), max(L.pos(3,:,1)), e_home);
+end
+
+function test_solo_dron2_ausente_rastreado(tc)
+% dron_solo = 2; el dron 1 (ausente) RASTREADO en el piso debajo del
+% recorrido (hueco entre los vértices 4 y 5): el guard no retiene a E y la
+% misión dura lo mismo que con el ausente fuera de OptiTrack.
+p = params_solo(2);
+op = struct('version', 1, 'p', p, 'home1', [0.10 0.02], 'home2', [1.25 0], ...
+    'objetivos', [0.99 1.20], 't_final', 400);
+L1 = qd2_sim_lazo_cerrado(op);
+op.trk_off = [1 0 1e9];
+L0 = qd2_sim_lazo_cerrado(op);
+d = zeros(1, 2);
+LL = {L0, L1};
+for j = 1:2
+    L = LL{j};
+    tc.verifyEqual(L.estado(end), 8);
+    tc.verifyEqual(max(L.arm(1,:)), 0);
+    tc.verifyEqual(max(L.takeoff(1,:)), 0);
+    tc.verifyTrue(all(L.guard == 0));
+    tc.verifyTrue(all(L.explorer_id == 2));
+    tc.verifyTrue(all(L.y64 == 2));
+    tc.verifyEqual(L.s_final.wp_idx, L.s_final.n_wp);
+    k5 = find(L.estado == 5);
+    d(j) = L.t(k5(end)) - L.t(k5(1));
+end
+tc.verifyLessThanOrEqual(abs(d(2) - d(1))/d(1), 0.10);
+% la consigna del ausente es su pose en el piso
+tc.verifyEqual(max(abs(L1.sp_mision(3,:,1))), 0);
+tc.verifyLessThan(max(abs(L1.sp_mision(1,:,1) - 0.10)), 0.02);
+fprintf('[solo dron 2] MISSION con el dron 1 rastreado en el piso bajo la ruta %.1f s vs fuera de OptiTrack %.1f s (%.1f%%); guard nunca activo\n', ...
+    d(2), d(1), 100*(d(2) - d(1))/d(1));
+end
+
+function test_solo_ausente_no_afecta(tc)
+% FSM a bordo 7/8, protocolo incorrecto, enlace perdido y pérdida de rastreo
+% del dron AUSENTE en MISSION: ninguna alerta (2/9/10) ni pausa.
+for v = 1:2
+    p = params_solo(1);
+    op = struct('version', v, 'cmds', [3 1; 50 3], 't_final', 80, ...
+        'fsm', [2 15 16 7; 2 17 18 8], 'proto', [2 19 20 1; 2 21 22 2], 'trk_off', [2 23 26]);
+    K = sim_solo(p, op);
+    ven = K.t >= 15 & K.t < 26.2;
+    tc.verifyTrue(all(K.estado(ven) == 5), sprintf('v%d: las fallas del ausente deben caer en MISSION', v));
+    tc.verifyFalse(any(ismember(K.alerta, [2 9 10])));
+    tc.verifyFalse(any(K.estado == 10));
+    tc.verifyEqual(K.estado(end), 8);
+    tc.verifyEqual(max(K.arm(2,:)), 0);
+    tc.verifyEqual(max(K.takeoff(2,:)), 0);
+    tc.verifyEqual(max(K.falla(:)), 0);
+end
+% pérdida de rastreo del dron SOLO -> PAUSED (alerta 2); RESUME vuelve a MISSION
+op = struct('cmds', [3 1; 23 5; 50 3], 't_final', 80, 'trk_off', [1 20 21]);
+K = sim_solo(params_solo(1), op);
+k10 = find(K.estado == 10, 1);
+tc.verifyNotEmpty(k10);
+tc.verifyEqual(K.t(k10), 20 + 0.2, 'AbsTol', 0.05);
+tc.verifyEqual(K.alerta(k10), 2);
+tc.verifyTrue(all(K.estado(K.t > 21 & K.t < 23) == 10));
+kr = find(K.t > 23 & K.estado == 5, 1);
+tc.verifyNotEmpty(kr);
+tc.verifyEqual(K.estado(end), 8);
+fprintf(['[solo ausente] FSM 7/8, protocolo 1/2 y rastreo del dron 2 en MISSION (PID y MPC): sin alertas ni pausa, DONE; ' ...
+    'rastreo del dron 1 perdido t=20 -> PAUSED t=%.2f (alerta 2), RESUME t=23 -> MISSION t=%.2f, DONE t=%.1f\n'], ...
+    K.t(k10), K.t(kr), K.t(find(K.estado == 8, 1)));
+end
+
+function test_solo_abort_land(tc)
+p = params_solo(1);
+% a) ABORT en MISSION -> E a su home (el ausente ya "en home"); LAND_ALL ->
+%    E aterriza en su sitio -> DONE sin alerta 4, con el ausente "sobre una mesa"
+op = struct('cmds', [3 1; 20 2; 40 3], 't_final', 80, 'z_ausente', 0.3);
+K = sim_solo(p, op);
+k9 = find(K.estado == 9, 1);
+tc.verifyNotEmpty(k9);
+tc.verifyEqual(K.t(k9), 20, 'AbsTol', 0.03);
+tc.verifyEqual(K.ret_paso(2, k9), 3);
+kh = find(K.t >= 39.9, 1);
+e_home = norm(K.pos(1:2, kh, 1)' - [1.25 0]);
+tc.verifyLessThan(e_home, p.tol_xy);
+tc.verifyEqual(K.pos(3, kh, 1), p.z_E, 'AbsTol', p.tol_z);
+k8 = find(K.estado == 8, 1);
+tc.verifyNotEmpty(k8);
+t_land = K.t(k8) - 40;
+tc.verifyLessThan(t_land, p.t_land_max);
+tc.verifyFalse(any(ismember(K.alerta, [3 4])));
+tc.verifyEqual(max(K.takeoff(2,:)), 0);
+% b) ABORT antes del takeoff -> ASSIGN_ROLES desarmado, sin takeoff
+K2 = sim_solo(p, struct('cmds', [3 1; 4 2], 't_final', 6));
+tc.verifyEqual(K2.estado(end), 2);
+tc.verifyEqual(K2.arm(:, end)', [0 0]);
+tc.verifyEqual(max(K2.takeoff(:)), 0);
+% c) LAND_ALL durante la rampa (takeoff dado, nadie despegó) con el ausente
+%    a z = 0.3 m: no se le espera (sin los 30 s de timeout)
+K3 = sim_solo(p, struct('cmds', [3 1; 6 3], 't_final', 20, 'z_ausente', 0.3));
+k8c = find(K3.estado == 8, 1);
+tc.verifyNotEmpty(k8c);
+tc.verifyLessThan(K3.t(k8c) - 6, 3);
+tc.verifyFalse(any(K3.alerta == 4));
+fprintf(['[solo abort/land] ABORT t=20 -> ret_paso(R)=3; E en home a t=40 (error %.3f m); LAND_ALL -> DONE en %.1f s sin alerta 4 ' ...
+    '(ausente a z=0.3); ABORT antes de takeoff -> ASSIGN_ROLES; LAND_ALL en la rampa -> DONE en %.1f s\n'], ...
+    e_home, t_land, K3.t(k8c) - 6);
+end
+
+function test_solo_start(tc)
+% a) Ausente rastreado a 0.2 m del dron solo: START aceptado (sin alerta 1)
+for ds = 1:2
+    p = params_solo(ds);
+    s = qd2_mission_init(p);
+    in = entrada_basica(0, [1.25 0 0 0], [1.25 0.2 0 0]);
+    py = zeros(32,1); t = 0;
+    for k = 1:300
+        t = t + 0.01; in.t = t; py(1) = k; in.py = py;
+        [s, ~, ~, tel] = qd2_mission_step(s, in, p);
+    end
+    tc.verifyEqual(tel.mission_state, 2);
+    tc.verifyEqual(tel.alerta, 0);
+    tc.verifyEqual([tel.explorer_id tel.responder_id], [ds 0]);
+    py(2) = 1; py(3) = 1;
+    for k = 1:250
+        t = t + 0.01; in.t = t; py(1) = py(1) + 1; in.py = py;
+        [s, ~, ~, tel] = qd2_mission_step(s, in, p);
+    end
+    tc.verifyEqual(tel.mission_state, 3);
+    esperado = [0 0]; esperado(ds) = 1;
+    tc.verifyEqual(tel.arm, esperado);
+    tc.verifyEqual(tel.takeoff, esperado);
+    tc.verifyEqual(tel.alerta, 0);
+    tc.verifyEqual(tel.dron_solo, ds);
+end
+% b) Dron solo sin rastreo: se queda en WAIT_TRACKING y START no hace nada
+p = params_solo(1);
+s = qd2_mission_init(p);
+in = entrada_basica(0, [1.25 0 0 0], [1.25 0.2 0 0]);
+in.tracked1 = 0; in.pose1 = nan(4,1);
+py = zeros(32,1); t = 0;
+for k = 1:400
+    t = t + 0.01; in.t = t; py(1) = k;
+    if k == 300, py(2) = 1; py(3) = 1; end
+    in.py = py;
+    [s, ~, ~, tel] = qd2_mission_step(s, in, p);
+end
+tc.verifyEqual(tel.mission_state, 1);
+tc.verifyEqual([tel.arm tel.takeoff], [0 0 0 0]);
+fprintf('[solo START] ausente a 0.2 m -> START aceptado sin alerta 1 (dron 1 y dron 2, arm/takeoff solo del dron solo); dron solo sin rastreo -> WAIT_TRACKING\n');
+end
+
+function test_solo_guard_bypass(tc)
+% qd2_separation_guard con p solo: paso libre (salidas = entradas, guard_active = 0)
+p = params_solo(1);
+pE = [0.5 0.5 1.5]; spE = [0.6 0.5 1.5 0]; spR = [0.6 0.5 0 0];
+casos = {[NaN NaN NaN], pE, [0.6 0.5 0]};          % ausente sin pose, debajo de E, sobre la consigna de E
+gs = qd2_guard_init();
+for k = 1:numel(casos)
+    [a, b, act, gs] = qd2_separation_guard(pE, casos{k}, spE, spR, p, gs, [1 0 0.9 0 NaN NaN]);
+    tc.verifyEqual(a, spE);
+    tc.verifyEqual(b, spR);
+    tc.verifyEqual(act, 0);
+    [a, b, act] = qd2_separation_guard(pE, casos{k}, spE, spR, p);
+    tc.verifyEqual([a b act], [spE spR 0]);
+end
+% consigna NaN -> la última salida (nunca NaN)
+[a, ~, act] = qd2_separation_guard(pE, [NaN NaN NaN], [NaN NaN 1.5 0], spR, p, gs, [0 0 0.9 0]);
+tc.verifyEqual(a, spE);
+tc.verifyEqual(act, 0);
+% (en dual, el mismo caso con el otro dron debajo sí retiene)
+[~, ~, act_dual] = qd2_separation_guard(pE, pE, spE, spR, qd2_params(), qd2_guard_init(), [0 0 0.9 0]);
+tc.verifyEqual(act_dual, 1);
+fprintf('[solo guard] paso libre con el ausente sin pose / debajo de E / sobre la consigna; dual con el mismo caso: guard activo\n');
+end
+
+function test_telemetria_y64(tc)
+% y(64) = dron_solo: (explorer_id, responder_id) = (k, 0) -> k, y(12) = y(13) = 0;
+% (1,2), (2,1), (0,0) -> 0 y el resto del vector igual.
+p = tc.TestData.p;
+s0 = qd2_mission_init(p);
+[~, ~, ~, tel] = qd2_mission_step(s0, entrada_basica(0, [-1 0 0 0], [1 0 0 0]), p);
+aux = [1 1 1 1 16 16 1 1];
+pack = @(tel) qd2_telemetry_pack(3, tel, 1, 0, [-1 0 1.5 0.3], [1 0.4 0.5 -0.2], ...
+    tel.sp1, tel.sp2, [0 0 0], [0 0 0], aux, [0.05 -0.08 -0.03 0.12]);
+ids = [1 2; 2 1; 0 0; 1 0; 2 0];
+Y = zeros(64, 5);
+for k = 1:5
+    tel.explorer_id = ids(k,1); tel.responder_id = ids(k,2);
+    Y(:,k) = pack(tel);
+end
+tc.verifyEqual(Y(64, :), [0 0 0 1 2]);
+tc.verifyEqual(Y(12, 1:2), [norm([2 0.4]) norm([2 0.4])], 'AbsTol', 1e-12);
+tc.verifyEqual(Y(13, 1:2), [1.0 -1.0], 'AbsTol', 1e-12);
+tc.verifyEqual(Y([12 13], 4:5), zeros(2, 2));
+% (k, 0) solo cambia 5, 12, 13 y 64 respecto a (k, 3-k)
+otros = setdiff(1:64, [5 12 13 64]);
+tc.verifyEqual(Y(otros, 4), Y(otros, 1));
+tc.verifyEqual(Y(otros, 5), Y(otros, 2));
+tc.verifyEqual(Y(61:63, 4)', [0.05 -0.08 1]);       % actitud del dron solo
+tc.verifyEqual(Y(61:63, 5)', [-0.03 0.12 1]);
+% 11 argumentos (llamador viejo): y(64) también
+tel.explorer_id = 2; tel.responder_id = 0;
+y11 = qd2_telemetry_pack(3, tel, 1, 0, [-1 0 1.5 0.3], [1 0.4 0.5 -0.2], tel.sp1, tel.sp2, [0 0 0], [0 0 0], aux);
+tc.verifyEqual(y11(64), 2);
+fprintf('[y(64)] (1,2)/(2,1)/(0,0) -> 0; (1,0) -> 1; (2,0) -> 2 con y(12)=y(13)=0; resto del vector igual\n');
+end
+
+function test_dual_identico(tc)
+% Modo dual: con qd2_params() y con los campos de modo explícitos (dual con
+% dron_solo = 2, o mision.modo basura -> dual) la corrida es idéntica bit a bit.
+pd = qd2_params(); pd.modo_mision = 0; pd.dron_solo = 2;
+pb = qd2_params_from_config(struct('mision', struct('modo', 'solo', 'dron_solo', 2)));
+pb.vertices = pd.vertices; pb.n_vertices = pd.n_vertices;
+ops = {struct('version', 1, 'objetivos', [0 1.2; 0.5 0.5; -0.4 -1.2], 'duplicados', [0.1 1.25], ...
+           'inyectar', [20 -0.8 -1.2], 't_final', 400), ...
+       struct('version', 2, 'objetivos', [0.5 0.5; -0.4 -1.2; 0.6 -1.2], 'inyectar', [15 0.96 1.2], 't_final', 400)};
+campos = {'estado', 'sp', 'sp_mision', 'arm', 'takeoff', 'pos', 'alerta', 'guard', 'y64'};
+for j = 1:numel(ops)
+    La = qd2_sim_lazo_cerrado(ops{j});
+    for pp = {pd, pb}
+        o = ops{j}; o.p = pp{1};
+        Lb = qd2_sim_lazo_cerrado(o);
+        for c = campos
+            tc.verifyTrue(isequal(La.(c{1}), Lb.(c{1})), sprintf('v%d: %s distinto', o.version, c{1}));
+        end
+    end
+    tc.verifyTrue(all(La.y64 == 0));
+    tc.verifyEqual(La.estado(end), 8);
+    fprintf('[dual idéntico] v%d: %d pasos, DONE t=%.2f; idéntico con modo_mision=0/dron_solo=2 y con modo basura; y(64)=0 siempre\n', ...
+        ops{j}.version, numel(La.t), La.t(end));
+end
+end
+
+function test_solo_codegen(tc)
+% El modelo de tierra PID REAL (QD2_MissionCtrl_Dual_PID, copia con stubs de
+% qd2_probar_tierra) compilado y simulado con P en modo solo explorador
+% (estacion.json alterno: mision.modo = solo_explorador, pista del laboratorio).
+raiz = fileparts(fileparts(fileparts(mfilename('fullpath'))));
+c = jsondecode(fileread(fullfile(raiz, 'config', 'estacion.json')));
+c.mision.modo = 'solo_explorador';
+c.mision.dron_solo = 1;
+c.pista.vertices = pista_lab();
+f = [tempname '.json'];
+escribir(f, jsonencode(c));
+limpiar = onCleanup(@() borrar({f})); %#ok<NASGU>
+addpath(fullfile(fileparts(fileparts(mfilename('fullpath'))), 'pid'));
+R = qd2_probar_tierra('PID', 150, false, 0, struct('config_json', f, ...
+    'homes', [1.25 0; 1.45 -1.45], 'trk2_off', [0 1e6]));
+tc.verifyTrue(any(R.estados == 5));
+tc.verifyTrue(any(R.estados == 8));
+tc.verifyEqual(max(R.trig2(:, 1)), 0);                 % el dron 2 nunca recibe arm
+tc.verifyEqual(max(R.trig2(:, 2)), 0);                 % ni takeoff
+tc.verifyEqual(max(abs(R.des2(:, 3))), 0);             % ni consigna en altura
+ka = R.tel(:, 2) >= 1;
+tc.verifyTrue(all(R.tel(ka, 64) == 1));                % y(64) = 1
+tc.verifyTrue(all(R.tel(ka, 5) == 0));
+tc.verifyEqual(max(R.tel(:, 7)), 35);                  % 35 waypoints de la pista compilada
+tc.verifyTrue(isfinite(R.t_stop_ok));                  % el modelo se puede parar al final
+tc.verifyFalse(R.stop_con_dron_en_aire);
+fprintf('[solo codegen] QD2_MissionCtrl_Dual_PID (copia SIL) en modo solo: estados %s, DONE t=%.1f, trig2 máx [%g %g], y(64)=1, %d wp, Stop Allowed t=%.1f\n', ...
+    mat2str(R.estados), R.t_done, max(R.trig2(:,1)), max(R.trig2(:,2)), max(R.tel(:,7)), R.t_stop_ok);
+end
+
+% ---------------- utilidades del modo solo -------------------------------
+function V = pista_lab()
+% Pista del laboratorio (23-nov, dibujo del usuario escalado a ±1.2 m).
+V = [1.02 0.41; 0.99 1.20; -0.90 1.10; -0.27 0.29; 0.47 -0.25; 0.99 -1.01; -1.02 -1.20];
+end
+
+function p = params_solo(ds)
+p = qd2_params();
+p.modo_mision = 1;
+p.dron_solo = ds;
+V = pista_lab();
+p.vertices = zeros(16, 2);
+p.vertices(1:size(V,1), :) = V;
+p.n_vertices = size(V, 1);
+end
+
+function K = sim_solo(p, op)
+% Drones cinemáticos (como sim_cinematica) con misión + guard: siguen la
+% consigna a 0.5 m/s; suben 3 s después de takeoff = 1 y bajan con takeoff = 0.
+% op: homes, cmds [t cmd], t_final, version, trk_off [dron t1 t2],
+%     fsm [dron t1 t2 valor] (FSM a bordo reportada), proto [dron t1 t2 valor]
+%     (código del enlace: 1 protocolo, 2 enlace perdido), z_ausente (z MEDIDA
+%     del ausente; NaN = la real).
+d = struct('homes', [1.25 0; 1.45 -1.45], 'cmds', [3 1], 't_final', 80, 'version', 1, ...
+    'trk_off', zeros(0,3), 'fsm', zeros(0,4), 'proto', zeros(0,4), 'z_ausente', NaN);
+f = fieldnames(d);
+for i = 1:numel(f)
+    if ~isfield(op, f{i}), op.(f{i}) = d.(f{i}); end
+end
+s = qd2_mission_init(p);
+gs = qd2_guard_init();
+da = 3 - p.dron_solo;
+P = [op.homes zeros(2,1)];
+dt = 0.02; n = round(op.t_final/dt);
+t_to = [-1 -1]; seq = 0; cmd = 0; hecho = false(size(op.cmds,1),1);
+K.t = (1:n)*dt; K.estado = zeros(1,n); K.alerta = zeros(1,n);
+K.arm = zeros(2,n); K.takeoff = zeros(2,n); K.pos = zeros(3,n,2); K.ret_paso = zeros(2,n);
+K.guard = zeros(1,n); K.falla = zeros(2,n);
+for k = 1:n
+    t = k*dt;
+    for c = 1:size(op.cmds,1)
+        if ~hecho(c) && t >= op.cmds(c,1), hecho(c) = true; seq = seq + 1; cmd = op.cmds(c,2); end
+    end
+    py = zeros(32,1); py(1) = k; py(2) = cmd; py(3) = seq;
+    in.t = t; in.pose1 = [P(1,:) 0]'; in.pose2 = [P(2,:) 0]';
+    in.tracked1 = 1; in.tracked2 = 1;
+    if ~isnan(op.z_ausente)
+        if da == 1, in.pose1(3) = op.z_ausente; else, in.pose2(3) = op.z_ausente; end
+    end
+    for j = 1:size(op.trk_off,1)
+        if t >= op.trk_off(j,2) && t < op.trk_off(j,3)
+            if op.trk_off(j,1) == 1
+                in.tracked1 = 0; in.pose1 = nan(4,1);
+            else
+                in.tracked2 = 0; in.pose2 = nan(4,1);
+            end
+        end
+    end
+    in.fsm_a_bordo = [0 0]; in.proto_mal = [0 0];
+    for j = 1:size(op.fsm,1)
+        if t >= op.fsm(j,2) && t < op.fsm(j,3), in.fsm_a_bordo(op.fsm(j,1)) = op.fsm(j,4); end
+    end
+    for j = 1:size(op.proto,1)
+        if t >= op.proto(j,2) && t < op.proto(j,3), in.proto_mal(op.proto(j,1)) = op.proto(j,4); end
+    end
+    in.py = py; in.version = op.version;
+    [s, spE, spR, tel] = qd2_mission_step(s, in, p);
+    if s.explorer_id == 2, pE = in.pose2; pR = in.pose1; else, pE = in.pose1; pR = in.pose2; end
+    [spE, spR, ga, gs] = qd2_separation_guard(pE(1:3), pR(1:3), spE, spR, p, gs, tel.ctx_guard);
+    if s.explorer_id == 2, sp = [spR; spE]; else, sp = [spE; spR]; end
+    for i = 1:2
+        if tel.takeoff(i) > 0.5
+            if t_to(i) < 0, t_to(i) = t; end
+        else
+            t_to(i) = -1;
+        end
+        objetivo = sp(i,:);
+        if t_to(i) < 0 || t - t_to(i) < 3
+            objetivo(3) = 0;
+            if t_to(i) >= 0, objetivo(1:2) = P(i,1:2); end
+        end
+        dv = objetivo(1:3) - P(i,:);
+        if norm(dv) > 0.5*dt, dv = 0.5*dt*dv/norm(dv); end
+        P(i,:) = P(i,:) + dv;
+        P(i,3) = max(P(i,3), 0);
+    end
+    K.estado(k) = tel.mission_state; K.alerta(k) = tel.alerta;
+    K.arm(:,k) = tel.arm(:); K.takeoff(:,k) = tel.takeoff(:);
+    K.pos(:,k,1) = P(1,:)'; K.pos(:,k,2) = P(2,:)';
+    K.ret_paso(:,k) = s.ret_paso(:); K.guard(k) = ga; K.falla(:,k) = tel.falla(:);
+end
+end
+
+function escribir(f, texto)
+fid = fopen(f, 'w', 'n', 'UTF-8');
+fwrite(fid, texto, 'char');
+fclose(fid);
+end
+
+function borrar(lista)
+for k = 1:numel(lista)
+    if exist(lista{k}, 'file'), delete(lista{k}); end
+end
 end

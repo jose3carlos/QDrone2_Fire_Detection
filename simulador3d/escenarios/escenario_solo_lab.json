@@ -1,0 +1,11 @@
+{
+  "nota": "Modo solo explorador sobre la pista del laboratorio del 23-nov (dibujo del usuario, 7 vértices, ver config/estacion.json -> pista). Home del explorador (dron 1) en (1.25, 0) mirando a +x; el dron 2 no se usa. Tomas = válvulas sobre el tubo (yaw = dirección del tramo). Fuegos = junto al tubo. Coordenadas RSF en m: +x adelante, +y izquierda.",
+  "homes": [[1.25, 0.0], [1.45, -1.45]],
+  "yaw0_deg": [0, 0],
+  "objetos": [
+    {"clase": "toma",  "x": 0.045, "y": 1.150,  "yaw_deg": 3},
+    {"clase": "fuego", "x": -0.51, "y": 0.76,   "yaw_deg": 0,     "variante": "A"},
+    {"clase": "toma",  "x": 0.73,  "y": -0.63,  "yaw_deg": -55.6},
+    {"clase": "fuego", "x": 0.00,  "y": -1.00,  "yaw_deg": 0,     "variante": "B"}
+  ]
+}

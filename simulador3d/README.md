@@ -122,6 +122,20 @@ Con la estación interna, después de `RETURN_HOME` se manda LAND_ALL automátic
 | `sesgo_montaje_deg` | `[roll pitch]` del error del soporte de la cámara que la estación no conoce (`[0.8 -0.6]`) |
 | `mostrar` | `false` = sin ventana |
 | `capturas` y `capturas_vistas` | PNG en `capturas/` |
+| `config` | `[]` = `config/estacion.json`; un struct ya decodificado para usar otra config (pruebas, demo) |
+| `modo_mision`, `dron_solo` | `[]` = lo de la config (`mision.modo`, `mision.dron_solo`); `'dual'` o `'solo_explorador'` y 1 o 2 para forzarlo |
+| `dron_ausente` | Solo explorador: `'fuera'` (el otro dron sin rastreo, oculto en la figura) o `'piso'` (rastreado en su home, en gris "NO USADO") |
+
+**Modo solo explorador.** Un solo QDrone (`dron_solo`) recorre la pista con la misma librería que tierra (`p.modo_mision = 1`): el otro nunca recibe arm/takeoff, no hay respondedor (los objetos quedan "detectado"), el guard deja pasar todo y la telemetría lleva y(64) = `dron_solo`. La figura muestra `[PID · SOLO]`, la línea "modo: SOLO EXPLORADOR" en el HUD, la huella de la cámara del explorador y sin burbuja ni línea de distancia entre drones. Demo con la pista del laboratorio:
+
+```matlab
+cd simulador3d
+opc_sim3d = struct('modo_mision', 'solo_explorador', 'dron_solo', 1, ...
+    'escenario', 'escenarios/escenario_solo_lab.json');   % pista: la de config/estacion.json
+qdrone2_sim3d
+```
+
+Con la UI web: `web\iniciar_web.bat --fuente sim3d` (la estación toma el modo de la telemetría, y(64)).
 
 **Sin ventana** (para pruebas o en `-batch`), desde MATLAB:
 
@@ -164,12 +178,13 @@ cd simulador3d
 res = probar_sim3d();        % ~4 min; guarda PNG en capturas/ (probar_sim3d(false): sin capturas)
 ```
 
-Son 19 pruebas. `probar_sim3d(false)` corre 18, porque se salta "misma corrida con y sin figura". Cubren:
+Son 21 pruebas. `probar_sim3d(false)` corre 20, porque se salta "misma corrida con y sin figura". Las pruebas que no son del modo solo usan la config real con `mision.modo = "dual"` y la N de 4 vértices fija, así que no dependen del modo ni de la pista del día. Cubren:
 - **Malla:** medidas del manual, motores y aros concéntricos.
 - **Contra la estación:** cámara y clusters contra `geo.py`, y escenario `'web'` contra `mock_world.py`.
 - **Geolocalización con actitud** contra `geo.py` y `pose_para_geo` (casos con actitud de la referencia).
 - **Detector interno** en un cuadro sin ruido con el dron inclinado 5°: ida y vuelta exacta con actitud, error nivelado y con el error del soporte, y descarte por inclinación.
 - **Misiones:** PID, MPC y aleatoria; PID con `usar_actitud = false` y con `inclinacion_max_deg = 1.5`.
+- **Solo explorador:** pista del laboratorio (7 vértices, 35 waypoints) con `escenario_solo_lab.json` y el dron 2 fuera de OptiTrack (DONE, recorrido completo, dron 2 sin arm/takeoff y en z = 0, y(64) = 1, ≥ 3 de 4 objetos detectados y 0 visitados); y con el dron 2 volando y el dron 1 rastreado en el piso debajo de la N (guard nunca activo, DONE).
 - **Detector y telemetría:** el detector solo en MISSION/PAUSED; la telemetría y(61:63) (actitud del explorador) y su ausencia con `actitud_en_tel = false`, que también deja el detector interno nivelado.
 - **Resto:** la misma corrida con y sin figura, el heartbeat de Python a x16, el primer paquete con START, tiempo real y costo de cuadro.
 

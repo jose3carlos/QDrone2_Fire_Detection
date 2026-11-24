@@ -118,8 +118,11 @@ OBJ_SIM_BASE = 56
 # y(61:63): actitud del EXPLORADOR (misma Corrected Pose Data de OptiTrack que x, y, z, yaw en o+3..o+6):
 # y(61) = roll (rad), y(62) = pitch (rad), y(63) = 1 si son válidos (actitud medida y explorador rastreado).
 # Convención R = Rz(yaw)·Ry(pitch)·Rx(roll) (geo.R_mundo_cuerpo). Modelos viejos mandan 0, 0, 0 -> sin actitud.
-# y(64) sigue reservado (0).
 EXPLORER_ROLL_IDX, EXPLORER_PITCH_IDX, EXPLORER_ATT_OK_IDX = 61, 62, 63
+# y(64) = dron_solo (antes reservado, 0): 0 = misión dual (o modelo viejo); 1 o 2 = modo SOLO EXPLORADOR con ese
+# dron (qd2_telemetry_pack: explorer_id = k y responder_id = 0, firma que no existe en dual). En solo además
+# y(4) = dron_solo desde INIT, y(5) = 0 y y(12) = y(13) = 0.
+DRON_SOLO_IDX = 64
 OBJ_ESTADOS = {1: "pendiente", 2: "asignado", 3: "visitado"}
 
 # Campos globales de la telemetría: nombre -> índice base 1
@@ -206,7 +209,11 @@ def unpack_telemetry(data):
     out["explorer_roll"] = roll if att_ok else None
     out["explorer_pitch"] = pitch if att_ok else None
     out["explorer_att_ok"] = bool(att_ok)
-    # y(64): el único reservado que queda
+    # y(64): dron_solo (0 dual / modelo viejo; 1 o 2 = solo explorador). "reserved" = y(64) crudo (compatibilidad)
+    raw64 = float(v[_i(DRON_SOLO_IDX)])
+    out["dron_solo"] = int(raw64) if math.isfinite(raw64) and raw64 in (1.0, 2.0) else 0
+    out["modo_mision"] = "solo_explorador" if out["dron_solo"] else "dual"
+    out["y64_invalido"] = not (math.isfinite(raw64) and raw64 in (0.0, 1.0, 2.0))
     out["reserved"] = [_num(x) for x in v[_i(64):_i(64) + 1]]
     return out
 
@@ -226,7 +233,8 @@ def pack_telemetry(tel):
     """Inverso de ``unpack_telemetry`` (lo usan el simulador mock y las pruebas).
     Acepta además ``alerta`` (y(55)), ``objetivo_sim`` = dict(id, cls, x, y, estado) (y(56:60)) y
     ``explorer_roll``, ``explorer_pitch``, ``explorer_att_ok`` (y(61:63); sin att_ok verdadero o con un
-    ángulo no finito se escribe 0, 0, 0, igual que el TELEMETRY PACK de Simulink)."""
+    ángulo no finito se escribe 0, 0, 0, igual que el TELEMETRY PACK de Simulink) y ``dron_solo`` (y(64);
+    sin la clave, 0 = dual)."""
     v = [0.0] * N_TELEMETRY
     for name, idx in TEL_FIELDS.items():
         if name in tel and tel[name] is not None:
@@ -248,6 +256,8 @@ def pack_telemetry(tel):
             r = p = float("nan")
         if math.isfinite(r) and math.isfinite(p):
             v[_i(EXPLORER_ROLL_IDX)], v[_i(EXPLORER_PITCH_IDX)], v[_i(EXPLORER_ATT_OK_IDX)] = r, p, 1.0
+    if tel.get("dron_solo") is not None:
+        v[_i(DRON_SOLO_IDX)] = float(tel["dron_solo"])
     return _TEL.pack(*v)
 
 

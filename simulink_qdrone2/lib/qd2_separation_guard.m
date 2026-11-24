@@ -36,6 +36,11 @@ function [spE_o, spR_o, guard_active, gs] = qd2_separation_guard(pE, pR, spE, sp
 %   guard_active = 1 si alguno está siendo retenido o desviado.
 %   Poses o consignas NaN: se usan la última pose finita / la última
 %   salida; las salidas nunca son NaN.
+%   Modo solo explorador (p.modo_mision = 1, p.dron_solo = 1 o 2): no hay
+%   segundo dron en vuelo, así que el guard deja pasar las consignas tal
+%   cual (consignas NaN -> la última salida) con guard_active = 0. Sin esto,
+%   un dron ausente sin rastreo (pose NaN) o en (0,0) congelaría al
+%   explorador o lo retendría cerca del origen.
 %#codegen
 
 if nargin < 6
@@ -77,6 +82,15 @@ end
 if isfinite(pR(1)) && isfinite(pR(2))
     gs.pR_ok = [pR(1) pR(2)];
     gs.tiene_pose(2) = 1;
+end
+if (p.modo_mision > 0.5) && (p.dron_solo == 1 || p.dron_solo == 2)
+    % solo explorador: paso libre (un solo dron en vuelo)
+    gs.outE = spE;
+    gs.outR = spR;
+    spE_o = spE;
+    spR_o = spR;
+    guard_active = 0;
+    return;
 end
 if gs.tiene_pose(1) < 0.5 || gs.tiene_pose(2) < 0.5
     spE_o = gs.outE;

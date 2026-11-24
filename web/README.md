@@ -11,6 +11,8 @@ web\iniciar_web.bat                    :: fuente según config\estacion.json (we
 web\iniciar_web.bat --fuente mock      :: simulación interna de la misión completa, sin MATLAB
 web\iniciar_web.bat --fuente simulink  :: modelo de tierra o QD2_Sim_Dual en tcpip://127.0.0.1:18700
 web\iniciar_web.bat --fuente sim3d     :: simulador MATLAB 3D (mismo puerto 18700)
+web\iniciar_web.bat --fuente simulink --host-puente 192.168.2.11
+                                       :: modelo de tierra en OTRA PC (ver "Estación en la laptop")
 ```
 
 - La primera vez crea el entorno virtual en `%USERPROFILE%\.venvs\qd2_web` (fuera de OneDrive) e instala `requirements.txt`.
@@ -19,6 +21,47 @@ web\iniciar_web.bat --fuente sim3d     :: simulador MATLAB 3D (mismo puerto 1870
 - Para que no se abra el navegador: `set QD2_NO_BROWSER=1`.
 
 Sin el `.bat`: `cd web` y luego `python -m app.server --fuente mock`.
+
+## Modo solo explorador (un solo QDrone 2)
+Se activa **solo por config**: `mision.modo = "solo_explorador"` y `mision.dron_solo = 1 | 2` (por defecto 1).
+Cualquier otro valor (texto desconocido, `dron_solo` 0/3/1.5/"1"/true…) cae a **dual** con un aviso amarillo; dual
+exige los dos drones rastreados y nunca despega con uno solo. El modelo de tierra lee el modo del `estacion.json`
+de **su** PC al compilar (InitFcn): cambiarlo obliga a copiar el archivo y recompilar (Build), igual que la pista.
+
+- **Telemetría:** y(64) = `dron_solo` (0 = dual o modelo viejo). En solo y(4) = dron solo desde INIT, y(5) = 0 y
+  y(12) = y(13) = 0. `protocol.unpack_telemetry` agrega `dron_solo`, `modo_mision` y `y64_invalido` (y conserva
+  `reserved` = y(64) crudo).
+- **`snapshot.modo`:** `config` (`config.mision_modo`), `tel` (lo que dice y(64)), `efectivo` (el de la telemetría
+  fresca, si no el de la config), `coincide`, `host_puente` y `remoto`.
+- **START** responde **409** si la telemetría fresca y la config local no coinciden en `(modo, dron_solo)` (salvo con
+  el mock). PAUSE, RESUME, ABORT y LAND_ALL nunca se bloquean.
+- **Avisos:** rojo si y(64) no es 0/1/2, si y(64) ≠ y(4), si la config es solo y el modelo dual o si el dron solo es
+  distinto; amarillo si la config es dual y el modelo solo, si `mision.modo`/`dron_solo` tienen basura, si el dron no
+  usado está a la vista de OptiTrack o conectado, y si la pista compilada en tierra (y(7) = número de waypoints) no
+  da lo mismo que la de esta estación (`mock_sim.contar_waypoints`, misma regla que `qd2_track_waypoints.m`).
+- **UI:** chip "SOLO EXPLORADOR · dron N", confirmaciones de START/ABORT/LAND ALL con el dron, START deshabilitado si
+  no coinciden, si el dron solo no está rastreado o fuera de ASSIGN_ROLES; Misión sin respondedor, visitados ni
+  separación ("no aplica"); el otro dron en gris con **NO USADO** (en la Vista 3D, "fantasma" si OptiTrack lo ve);
+  la huella de la cámara ya no depende de que haya respondedor. Conexiones no muestra el `quarc_run` del dron no usado.
+- **Mock:** el dron solo sale de su home, el otro sin rastreo y quieto; sin guard ni respondedor; los objetivos se
+  quedan "detectada" (y(53) = cuántos); fin = N + 2 s → RETURN_HOME → (`auto_land` o LAND ALL) → DONE.
+
+## Estación en la laptop y modelo de tierra en la PC del laboratorio
+`--host-puente IP` (solo CLI, nunca se guarda) conecta el puente a `tcpip://IP:18700`, donde corre el modelo de tierra
+(QUARC ignora el host de un URI que escucha, así que `tcpip://localhost:18700` acepta a la laptop por la LAN). Solo se
+permite con `--fuente simulink`: `sim3d` y `mock` siempre usan 127.0.0.1 (al cambiar de fuente en la UI queda en
+Eventos). La web sigue escuchando solo en `127.0.0.1` de la laptop.
+
+- `-URI_Host` de los drones: `red.ip_pc` si está; si no, el host remoto del puente; nunca la IP de la laptop.
+- En la PC: regla de firewall de entrada TCP 18700 para la IP de la laptop. Si no llega telemetría, revisa eso y que
+  el modelo tenga Start. El Stream Server atiende **un** cliente: no lo pruebes con `Test-NetConnection` con la
+  estación conectada.
+- **Dos copias de `estacion.json`:** la de la laptop es la maestra (con las rutas de Motive **de la PC**); cópiala a la
+  PC antes de cada Build. Guardar la pista o la calibración en la UI cambia el archivo de la laptop (la página lo
+  recuerda en las pestañas Pista y Motive).
+- Revisión previa: `%USERPROFILE%\.venvs\qd2_web\Scripts\python web\preflight_lab.py --remoto 192.168.2.11`
+  (no revisa Motive ni los puertos 18700/18001/18002 locales, exige `red.ip_pc` vacía o igual a la PC y no abre
+  ninguna conexión hacia ella; en solo exige solo la IP del dron solo).
 
 ## Qué hay en la pantalla
 - **Vista 3D** (three.js r160 desde CDN): arena 3×3, la N, los dos QDrone 2 (modelo low-poly con las 4 guardas, color por rol: cian = explorador, naranja = respondedor), consignas (◇), estelas, home (▢), huella y pirámide de la cámara del explorador, anillo `d_min_h` y anomalías (llama = fuego, válvula = toma; el anillo indica el estado: amarillo detectada, azul asignada, verde visitada). Si no hay internet para el CDN, sigue funcionando el mapa 2D.
@@ -124,7 +167,7 @@ Simulink busca los objetivos por id y no vuelve a mover uno ya visitado. Por eso
 cd web
 %USERPROFILE%\.venvs\qd2_web\Scripts\python -m pytest -q tests
 ```
-Son 167 pruebas (165 y 2 saltadas si no están `vision/datos/sintetico_smoke` ni el respaldo `mejor_640x640_*.onnx`, que no van a git); `tests/test_frontera_e2e.py` cubre lo que se corrigió en la prueba punta a punta (fallas por dron con la alerta 9 y aviso de versión del modelo distinta de la config); `tests/test_revision.py` cubre los defectos de la revisión y `tests/test_alertas_objetivos_sim.py` la alerta y(55), los objetivos y(56:60), la etiqueta de fsm según la versión, los ids 1..32, el ack con +0.5 del operador, la retención de objetivos al reconectar, las ráfagas de telemetría, el 9 como fin de vuelo, y(55) no finito, el alias de Simulink y la cancelación del despegue en el mock. Cubren:
+Son 181 pruebas (179 y 2 saltadas si no están `vision/datos/sintetico_smoke` ni el respaldo `mejor_640x640_*.onnx`, que no van a git); `tests/test_frontera_e2e.py` cubre lo que se corrigió en la prueba punta a punta (fallas por dron con la alerta 9 y aviso de versión del modelo distinta de la config); `tests/test_revision.py` cubre los defectos de la revisión y `tests/test_alertas_objetivos_sim.py` la alerta y(55), los objetivos y(56:60), la etiqueta de fsm según la versión, los ids 1..32, el ack con +0.5 del operador, la retención de objetivos al reconectar, las ráfagas de telemetría, el 9 como fin de vuelo, y(55) no finito, el alias de Simulink y la cancelación del despegue en el mock. Cubren:
 - protocolo (índices base 1);
 - comandos:
   - rechazo sin telemetría;
@@ -142,10 +185,17 @@ Son 167 pruebas (165 y 2 saltadas si no están `vision/datos/sintetico_smoke` ni
 - clusters y persistencia de la configuración;
 - API REST y WebSocket;
 - video QDF1 entre el streamer y el cliente;
-- detector FOMO.
+- detector FOMO;
+- modo solo explorador (`tests/test_solo_explorador.py`): tabla de `mision.modo`/`dron_solo`, y(64) y telemetría
+  vieja, mock solo hasta DONE con el dron 1 y con el dron 2 sin tocar al otro, ABORT/pausa/auto_land, mock dual
+  idéntico byte a byte al de `HEAD` (PID y MPC), avisos y START 409, aviso de pista distinta, `--host-puente`
+  (sin abrir sockets), comandos con PC remota, `preflight_lab.py --remoto` y `snapshot.modo`.
+
+`tests/conftest.py` hace las pruebas independientes del día: `cfg_path` es una copia de la config en **dual** con la
+N de 4 vértices y `cfg_path_solo` una en solo (dron 1) con la pista de 7 vértices del 23-nov.
 
 ## Prueba punta a punta (E2E)
-`e2e/e2e_estacion.py` levanta esta estación real, la maneja por la API (START, objetivo manual, PAUSE, RESUME, LAND ALL en home), lee el WebSocket como la página, toma capturas con Chrome headless y revisa cada corrida. Se corre contra `QD2_Sim_Dual` (`simulink_qdrone2/sim/qd2_e2e_web.m`) o contra el simulador 3D (`simulador3d/sim3d_e2e_web.m`). También mide la actitud y(61:63) y el error de geolocalización contra la verdad de la cámara sintética; `--sin-actitud`, `--actitud-esperada si|no` e `--inclinacion-max` sirven para comparar con la geolocalización nivelada, probar un modelo viejo y ver el descarte por inclinación. Pasos exactos, resultados y paso a los drones reales: `docs/PRUEBA_E2E.md`.
+`e2e/e2e_estacion.py` levanta esta estación real, la maneja por la API (START, objetivo manual, PAUSE, RESUME, LAND ALL en home), lee el WebSocket como la página, toma capturas con Chrome headless y revisa cada corrida. Se corre contra `QD2_Sim_Dual` (`simulink_qdrone2/sim/qd2_e2e_web.m`) o contra el simulador 3D (`simulador3d/sim3d_e2e_web.m`). También mide la actitud y(61:63) y el error de geolocalización contra la verdad de la cámara sintética; `--sin-actitud`, `--actitud-esperada si|no` e `--inclinacion-max` sirven para comparar con la geolocalización nivelada, probar un modelo viejo y ver el descarte por inclinación. Pasos exactos, resultados y paso a los drones reales: `docs/PRUEBA_E2E.md`. `--modo solo [--dron-solo N]` corre el modo solo explorador en la copia de la config (exige y(64) = N, el otro dron en el piso y ningún objetivo visitado) y `--fuente mock` lo corre contra el mock interno, sin MATLAB (p. ej. `python e2e\e2e_estacion.py --fuente mock --corridas solo --modo solo --velocidad-mock 2`).
 
 ## Archivos
 | Archivo | Rol |
@@ -162,7 +212,7 @@ Son 167 pruebas (165 y 2 saltadas si no están `vision/datos/sintetico_smoke` ni
 | `app/fomo.py` | Detector FOMO original (respaldo) |
 | `app/static/` | UI (sin compilación): `index.html`, `app.js`, `escena3d.js`, `mapa2d.js`, `style.css` |
 | `drone/qdrone2_camera_streamer.py` | Streamer QDF1 en el Jetson |
-| `preflight_lab.py` | Revisión previa al laboratorio, de solo lectura: archivos de `versiones/`, binarios de los drones, ONNX, config (cámara, Motive, rigid bodies, pista, IPs), interfaces, puertos, Motive abierto y QUARC. Uso: `%USERPROFILE%\.venvs\qd2_web\Scripts\python web\preflight_lab.py [--version MPC] [--ping]` (ver `docs/CHECKLIST_LABORATORIO.md`) |
+| `preflight_lab.py` | Revisión previa al laboratorio, de solo lectura: archivos de `versiones/`, binarios de los drones, ONNX, config (cámara, Motive, rigid bodies, pista, IPs), interfaces, puertos, Motive abierto y QUARC. Uso: `%USERPROFILE%\.venvs\qd2_web\Scripts\python web\preflight_lab.py [--version MPC] [--ping] [--remoto IP_PC]` (ver `docs/CHECKLIST_LABORATORIO.md`) |
 
 ## Pendiente de verificar en el laboratorio
 - Las opciones de `quarc_run`. Los comandos generados usan `-r -t tcpip://IP:17000 <modelo>.rt-linux_qdrone2 -uri tcpip://IP:17001?retries=10 -URI_Host tcpip://PC:1800i`. `?retries=10` es el valor por defecto del `_main.c` original. Según la documentación local de QUARC (`%QUARC_DIR%\quarc\doc\quarc_command_line_tools.html`), `-r` descarga y ejecuta y `-D` solo descarga; en la sintaxis son alternativas excluyentes, por eso se usa solo `-r`. La ayuda corta es `quarc_run -?` (con `-h` no imprime nada en la consola). El comando se corre en un `cmd` abierto en `simulink_qdrone2\binarios_dron`, donde están los `.rt-linux_qdrone2`.

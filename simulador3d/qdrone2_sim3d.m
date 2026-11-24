@@ -13,6 +13,9 @@
 %   clusters de la estación (radio 0.25 m, mínimo 3 observaciones).
 % - Puente §3.3 en tcpip://127.0.0.1:18700 (64 doubles salen, 32 entran) para que la UI
 %   web (web\iniciar_web.bat --fuente sim3d) lo muestre y lo controle.
+% - Modo SOLO EXPLORADOR (opc.modo_mision = 'solo_explorador' o mision.modo de la config):
+%   un solo QDrone recorre la pista; el otro no recibe arm/takeoff ('fuera': oculto;
+%   'piso': en gris "NO USADO"); y(64) de la telemetría = dron que vuela.
 %
 % Uso: abre este archivo, ajusta la sección de OPCIONES y presiona Run (F5).
 % Botones/teclas de la figura: s START · p PAUSE · r RESUME · a ABORT · l LAND_ALL ·
@@ -30,6 +33,15 @@ opc.escenario        = 'escenarios/escenario_base.json';   % o 'aleatorio', o 'w
 opc.n_fuegos         = 2;        % con 'aleatorio'
 opc.n_tomas          = 2;        % con 'aleatorio'
 opc.semilla          = [];       % semilla del escenario aleatorio ([] = distinta cada vez)
+
+% Modo de misión ([] = el de config/estacion.json -> mision.modo / mision.dron_solo).
+% Solo explorador (un solo QDrone recorre la pista, sin respondedor), p. ej. la demo del lab:
+%   opc.modo_mision = 'solo_explorador'; opc.dron_solo = 1;
+%   opc.escenario = 'escenarios/escenario_solo_lab.json';
+opc.modo_mision      = [];       % [] | 'dual' | 'solo_explorador'
+opc.dron_solo        = [];       % [] | 1 | 2
+opc.dron_ausente     = 'fuera';  % solo explorador: 'fuera' (el otro dron sin rastreo, oculto) o 'piso' (en gris)
+opc.config           = [];       % [] = config/estacion.json; o un struct ya decodificado
 
 opc.tiempo_real      = true;     % false = lo más rápido posible
 opc.velocidad        = 1.0;      % 2 = el doble de rápido que el tiempo real (funciona con la UI conectada)

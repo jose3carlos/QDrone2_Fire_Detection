@@ -120,6 +120,13 @@ Get-NetConnectionProfile                       # perfil (Public/Private) de la r
   ```
   Si se conocen las IPs de los drones, mejor `-RemoteAddress <IP_dron1>,<IP_dron2>`. La PC es compartida: si el responsable lo pide, se borra al final del día con `Remove-NetFirewallRule -DisplayName "QD2 Stream Servers 18001-18002"`.
 - **[SUPUESTO]** Que exista ya una regla para `:18001` (el Equipo2 voló con esa PC) o que el firewall de la PC del laboratorio permita la entrada.
+- **Estación en la laptop (puente remoto, `--host-puente <IP_PC>`).** Si la estación web corre en otra computadora de la red (por ejemplo la laptop, con la UI 3D), se conecta como cliente al Stream Server del PYTHON BRIDGE en `tcpip://<IP_PC>:18700`. QUARC ignora el hostname de un URI que escucha (`tcpip_protocol.html`: el hostname "is ignored when establishing a listening connection"), así que `tcpip://localhost:18700` ya acepta clientes de la LAN; solo falta la regla de entrada, limitada a la IP de la laptop:
+  ```powershell
+  New-NetFirewallRule -DisplayName "QD2 puente 18700 laptop" -Direction Inbound -Protocol TCP -LocalPort 18700 -RemoteAddress <IP_laptop> -Action Allow -Profile <perfil de Get-NetConnectionProfile>
+  # al terminar el día:
+  Remove-NetFirewallRule -DisplayName "QD2 puente 18700 laptop"
+  ```
+  El Stream Server atiende **un solo cliente**: no probar el puerto con `Test-NetConnection` mientras la estación esté conectada. Si se cae la red, la misión pasa a PAUSED (hover) en 1 s y el switch Takeoff/Land sigue funcionando.
 
 ### 1.7 Revisar los modelos sin compilar (Motive cerrado, `estacion.json` del día)
 ```matlab

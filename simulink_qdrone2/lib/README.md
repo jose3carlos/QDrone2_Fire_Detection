@@ -2,7 +2,7 @@
 
 Funciones MATLAB compatibles con codegen (tamaños fijos, sin cell arrays, sin strings, sin `containers.Map`) para los bloques **MATLAB Function** de los modelos de tierra, del dron (MPC) y de la simulación, y también para el simulador 3D. Implementa el contrato de `docs/ARQUITECTURA.md` §4. Unidades SI en todo.
 
-Probado en R2025a (MATLAB + Simulink): 32/32 pruebas pasan (22-nov-2026; 30 tras la revisión de la reacción a falla a bordo, más `test_actitud_y61` y `test_ext_mode_args`), y un modelo Simulink generado por código compila y simula todas las funciones (ver `../tests/README.md` y la sección "Resultados" al final). Solo usa funciones disponibles en R2022a, pero en R2022a no se probó.
+Probado en R2025a (MATLAB + Simulink): 42/42 pruebas pasan (23-nov-2026: las 32 de antes más 10 del modo solo explorador; el 22-nov eran 30 tras la revisión de la reacción a falla a bordo, más `test_actitud_y61` y `test_ext_mode_args`), y un modelo Simulink generado por código compila y simula todas las funciones (ver `../tests/README.md` y la sección "Resultados" al final). Solo usa funciones disponibles en R2022a, pero en R2022a no se probó.
 
 ## Cómo usarla en un bloque MATLAB Function
 
@@ -27,13 +27,13 @@ ctx = tel.ctx_guard;
 
 | Función | Firma |
 |---|---|
-| Parámetros | `p = qd2_params()` · `p = qd2_params_from_config([ruta_json o struct])` |
+| Parámetros | `p = qd2_params()` · `[p, aviso] = qd2_params_from_config([ruta_json o struct])` (`aviso` = '' o por qué `mision.modo` / `mision.dron_solo` no es válido y se usa dual) |
 | Roles | `[explorer_id, responder_id, home1, home2, ok] = qd2_assign_roles(p1, p2, tracked1, tracked2)` |
 | Waypoints | `[wp, n] = qd2_track_waypoints(vertices, spacing, z [, n_vertices])` → `wp` 128x4 `[x y z yaw]` |
 | Supervisor | `s = qd2_mission_init(p)` · `[s, sp_E, sp_R, tel] = qd2_mission_step(s, in, p)` |
 | Separación (PID) | `gs = qd2_guard_init()` · `[spE_o, spR_o, guard_active, gs] = qd2_separation_guard(pE, pR, spE, spR, p [, gs, ctx])` |
 | MPC | `mst = qd2_mpc_init(p)` · `[u, mst, info] = qd2_mpc_position(x_est, ref, other, p, mst)` → `u = [T roll pitch yaw_rate status]` |
-| Telemetría | `y64 = qd2_telemetry_pack(t, tel, version, guard_active, pose1, pose2, sp1, sp2, vel1, vel2, aux[, att])`. `att` (opcional) = `[roll1 pitch1 roll2 pitch2]` (rad, por dron) de la Corrected Pose Data `d(4:5)`; llena **y(61)** = roll y **y(62)** = pitch del explorador, y **y(63)** = 1 si son válidos (explorador 1 o 2, rastreado y ángulos finitos; si no, 0 0 0). Sin `att` (llamadores viejos), y(61:63) = 0. y(64) reservado (0) |
+| Telemetría | `y64 = qd2_telemetry_pack(t, tel, version, guard_active, pose1, pose2, sp1, sp2, vel1, vel2, aux[, att])`. `att` (opcional) = `[roll1 pitch1 roll2 pitch2]` (rad, por dron) de la Corrected Pose Data `d(4:5)`; llena **y(61)** = roll y **y(62)** = pitch del explorador, y **y(63)** = 1 si son válidos (explorador 1 o 2, rastreado y ángulos finitos; si no, 0 0 0). Sin `att` (llamadores viejos), y(61:63) = 0. **y(64)** = `dron_solo`: con `explorer_id` = 1 o 2 y `responder_id` = 0 (solo explorador) vale `explorer_id` e y(12) = y(13) = 0; si no, 0 (dual) |
 | Enlace MPC (tierra) | `[est, t_mal] = qd2_enlace_mpc(t_mal, t, tel1, tel2, lb, cs, p, version)` → `est = [fsm1 fsm2 cod1 cod2]` (cod 0 bien, 1 protocolo incorrecto, 2 enlace perdido; `t_mal` = `[t_mal1 t_mal2 visto1 visto2]`, inicia en `[-1 -1 0 0]`; se acepta `[-1 -1]`) |
 | Planta | `x = qd2_quad_plant(x, u, dist, dt [, p.planta])` con `x` 10x1 `[x y z vx vy vz roll pitch yaw T]` |
 | Downwash | `[F, sigma] = qd2_downwash(p_low, p_high [, p.dw])` |
@@ -55,6 +55,7 @@ ctx = tel.ctx_guard;
 - Campos de §3.3: `mission_state`, `explorer_id`, `responder_id`, `explorer_wp_idx`, `explorer_wp_total`, `responder_target_id`, `n_targets_known`, `n_targets_visited`, `explorer_done`, `visited_mask`, `marking_progress`, `queue_length`, `cmd_seq_ack`.
 - Home y rol de cada dron: `home1`, `home2`, `role1`, `role2`.
 - Por **dron**: `sp1`, `sp2` (consignas), `arm` [1x2], `takeoff` [1x2], `estop` [1x2].
+- Modo de misión: `dron_solo` (0 en dual; 1 o 2 en solo explorador) y `modo_mision` (0 / 1).
 - Para el guard: `r_marking` y `ctx_guard`, que es `[r_marking, prioridad_R, d_min_h, solo_respaldo, look_x, look_y]`.
 - Valores efectivos tras los overrides: `z_E`, `z_R`, `d_min_h`, `t_mark`.
 - Estado del enlace: `hb_ok`, `pausa_por_hb`, `pausa_por_trk`.
@@ -132,6 +133,24 @@ ctx = tel.ctx_guard;
   - **LANDING (paso 1) con los drones apilados** (versión MPC, p. ej. LAND_ALL de Python o del switch Takeoff del operador con E encima de R): **R no baja** mientras E esté a < `d_min_h` en horizontal de su punto; espera a su altura con takeoff = 1 (`s.land_r_baja` = 0). Así, si E falla en ese momento, R sigue en vuelo y la reacción completa lo saca de debajo. Cuando E ya está a ≥ `d_min_h`, R baja (autoland) y una falla posterior solo se avisa (alerta 9/10) y al dron en falla se le baja takeoff. En la PID (nunca apilados) R baja de inmediato como antes.
 - **Objetivos: solo ids 1..32.** `visited_mask` y y(56) solo representan los ids de Python del 1 al 32, así que un objetivo con id < 1 o > 32 se **ignora** (no entra a la tabla ni sale en y(56:60)).
 
+## Modo solo explorador (`p.modo_mision = 1`, `p.dron_solo = ds`)
+
+Un solo QDrone (`ds`) hace la misión del explorador; el otro (`da = 3 - ds`, "ausente") no se usa. Se activa con `config/estacion.json → mision.modo = "solo_explorador"` y `mision.dron_solo` (1 por defecto) a través de `qd2_params_from_config`; cualquier otro valor es dual (con texto inválido sale un aviso). Con `p.modo_mision = 0` la librería se comporta **exactamente** como antes (probado bit a bit: `test_dual_identico`).
+
+- **Roles.** `explorer_id = ds` y `responder_id = 0` desde INIT. El ausente ocupa el "rol R" interno.
+- **Regla final (todos los estados):** el ausente **nunca** recibe arm ni takeoff y su consigna es su última pose finita en el piso `[x y 0 0]`; `role` del ausente = 0.
+- **WAIT_TRACKING / ASSIGN_ROLES:** basta el dron `ds` rastreado 1 s; sin `qd2_assign_roles` ni chequeo de distancia entre homes (nunca alerta 1). El home del ausente es solo informativo.
+- **TAKEOFF / HOVER_READY / MISSION / RETURN / ABORT / PAUSED:** arm y takeoff solo del dron `ds`; la llegada de TAKEOFF y "alguien despegó" (`z_despegado`) solo miran a E (un ausente sobre una mesa no cuenta).
+- **MISSION:** E recorre la N igual. No hay respondedor: los objetivos se registran y se quedan en estado 1 ("detectados", `queue_length` = cuántos); nunca hay "visitados". Termina cuando E acabó la N + `t_fin_gracia` → RETURN_HOME (E directo a su home; el ausente ya está "en home", `ret_paso(2) = 3`). Con `auto_land` → LANDING; si no, hover hasta LAND_ALL.
+- **LAND_ALL / auto_land / falla a bordo:** E aterriza **en su sitio** (`land_r_baja = 1`, el ausente cuenta como "en el suelo"). Una falla a bordo solo puede ser de E: aterriza en su sitio con takeoff = 0 (sin la reacción "el sano se aparta").
+- **ABORT / LAND_ALL antes de despegar:** igual que en dual, pero el paso 4 solo espera a E en el suelo.
+- **Rastreo:** solo la pérdida del dron `ds` pausa (alerta 2); RESUME exige su rastreo.
+- **A bordo (MPC):** la FSM, el protocolo y el enlace del ausente se ignoran (sin alertas 9/10 ni bloqueo de START).
+- **SEPARATION GUARD:** paso libre (salidas = entradas, `guard_active = 0`).
+- **Telemetría:** y(4) = `ds`, y(5) = 0, y(64) = `ds`, y(12) = y(13) = 0; el bloque del ausente lleva su medición tal cual con `role` = 0 y consigna `[x y 0 0]`.
+- **En tierra no se regenera nada:** todo vive en estas `.m` y en `P` (parámetro no ajustable: cambiar el modo obliga a recompilar). `qd2_cargar_config` imprime `MODO SOLO EXPLORADOR -> dron N …` o `modo dual (2 drones)`, y avisa si es solo con la versión MPC (validado solo en PID).
+- **Command Source = 0 (AUTO).** En MANUAL (1) los switches mueven siempre al dron 1 (comportamiento del Equipo2, sin cambios).
+
 ## SEPARATION GUARD (versión PID)
 
 - **Prioridad de E.** E (o R, cuando E ya terminó) avanza salvo que el otro esté a menos de `d_min_h + m` de su segmento [pose, consigna]. En ese caso espera; solo se congela x,y y la z sigue libre.
@@ -145,6 +164,7 @@ ctx = tel.ctx_guard;
 - **Entradas inválidas.** Con una pose NaN usa la última pose finita; con una consigna NaN, la última salida. Las salidas nunca son NaN.
 - **Override de `d_min_h`** (`ctx(3)`): solo se usa si es mayor que `p.d_min_h`.
 - **`ctx`** puede tener 4 o 6 elementos, o faltar (llamada con 5 argumentos).
+- **Modo solo explorador** (`p.modo_mision = 1`): paso libre. Devuelve las consignas tal cual (una consigna NaN → la última salida) con `guard_active = 0`; si no, un ausente sin rastreo (pose NaN) o en (0, 0) congelaría o retendría a E.
 - **REQUISITO para el modelo PID (`QD2_MissionCtrl_Dual_PID`).** Después del guard hay que limitar la consigna en x,y **por la norma**: `qd2_rate_limit(..., 1)` dentro de un bloque MATLAB Function. **No** hay que usar el `Rate Limiter2` original, que limita cada eje por separado. Con limitación por eje los movimientos diagonales siguen un camino en "L", mientras que el guard y la planeación del regreso suponen una recta. Ya está en el contrato (`docs/ARQUITECTURA.md` §4 y §5) y en los modelos (SETPOINT RATE LIMITER).
   - Limitador por norma: 90 escenarios aleatorios, mínimo 1.065 m.
   - Limitador por eje: 1 de 30 escenarios bajó a 0.878 m (< `d_min_h`). La prueba `test_mision_pid_rl_por_eje` lo vigila.

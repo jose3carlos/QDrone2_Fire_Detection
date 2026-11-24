@@ -40,6 +40,12 @@ p.tol_xy     = 0.12;        % m, tolerancia horizontal de llegada
 p.tol_z      = 0.12;        % m, tolerancia vertical de llegada
 p.tol_mark_factor = 1.5;    % la marca sigue contando mientras |err| <= factor*tol
 p.auto_land  = 0;           % 1 = aterrizar solo al terminar (si no, esperar LAND_ALL)
+% Modo de misión (config/estacion.json -> mision.modo / mision.dron_solo, ver
+% qd2_params_from_config). Parámetro NO ajustable: cambiarlo obliga a recompilar.
+p.modo_mision = 0;          % 0 = dual (2 drones, explorador + respondedor);
+                            % 1 = solo explorador (un dron recorre la N, sin respondedor)
+p.dron_solo   = 1;          % dron (1 o 2) que vuela en modo solo explorador (con modo_mision = 1);
+                            % el otro nunca recibe arm/takeoff
 p.t_dwell_wp = 0.3;         % s, permanencia dentro de tolerancia para avanzar de waypoint
 p.t_init     = 1.0;         % s, espera en INIT
 p.t_tracking_estable = 1.0; % s, ambos rastreados de forma continua antes de asignar roles

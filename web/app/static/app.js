@@ -36,6 +36,20 @@ async function copy(text) {
 function chip(id, cls, text, title) { const c = $(id); c.className = 'chip ' + cls; if (text) c.textContent = text; if (title) c.title = title; }
 function esc(s) { return String(s ?? '').replace(/[&<>"]/g, (m) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[m])); }
 
+// ------------------------------------------------------------------ modo de misión (dual / solo explorador)
+// s.modo (servidor): efectivo = el del modelo de tierra (y(64)) si la telemetría es fresca, si no el de la config.
+const esSolo = (s) => !!(s && s.modo && s.modo.efectivo === 'solo_explorador' && [1, 2].includes(s.modo.dron_solo));
+const modoTxt = (m) => (!m ? '—' : m.modo === 'solo_explorador' ? `solo explorador (dron ${m.dron_solo})` : 'dual');
+// Textos de confirmación: los de siempre (dual) y los del modo solo (dinámicos con el dron)
+const CONFIRM_DUAL = {};
+document.querySelectorAll('[data-cmd][data-confirm]').forEach((b) => { CONFIRM_DUAL[b.dataset.cmd] = b.dataset.confirm; });
+const CONFIRM_SOLO = {
+  START: (n) => `¿Iniciar la misión SOLO EXPLORADOR? El dron ${n} se arma y despega a z_E. El otro dron no se usa.`,
+  ABORT: (n) => `¿Abortar? El dron ${n} regresa a su home y queda en hover.`,
+  LAND_ALL: (n) => `¿Aterrizar el dron ${n} donde está?`,
+};
+let capDronTocado = false;
+
 // ------------------------------------------------------------------ 3D (si el CDN no responde, la UI sigue con el mapa 2D)
 import('./escena3d.js').then(({ Escena3D }) => {
   scene3d = new Escena3D($('three-host'));
@@ -87,6 +101,7 @@ function render(s) {
   chip('chip-vision', v.detector && v.detector !== 'ninguno' ? (v.activo ? 'ok' : 'warn') : 'bad', 'Visión',
     `${v.detector}${v.detector_error ? '\n' + v.detector_error : ''}${v.activo ? '\n(detectando)' : '\n(en espera: solo en MISSION)'}`);
   $('chip-version').textContent = tel ? `Modelo ${tel.version_name}` : `Config ${s.version_config}`;
+  renderModo(s);
   // estado de misión
   const ms = $('mstate');
   ms.textContent = tel ? `${tel.mission_state_es} · ${tel.mission_state_name}` : 'Sin telemetría';
@@ -107,16 +122,19 @@ function render(s) {
   renderAlerta(s);
   $('card-mock').hidden = s.fuente !== 'mock';
   renderMockPruebas(s);
+  const solo = esSolo(s);
   $('m-t').textContent = tel ? f2(tel.t, 1) + ' s' : '—';
-  $('m-dh').textContent = tel ? f2(tel.dist_horizontal) + ' m' : '—';
-  $('m-dz').textContent = tel ? f2(tel.dist_vertical) + ' m' : '—';
+  $('m-dh').textContent = solo ? 'no aplica' : tel ? f2(tel.dist_horizontal) + ' m' : '—';
+  $('m-dz').textContent = solo ? 'no aplica' : tel ? f2(tel.dist_vertical) + ' m' : '—';
+  $('metric-dh').title = $('metric-dz').title = solo ? 'Modo solo explorador: un solo dron, no hay distancia E–R' : '';
   const g = $('guard');
-  if (tel && tel.version === 2) { g.textContent = 'MPC · apilable'; g.className = 'guard idle'; }
+  if (tel && solo) { g.textContent = 'GUARD no aplica (un solo dron)'; g.className = 'guard idle'; }
+  else if (tel && tel.version === 2) { g.textContent = 'MPC · apilable'; g.className = 'guard idle'; }
   else if (tel) { g.textContent = tel.guard_active ? 'GUARD ACTIVO' : 'GUARD libre'; g.className = 'guard ' + (tel.guard_active ? 'active' : 'idle'); }
   // misión
   if (tel) {
     const e = tel.explorer_id, r = tel.responder_id;
-    $('k-e').textContent = e ? `Dron ${e}` : '—'; $('k-r').textContent = r ? `Dron ${r}` : '—';
+    $('k-e').textContent = e ? `Dron ${e}` : '—'; $('k-r').textContent = solo ? '— (modo solo)' : r ? `Dron ${r}` : '—';
     $('k-known').textContent = tel.n_targets_known; $('k-vis').textContent = tel.n_targets_visited;
     $('k-queue').textContent = tel.queue_length; $('k-rt').textContent = tel.responder_target_id ? '#' + tel.responder_target_id : 'libre';
     const pct = tel.explorer_wp_total ? Math.min(100, 100 * tel.explorer_wp_idx / tel.explorer_wp_total) : 0;
@@ -134,7 +152,17 @@ function render(s) {
     $('s-dz-th').textContent = mpc ? `mín ${m.dz_min} m si están apilados` : '';
     $('s-note').textContent = tel.guard_active ? 'El SEPARATION GUARD está reteniendo a un dron.' : '';
     $('sep-block').classList.toggle('active', !!tel.guard_active);
+    if (solo) {
+      for (const id of ['s-dh', 's-dz']) { $(id).textContent = 'no aplica'; $(id).className = ''; }
+      $('s-dh-th').textContent = ''; $('s-dz-th').textContent = '';
+      $('s-note').textContent = 'No aplica (un solo dron): sin respondedor no hay separation guard.';
+      $('sep-block').classList.remove('active');
+    }
   }
+  // modo solo: sin respondedor (no hay "visitados" ni marcado)
+  $('kv-vis').hidden = $('kv-rt').hidden = $('mark-block').hidden = solo;
+  $('k-queue-label').textContent = solo ? 'Detectados (sin respondedor)' : 'En cola';
+  renderBotones(s);
   renderDrones(tel, s.actitud_explorador);
   renderTargets(s);
   renderInfo(s);
@@ -178,8 +206,10 @@ function aHome(d) {
 function renderDrones(tel, act) {
   const box = $('drones');
   if (!tel) { box.innerHTML = '<div class="dcard">Sin telemetría del puente.</div>'; return; }
+  const solo = esSolo(S);
   box.innerHTML = [1, 2].map((id) => {
     const d = tel.drones[id];
+    if (solo && id !== S.modo.dron_solo) return dronNoUsado(id, d);
     const role = d.role === 1 ? '<span class="role e">EXPLORADOR</span>' : d.role === 2 ? '<span class="role r">RESPONDEDOR</span>' : '<span class="role">sin rol</span>';
     const rb = cfg?.optitrack?.[`rigid_body_dron${id}`];
     return `<div class="dcard"><div class="dh"><span class="name">Dron ${id}</span>${role}</div>
@@ -194,6 +224,18 @@ function renderDrones(tel, act) {
         ${id === tel.explorer_id ? `<tr><td title="y(61:62) CRUDOS: roll y pitch del explorador tal como llegan de OptiTrack (prueba del libro)">actitud (cruda)</td><td>${actitudTxt(tel)}</td></tr>${actitudUsadaTxt(act)}` : ''}
       </table></div>`;
   }).join('');
+}
+
+// Modo solo explorador: el dron que no se usa (gris, NO USADO). Muestra rastreo y pose (útil para el aviso de
+// "sácalo de la arena"), sin "sin comm" en rojo y sin home.
+function dronNoUsado(id, d) {
+  const rb = cfg?.optitrack?.[`rigid_body_dron${id}`];
+  return `<div class="dcard no-usado"><div class="dh"><span class="name">Dron ${id}</span><span class="role nu">NO USADO</span></div>
+      <div class="flag">${d.tracked ? '● rastreado (sácalo de la arena)' : '○ sin tracking'} (RB ${rb ?? '?'}) · ${d.comm_ok ? 'conectado (no recibe arm/takeoff)' : 'sin comm'}</div>
+      <table>
+        <tr><td>pos</td><td>${d.tracked ? `${f2(d.x)}, ${f2(d.y)}, ${f2(d.z)}` : '—'}</td></tr>
+        <tr><td>modo</td><td>solo explorador: no recibe arm ni takeoff</td></tr>
+      </table></div>`;
 }
 
 // y(61:63): roll (φ) y pitch (θ) del explorador TAL COMO LLEGAN; inclinación total = acos(cos φ · cos θ)
@@ -313,7 +355,9 @@ async function loadConfig(full = false) {
     $('pend-' + i).textContent = ip ? 'guardada' : 'pendiente'; $('pend-' + i).className = 'pend' + (ip ? ' ok' : '');
   }
   const ot = cfg.optitrack || {};
+  const capSel = $('cap-dron').value;
   $('cap-dron').innerHTML = [1, 2].map((i) => `<option value="${i}">Dron ${i} (RB ${ot['rigid_body_dron' + i]})</option>`).join('');
+  if (capSel) $('cap-dron').value = capSel;
   if ($('tab-pista').classList.contains('on') && (!draftVerts || !draftVerts.length)) { draftVerts = cfg.pista.vertices.map((v) => [...v]); renderVerts(); }
   if (!full) return;
   $('ot-folder').value = $('ot-folder').value || ot.carpeta || '';
@@ -343,6 +387,7 @@ async function loadCmds() {
   const rows = (d, k, label) => `<div class="cmd"><div class="cl">${label}</div><div class="cbox"><pre class="${d.pendiente ? 'pending' : ''}">${esc(d[k])}</pre><button class="btn sm ghost" data-copy="${esc(d[k])}">Copiar</button></div></div>`;
   $('cmds').innerHTML = [1, 2].map((i) => {
     const d = r.drones[i];
+    if (d.no_usado) return `<div class="dron-cmds"><b>Dron ${i}</b> <span class="pend">no usado (modo solo explorador)</span></div>`;
     return `<div class="dron-cmds"><b>Dron ${i}</b> ${d.pendiente ? '<span class="pend">faltan IPs</span>' : ''}
       ${rows(d, 'uri_host', 'Argumento -URI_Host')}
       ${rows(d, 'quarc_run', 'Lanzar el modelo ' + esc(r.modelo) + ' en el dron')}
@@ -426,6 +471,7 @@ $('btn-v-save').addEventListener('click', async () => {
   try { const r = await api('/api/config/pista', { vertices: draftVerts }); draftVerts = r.vertices.map((v) => [...v]); renderVerts(); await loadConfig(); toast('Pista guardada en estacion.json'); }
   catch (e) { toast(e.message, true); }
 });
+$('cap-dron').addEventListener('change', () => { capDronTocado = true; });
 $('btn-cap').addEventListener('click', async () => {
   try {
     const r = await api('/api/pista/capturar', { dron: Number($('cap-dron').value) });
@@ -436,6 +482,46 @@ $('btn-cap').addEventListener('click', async () => {
     $('cap-msg').textContent = `Capturado del dron ${r.dron} (RB ${r.rigid_body}): (${p[0]}, ${p[1]}), z = ${r.z.toFixed(3)} m. Recuerda “Guardar pista”.`;
   } catch (e) { toast(e.message, true); }
 });
+
+// ------------------------------------------------------------------ modo: chip, línea informativa y botones
+function renderModo(s) {
+  const md = s.modo || {}, solo = esSolo(s), cm = $('chip-modo');
+  let lvl = '';
+  if (md.coincide === false) lvl = md.config && md.config.modo === 'dual' ? 'warn' : 'bad';
+  cm.textContent = solo ? `SOLO EXPLORADOR · dron ${md.dron_solo}` : 'Dual';
+  cm.className = 'chip ' + (solo ? 'solo ' : (lvl ? '' : 'neutral ')) + lvl;
+  cm.title = `Modelo de tierra (y(64)): ${md.tel ? modoTxt(md.tel) : 'sin telemetría'}`
+    + `\nestacion.json de esta estación: ${modoTxt(md.config)}${md.coincide === false ? '\nNO COINCIDEN: START bloqueado' : ''}`;
+  const cfgM = md.config || {};
+  $('modo-info').innerHTML = `Modo (estacion.json de esta estación): <b>${esc(modoTxt(cfgM))}</b>`
+    + (md.tel ? ` · modelo de tierra: <b>${esc(modoTxt(md.tel))}</b>${md.coincide === false ? ' <b style="color: var(--bad)">(no coinciden)</b>' : ''}` : '')
+    + (cfgM.aviso ? ` · <span style="color: var(--warn)">${esc(cfgM.aviso)}</span>` : '')
+    + '<br><small>El modelo de tierra usa el estacion.json de la PC al compilar (Build): cambiar el modo obliga a copiar'
+    + ' el archivo y recompilar. Solo lectura.</small>'
+    + (md.remoto ? `<br><small>Puente remoto: ${esc(md.host_puente)}</small>` : '');
+  $('pista-remoto').hidden = $('motive-remoto').hidden = !md.remoto;
+  // captura de vértices: por defecto el dron solo
+  if (solo && !capDronTocado && $('cap-dron').value !== String(md.dron_solo) && document.activeElement !== $('cap-dron')) {
+    $('cap-dron').value = String(md.dron_solo);
+  }
+}
+
+function renderBotones(s) {
+  const md = s.modo || {}, solo = esSolo(s), tel = s.tel, n = md.dron_solo;
+  document.querySelectorAll('[data-cmd][data-confirm]').forEach((b) => {
+    const c = b.dataset.cmd;
+    b.dataset.confirm = solo && CONFIRM_SOLO[c] ? CONFIRM_SOLO[c](n) : CONFIRM_DUAL[c];
+  });
+  const st = $$start();
+  let motivo = '';
+  if (!tel) motivo = 'Sin telemetría del puente';
+  else if (md.coincide === false) motivo = 'El modo de la config local no coincide con el del modelo de tierra (copia estacion.json a la PC y recompila)';
+  else if (solo && !(tel.drones[n] || {}).tracked) motivo = `El dron ${n} (solo explorador) no está rastreado por OptiTrack`;
+  else if (tel.mission_state !== 2) motivo = 'START solo se acepta en ASSIGN_ROLES (roles asignados)';
+  st.disabled = !!motivo;
+  st.title = motivo || (solo ? `Inicia la misión solo explorador con el dron ${n}` : 'Inicia la misión');
+}
+function $$start() { return document.querySelector('[data-cmd="START"]'); }
 
 loadConfig(true).catch((e) => toast(e.message, true));
 setInterval(() => loadConfig().catch(() => {}), 10000);

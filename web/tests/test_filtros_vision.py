@@ -30,6 +30,8 @@ def make_cfg(**vision):
     cfg = copy.deepcopy(CFG_REAL)
     cfg["pista"] = {"vertices": copy.deepcopy(N)}
     cfg.setdefault("web", {})["camara_latencia_s"] = 0.0
+    # umbral fijo de las pruebas (el del lab en estacion.json puede ser 0.9; los detectores sintéticos dan < 0.9)
+    cfg["vision"]["confianza_min"] = 0.5
     cfg["vision"].update(vision)
     return cfg
 

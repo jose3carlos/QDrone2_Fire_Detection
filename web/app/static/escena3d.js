@@ -7,6 +7,11 @@ import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
 const COL = { e: 0x22d3ee, r: 0xfb923c, none: 0x8b97a6, det: 0xfacc15, asig: 0x60a5fa, vis: 0x4ade80 };
 const STATE_COL = { detectada: COL.det, asignada: COL.asig, visitada: COL.vis };
 const w2t = (x, y, z) => new THREE.Vector3(x, z, -y);
+// Modo solo explorador (s.modo.efectivo, y(64) del modelo de tierra): el dron que no se usa se dibuja
+// "fantasma" (gris, 35 % de opacidad, "NO USADO") si OptiTrack lo ve; si no, oculto.
+const GHOST_OPACITY = 0.35;
+const soloDe = (s) => (s && s.modo && s.modo.efectivo === 'solo_explorador' && [1, 2].includes(s.modo.dron_solo))
+  ? s.modo.dron_solo : 0;
 
 // Medidas del QDrone 2 (manual): 442.58 x 490.8 x 135.53 mm. Hélices de 7" en guardas.
 const QD = { L: 0.4426, W: 0.4908, H: 0.1355, motorX: 0.126, motorY: 0.150, guardR: 0.093 };
@@ -201,7 +206,22 @@ export class Escena3D {
     shadow.rotation.x = -Math.PI / 2; this.scene.add(shadow);
     const home = new THREE.Mesh(new THREE.RingGeometry(0.11, 0.13, 4), new THREE.MeshBasicMaterial({ color: COL.none, side: THREE.DoubleSide }));
     home.rotation.x = -Math.PI / 2; home.rotation.z = Math.PI / 4; this.scene.add(home);
-    return { model, label, sp, spLine, trail, trailPts: [], N, shadow, home };
+    // materiales del modelo (para el "fantasma" del dron no usado en modo solo)
+    const mats = [];
+    model.traverse((o) => { if (o.material && !mats.includes(o.material)) mats.push(o.material); });
+    mats.forEach((m) => { m.userData.op0 = m.opacity; m.userData.tr0 = m.transparent; });
+    return { model, label, sp, spLine, trail, trailPts: [], N, shadow, home, mats, ghost: false };
+  }
+
+  _ghost(d, on) {
+    if (d.ghost === on) return;
+    d.ghost = on;
+    for (const m of d.mats) {
+      m.transparent = on ? true : m.userData.tr0;
+      m.opacity = on ? m.userData.op0 * GHOST_OPACITY : m.userData.op0;
+      m.depthWrite = !on;
+      m.needsUpdate = true;
+    }
   }
 
   setView(v) {
@@ -265,10 +285,30 @@ export class Escena3D {
     this._setPipe(s.pista || []);
     this._setTruth(s.verdad_mock || []);
     const tel = s.tel;
+    const ds = soloDe(s);
     const roleOf = (id) => tel ? (tel.drones[id].role === 1 ? 'e' : tel.drones[id].role === 2 ? 'r' : 'none') : 'none';
     for (const id of [1, 2]) {
       const d = this.drones[id];
       const t = tel && tel.drones[id];
+      if (ds && id !== ds) {
+        // dron no usado: fantasma solo si está rastreado y con pose; sin consigna, sin home y sin estela
+        const vis = !!(t && t.tracked && t.x !== null && t.y !== null && t.z !== null);
+        for (const k of ['sp', 'spLine', 'home', 'trail']) d[k].visible = false;
+        for (const k of ['model', 'label', 'shadow']) d[k].visible = vis;
+        this._ghost(d, true);
+        if (!vis) continue;
+        const p = w2t(t.x, t.y, t.z);
+        d.model.position.copy(p);
+        d.model.rotation.set(0, t.yaw || 0, 0);
+        d.model.userData.shell.color.setHex(COL.none);
+        d.label.position.copy(p.clone().add(new THREE.Vector3(0, 0.26, 0)));
+        setLabel(d.label, `D${id} · NO USADO`, '#8b97a6');
+        d.label.scale.set(0.5, 0.125, 1);
+        d.shadow.position.copy(w2t(t.x, t.y, 0.003));
+        continue;
+      }
+      this._ghost(d, false);
+      d.trail.visible = true;
       const visible = !!(t && t.x !== null);
       for (const k of ['model', 'label', 'sp', 'spLine', 'shadow', 'home']) d[k].visible = visible;
       if (!visible) continue;
@@ -303,8 +343,8 @@ export class Escena3D {
       d.trail.material.color.setHex(col);
       if (role === 'e') this.followPos = p;
     }
-    // distancia E-R y anillo de separación alrededor de E
-    const ok = tel && tel.explorer_id && tel.responder_id && tel.drones[tel.explorer_id].x !== null && tel.drones[tel.responder_id].x !== null;
+    // distancia E-R y anillo de separación alrededor de E (no aplican en modo solo: un solo dron)
+    const ok = !ds && tel && tel.explorer_id && tel.responder_id && tel.drones[tel.explorer_id].x !== null && tel.drones[tel.responder_id].x !== null;
     this.distLine.visible = !!ok; this.guardRing.visible = !!ok && tel.version !== 2;
     if (ok) {
       const e = tel.drones[tel.explorer_id], r = tel.drones[tel.responder_id];
@@ -317,11 +357,14 @@ export class Escena3D {
       this.guardRing.position.copy(w2t(e.x, e.y, 0.01));
       this.guardRing.material.color.setHex(guard ? 0xef4444 : 0x8b97a6);
     }
-    // huella de cámara
+    // huella de cámara: depende solo de que el explorador tenga pose (antes exigía también al respondedor y en
+    // modo solo se quedaba en el origen)
     const f = s.huella || [];
-    const hasF = f.length === 4;
+    const ex = tel && [1, 2].includes(tel.explorer_id) ? tel.drones[tel.explorer_id] : null;
+    const hasE = !!(ex && ex.x !== null && ex.y !== null && ex.z !== null);
+    const hasF = f.length === 4 && hasE;
     this.foot.visible = this.footLine.visible = this.frustum.visible = hasF;
-    if (hasF && ok) {
+    if (hasF) {
       const pos = this.footGeom.attributes.position.array;
       f.forEach(([x, y], i) => { const v = w2t(x, y, 0.008); pos[3 * i] = v.x; pos[3 * i + 1] = v.y; pos[3 * i + 2] = v.z; });
       this.footGeom.attributes.position.needsUpdate = true; this.footGeom.computeBoundingSphere();

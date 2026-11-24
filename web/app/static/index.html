@@ -33,6 +33,7 @@
     <span class="chip" id="chip-cam" title="Video del explorador">Video</span>
     <span class="chip" id="chip-vision" title="Detector">Visión</span>
     <span class="chip neutral" id="chip-version" title="Versión del modelo que está corriendo">—</span>
+    <span class="chip neutral" id="chip-modo" title="Modo de misión (y(64) del modelo de tierra)">—</span>
   </div>
   <label class="source">Fuente
     <select id="sel-fuente">
@@ -54,8 +55,8 @@
   <span class="cmdinfo" id="cmdinfo">cmd_seq 0 · ack —</span>
   <span class="spacer"></span>
   <span class="metric"><span class="label">t</span> <b id="m-t">—</b></span>
-  <span class="metric"><span class="label">Δh E–R</span> <b id="m-dh">—</b></span>
-  <span class="metric"><span class="label">Δz E–R</span> <b id="m-dz">—</b></span>
+  <span class="metric" id="metric-dh"><span class="label">Δh E–R</span> <b id="m-dh">—</b></span>
+  <span class="metric" id="metric-dz"><span class="label">Δz E–R</span> <b id="m-dz">—</b></span>
   <span class="guard" id="guard">GUARD —</span>
 </nav>
 
@@ -117,15 +118,15 @@
         <div class="kv"><span>Explorador</span><b id="k-e">—</b></div>
         <div class="kv"><span>Respondedor</span><b id="k-r">—</b></div>
         <div class="kv"><span>Objetivos conocidos</span><b id="k-known">—</b></div>
-        <div class="kv"><span>Visitados</span><b id="k-vis">—</b></div>
-        <div class="kv"><span>En cola</span><b id="k-queue">—</b></div>
-        <div class="kv"><span>R atiende</span><b id="k-rt">—</b></div>
+        <div class="kv" id="kv-vis"><span>Visitados</span><b id="k-vis">—</b></div>
+        <div class="kv"><span id="k-queue-label">En cola</span><b id="k-queue">—</b></div>
+        <div class="kv" id="kv-rt"><span>R atiende</span><b id="k-rt">—</b></div>
       </div>
       <div class="bar-block">
         <div class="bar-label"><span>Recorrido de la N (E)</span><b id="k-wp">—</b></div>
         <div class="bar"><i id="bar-wp"></i></div>
       </div>
-      <div class="bar-block">
+      <div class="bar-block" id="mark-block">
         <div class="bar-label"><span>Marcando (R)</span><b id="k-mark">—</b></div>
         <div class="bar mark"><i id="bar-mark"></i></div>
       </div>
@@ -135,6 +136,7 @@
         <div class="sep-row"><span>Vertical</span><b id="s-dz">—</b><small id="s-dz-th"></small></div>
         <div class="sep-note" id="s-note"></div>
       </div>
+      <div class="modo-info" id="modo-info"></div>
       <div class="ver-block">
         <label>Versión en <code>estacion.json</code>
           <select id="sel-version"><option>PID</option><option>MPC</option></select>
@@ -232,6 +234,8 @@
 
     <!-- MOTIVE -->
     <section class="tabpane" id="tab-motive">
+      <div class="aviso-remoto" id="motive-remoto" hidden>Puente remoto: el navegador de archivos lista la carpeta de
+        ESTA laptop; las rutas .cal/.motive deben ser las de la PC del modelo de tierra (edítalas a mano).</div>
       <div class="card">
         <div class="card-title">Carpeta de OptiTrack</div>
         <div class="row-inline">
@@ -262,6 +266,8 @@
 
     <!-- PISTA -->
     <section class="tabpane" id="tab-pista">
+      <div class="aviso-remoto" id="pista-remoto" hidden>Guardar pista cambia el estacion.json de ESTA laptop;
+        cópialo a la PC y recompila (Build) para que el dron la vuele.</div>
       <div class="card">
         <div class="card-title">Vértices de la N (m, marco OptiTrack)</div>
         <small class="note">Máximo 16 vértices (límite de Simulink). Simulink lee la pista al compilar / iniciar el

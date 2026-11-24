@@ -3,10 +3,16 @@
 Uso (desde la raíz del proyecto, con el venv de la estación):
     %USERPROFILE%\\.venvs\\qd2_web\\Scripts\\python web\\preflight_lab.py
     ... --version MPC          revisa también lo de la versión MPC (por defecto: version_control de la config)
-    ... --ping                 hace ping a los dos drones
+    ... --ping                 hace ping a los dos drones (en modo solo explorador, solo al dron solo)
     ... --config otra.json     revisa otra config (por defecto config/estacion.json)
+    ... --remoto 192.168.2.11  la estación corre en ESTA laptop y el modelo de tierra / Motive / quarc_run en la
+                               PC 192.168.2.11: no revisa Motive ni los puertos 18700/18001/18002 locales (están
+                               en la PC), exige red.ip_pc vacía o igual a esa IP y NO abre ninguna conexión a ella
 
-Imprime [OK] / [AVISO] / [FALLA] por punto y termina con código 1 si hay alguna FALLA.
+Modo de misión (mision.modo / mision.dron_solo, mismas reglas que la estación y qd2_params_from_config): en
+"solo_explorador" solo se exige la IP y el rigid body del dron solo; la falta de la IP del otro es INFO.
+
+Imprime [OK] / [INFO] / [AVISO] / [FALLA] por punto y termina con código 1 si hay alguna FALLA.
 Ver docs/CHECKLIST_LABORATORIO.md.
 """
 from __future__ import annotations
@@ -24,7 +30,7 @@ RAIZ = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
 SQ = os.path.join(RAIZ, "simulink_qdrone2")
 MD5_PID = "00d4d46e7a2e07158690fe98a9b756af"
 
-res = {"OK": 0, "AVISO": 0, "FALLA": 0}
+res = {"OK": 0, "INFO": 0, "AVISO": 0, "FALLA": 0}
 
 
 def rep(nivel, texto):
@@ -59,12 +65,23 @@ def puerto_libre(p):
         s.close()
 
 
+def ipv4(v):
+    try:
+        return str(ipaddress.IPv4Address(str(v).strip()))
+    except ValueError:
+        raise argparse.ArgumentTypeError(f"IP inválida: '{v}'")
+
+
 def main(argv=None):
+    for k in res:
+        res[k] = 0
     ap = argparse.ArgumentParser(description="Revisión previa al laboratorio (solo lectura)")
     ap.add_argument("--config", default=os.path.join(RAIZ, "config", "estacion.json"))
     ap.add_argument("--version", choices=["PID", "MPC"], default=None)
     ap.add_argument("--release", default="R2022a", help="carpeta de versiones/ que se va a abrir (R2022a, R2025a...)")
     ap.add_argument("--ping", action="store_true")
+    ap.add_argument("--remoto", type=ipv4, default=None, metavar="IP_PC",
+                    help="IP de la PC del modelo de tierra cuando la estación corre en esta laptop (no se conecta a ella)")
     a = ap.parse_args(argv)
     try:
         sys.stdout.reconfigure(errors="replace")
@@ -90,6 +107,19 @@ def main(argv=None):
     except Exception as e:  # pragma: no cover
         rep("FALLA", f"no pude leer {a.config}: {e}")
         return 1
+    sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+    from app.config import mision_modo  # noqa: WPS433
+    modo = mision_modo(c)
+    solo = modo["modo"] == "solo_explorador"
+    ds = modo["dron_solo"]
+    if modo["aviso"]:
+        rep("AVISO", f"{modo['aviso']} (con un solo dron, dual se queda en WAIT_TRACKING y no despega)")
+    if solo:
+        rep("OK", f"modo SOLO EXPLORADOR con el dron {ds} (el dron {3 - ds} no recibe arm/takeoff)")
+    else:
+        rep("OK", "modo dual (2 drones)")
+    if a.remoto:
+        print(f"Estación remota: el modelo de tierra corre en {a.remoto} (no se abre ninguna conexión hacia ella)")
     ver = (a.version or str(get(c, "version_control", default="PID"))).upper()
     print(f"Versión revisada: {ver}")
     if str(get(c, "version_control", default="")).upper() != ver:
@@ -174,8 +204,16 @@ def main(argv=None):
             rep("AVISO", f"optitrack.{k} vacío: el modelo usa la ruta del Equipo2 del 20-nov (un solo rigid body). Vincula los del día en la pestaña Motive")
             continue
         p = v if (len(v) > 2 and (v[1] == ":" or v.startswith("\\\\"))) else os.path.join(o.get("carpeta", ""), v)
+        if a.remoto:
+            rep("INFO", f"optitrack.{k}: {p} (ruta de la PC {a.remoto}: no se verifica desde aquí)")
+            continue
         rep("OK" if os.path.exists(p) else "FALLA", f"optitrack.{k}: {p} {'existe' if os.path.exists(p) else 'NO EXISTE en esta PC'}")
+    if solo:
+        rep("INFO", f"rigid body del explorador (dron {ds}) = {o.get(f'rigid_body_dron{ds}')}; el del dron {3 - ds} "
+                    "debe ser distinto y ese dron debe quedar fuera de la arena")
     try:
+        if a.remoto:
+            raise RuntimeError("remoto")
         import psutil  # noqa: WPS433
         motive = [pr.info["name"] for pr in psutil.process_iter(["name"]) if (pr.info["name"] or "").lower().startswith("motive")]
         if motive:
@@ -183,7 +221,8 @@ def main(argv=None):
         else:
             rep("OK", "Motive cerrado")
     except Exception:
-        pass
+        if a.remoto:
+            rep("INFO", f"Motive corre en la PC {a.remoto}: ciérralo allá antes de correr el modelo de tierra")
 
     # ---------------------------------------------------------------- pista
     v = get(c, "pista", "vertices", default=[])
@@ -198,17 +237,35 @@ def main(argv=None):
     # ---------------------------------------------------------------- red
     red = get(c, "red", default={})
     ips = [red.get("ip_dron1") or "", red.get("ip_dron2") or ""]
-    if not all(ips):
+    usados = [ds] if solo else [1, 2]          # drones que se van a lanzar
+    ips_usadas = [ips[i - 1] for i in usados]
+    if solo:
+        if not ips[ds - 1]:
+            rep("FALLA", f"falta ip_dron{ds} (dron solo; pestaña Conexiones)")
+        else:
+            rep("OK", f"dron solo {ds}: {ips[ds - 1]}")
+        if not ips[2 - ds]:
+            rep("INFO", f"ip_dron{3 - ds} vacía: no se usa en modo solo explorador")
+        elif ips[0] == ips[1]:
+            rep("FALLA", "ip_dron1 = ip_dron2")
+    elif not all(ips):
         rep("FALLA", "faltan ip_dron1 / ip_dron2 (pestaña Conexiones)")
     elif ips[0] == ips[1]:
         rep("FALLA", "ip_dron1 = ip_dron2")
     else:
         rep("OK", f"drones {ips[0]} / {ips[1]}")
+    if a.remoto:
+        ip_cfg = red.get("ip_pc") or ""
+        if ip_cfg and ip_cfg != a.remoto:
+            rep("FALLA", f"red.ip_pc = {ip_cfg} pero el modelo de tierra corre en {a.remoto}: el -URI_Host de los drones "
+                         "apuntaría a otra máquina. Pon red.ip_pc vacía o igual a la PC")
+        else:
+            rep("OK", f"red.ip_pc = {ip_cfg or '(vacía)'}: el -URI_Host apunta a la PC {a.remoto}")
     try:
         sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
         from app import netinfo  # noqa: WPS433
         ifs = netinfo.interfaces(red.get("interfaz_preferida", "Wi-Fi 2"))
-        ip_pc = netinfo.ip_recomendada(c)
+        ip_pc = netinfo.ip_recomendada(c, a.remoto)
         for r in ifs:
             marca = " <- Alfa/recomendada" if r["recomendada"] else ""
             print(f"         interfaz {r['nombre']}: {r['ip']} ({r['descripcion']}){marca}")
@@ -216,10 +273,10 @@ def main(argv=None):
             rep("FALLA", "no encuentro la IP de la PC en la red de los drones (antena Alfa 'Wi-Fi 2' sin IP)")
         else:
             rep("OK", f"IP de la PC para -URI_Host: {ip_pc}")
-            if all(ips):
+            if all(ips_usadas):
                 try:
                     red_pc = ipaddress.ip_network(ip_pc + "/24", strict=False)
-                    fuera = [ip for ip in ips if ipaddress.ip_address(ip) not in red_pc]
+                    fuera = [ip for ip in ips_usadas if ipaddress.ip_address(ip) not in red_pc]
                     if fuera:
                         rep("FALLA", f"{fuera} no están en la red {red_pc} de la PC: revisa a qué Wi-Fi está conectada la Alfa")
                 except ValueError as e:
@@ -231,13 +288,16 @@ def main(argv=None):
                      (int(red.get("puerto_dron1", 18001)), "Stream Server dron 1"),
                      (int(red.get("puerto_dron2", 18002)), "Stream Server dron 2"),
                      (int(red.get("puerto_web", 8080)), "web")):
+        if a.remoto and quien != "web":
+            rep("INFO", f"puerto {p} ({quien}): está en la PC {a.remoto}, no se revisa aquí")
+            continue
         if puerto_libre(p):
             rep("OK", f"puerto {p} libre ({quien})")
         else:
             rep("AVISO", f"puerto {p} ocupado ({quien}): normal si el modelo de tierra o la estación ya corren; si no, ciérralo (netstat -ano | findstr :{p})")
 
-    if a.ping and all(ips):
-        for i, ip in enumerate(ips, 1):
+    if a.ping and all(ips_usadas):
+        for i, ip in zip(usados, ips_usadas):
             ok = subprocess.run(["ping", "-n", "2", "-w", "1000", ip], capture_output=True).returncode == 0
             rep("OK" if ok else "FALLA", f"ping dron {i} ({ip}) {'responde' if ok else 'NO responde'}")
 
@@ -246,10 +306,12 @@ def main(argv=None):
     qr = os.path.join(qd, "quarc_run.exe") if qd else ""
     if qr and os.path.exists(qr):
         rep("OK", f"quarc_run: {qr}")
+    elif a.remoto:
+        rep("INFO", f"quarc_run se corre en la PC {a.remoto} (cmd en C:\\QD2\\simulink_qdrone2\\binarios_dron)")
     else:
         rep("FALLA", "no encuentro quarc_run.exe (QUARC_DIR): instala/activa QUARC en esta PC")
 
-    print(f"\nResumen: {res['OK']} OK, {res['AVISO']} avisos, {res['FALLA']} fallas")
+    print(f"\nResumen: {res['OK']} OK, {res['INFO']} info, {res['AVISO']} avisos, {res['FALLA']} fallas")
     return 1 if res["FALLA"] else 0
 
 

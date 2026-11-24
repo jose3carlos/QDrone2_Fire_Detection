@@ -38,10 +38,17 @@ function L = qd2_sim_lazo_cerrado(op)
 %     [t1, t2): el dron se queda con el último paquete y a los 0.5 s pasa
 %     a Error (7) como la "Detect Communication Loss" original; tierra
 %     retiene su última respuesta y el loopback crece).
-%   L : struct con series de tiempo y métricas.
+%   Modo de misión / parámetros:
+%     p (struct de parámetros; [] = qd2_params(); p. ej. con p.modo_mision = 1
+%     y p.dron_solo para el modo solo explorador),
+%     z_ausente (m; NaN = nada. Si no es NaN, la z MEDIDA del dron ausente
+%     (3 - p.dron_solo en solo explorador; si no, el dron 2) se fuerza a ese
+%     valor mientras esté rastreado, p. ej. un dron sobre una mesa).
+%   L : struct con series de tiempo y métricas. Además de lo de siempre:
+%     L.y64 / L.y5 / L.y12 (qd2_telemetry_pack de cada paso),
+%     L.responder_id, L.queue.
 
 if nargin < 1, op = struct(); end
-p = qd2_params();
 d = struct('version', 1, 'home1', [-1.0 0.0], 'home2', [1.0 -0.3], ...
     'objetivos', [0 1.2; 0.6 -0.6; -0.6 -1.2], 'duplicados', zeros(0,2), ...
     't_final', 200, 'dt', 0.02, 'cmds', [3 1], 'hb_off', [-1 -1], ...
@@ -50,10 +57,16 @@ d = struct('version', 1, 'home1', [-1.0 0.0], 'home2', [1.0 -0.3], ...
     'auto_land', 1, 'inyectar', zeros(0,3), 'rl_norma', 1, ...
     'trk_off', zeros(0,3), 'py_extra', zeros(0,2), ...
     'a_bordo', -1, 'falla_fsm', zeros(0,2), 'falla_apilado', 0, 't_apilado_falla', 1.0, ...
-    'proto_mal', zeros(0,3), 'rate_escape', -1, 'enlace_off', zeros(0,3));
+    'proto_mal', zeros(0,3), 'rate_escape', -1, 'enlace_off', zeros(0,3), ...
+    'p', [], 'z_ausente', NaN);
 f = fieldnames(d);
 for i = 1:numel(f)
     if ~isfield(op, f{i}), op.(f{i}) = d.(f{i}); end
+end
+if isempty(op.p)
+    p = qd2_params();
+else
+    p = op.p;
 end
 rng(op.seed);
 if op.a_bordo < 0
@@ -99,6 +112,12 @@ L.mask = nan(1, n); L.ack = nan(1, n); L.F_dw = nan(2, n); L.d_hat = nan(2, n);
 L.r_marking = nan(1, n); L.explorer_id = nan(1, n); L.tiempo_mpc = zeros(0,1);
 L.alerta = nan(1, n); L.arm = nan(2, n); L.takeoff = nan(2, n);
 L.falla_fase = nan(1, n); L.escape = nan(2, n); L.falla = nan(2, n);
+L.y64 = nan(1, n); L.y5 = nan(1, n); L.y12 = nan(1, n); L.responder_id = nan(1, n); L.queue = nan(1, n);
+% dron ausente (z_ausente): el del modo solo explorador, o el 2
+i_aus = 2;
+if p.modo_mision > 0.5 && (p.dron_solo == 1 || p.dron_solo == 2)
+    i_aus = 3 - p.dron_solo;
+end
 ultimo = n;
 % falla a bordo
 T7 = [0 0];                 % empuje de la rampa de emergencia (estado 7)
@@ -181,6 +200,13 @@ for k = 1:n
             else
                 in.tracked2 = 0; in.pose2 = nan(4,1);
             end
+        end
+    end
+    if ~isnan(op.z_ausente)
+        if i_aus == 1 && in.tracked1 > 0.5
+            in.pose1(3) = op.z_ausente;
+        elseif i_aus == 2 && in.tracked2 > 0.5
+            in.pose2(3) = op.z_ausente;
         end
     end
     in.py = py;
@@ -312,6 +338,10 @@ for k = 1:n
     L.arm(:,k) = tel.arm(:); L.takeoff(:,k) = tel.takeoff(:);
     L.falla_fase(k) = tel.falla_fase; L.escape(:,k) = tel.escape(:); L.falla(:,k) = tel.falla(:);
     L.sp_dist(k) = norm(sp(1,1:2) - sp(2,1:2)); %#ok<AGROW>
+    yt = qd2_telemetry_pack(t, tel, op.version, ga, in.pose1, in.pose2, sp_rl(1,:), sp_rl(2,:), ...
+        X(4:6,1), X(4:6,2), [in.tracked1 in.tracked2 ob(1).fsm ob(2).fsm NaN NaN 1 1]);
+    L.y64(k) = yt(64); L.y5(k) = yt(5); L.y12(k) = yt(12);
+    L.responder_id(k) = tel.responder_id; L.queue(k) = tel.queue_length;
     L.sp_rl_dist(k) = norm(sp_rl(1,1:2) - sp_rl(2,1:2)); %#ok<AGROW>
     if op.parar_en_done && tel.mission_state == 8 && t > 5
         ultimo = k;
@@ -320,7 +350,7 @@ for k = 1:n
 end
 % recortar
 campos = {'t','estado','guard','dh','dz','wp_idx','n_vis','n_obj','mask','ack','r_marking','explorer_id','sp_dist','sp_rl_dist','alerta','arm','takeoff', ...
-    'falla_fase','escape','falla'};
+    'falla_fase','escape','falla','y64','y5','y12','responder_id','queue'};
 for i = 1:numel(campos)
     L.(campos{i}) = L.(campos{i})(:, 1:ultimo);
 end

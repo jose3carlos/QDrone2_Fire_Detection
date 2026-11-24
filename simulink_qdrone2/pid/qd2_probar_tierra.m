@@ -45,6 +45,9 @@ function R = qd2_probar_tierra(ver, t_final, conservar, t_arm_sw, opt)
 %                 Stream Server retiene la última respuesta (eco congelado, el
 %                 loopback crece) y el dron, sin paquetes, pasa a Error a los
 %                 0.5 s y cae sin obedecer (tierra nunca ve esa FSM 7)
+%     .config_json ruta de un estacion.json alterno (p. ej. con mision.modo =
+%                 "solo_explorador"): lo usa el InitFcn de la COPIA del modelo
+%                 (qd2_cargar_config(bdroot, ruta)); por defecto config/estacion.json
 
 if nargin < 1, ver = 'PID'; end
 if nargin < 2, t_final = 230; end
@@ -62,7 +65,8 @@ addpath(fullfile(raiz, lower(ver)));
 dc = fullfile(tempdir, 'qd2_slcache');
 if ~exist(dc, 'dir'), mkdir(dc); end
 Simulink.fileGenControl('set', 'CacheFolder', dc, 'CodeGenFolder', dc);
-qd2_cargar_config();
+json_alt = campo(opt, 'config_json', '');
+qd2_cargar_config([], json_alt);
 src = fullfile(raiz, lower(ver), ['QD2_MissionCtrl_Dual_' ver '.slx']);
 m = ['qd2_tierra_prueba_' lower(ver)];
 dtmp = fullfile(tempdir, ['qd2_tierra_' char(java.util.UUID.randomUUID)]);
@@ -71,6 +75,10 @@ copyfile(src, fullfile(dtmp, [m '.slx']));
 if bdIsLoaded(m), close_system(m, 0); end
 load_system(fullfile(dtmp, [m '.slx']));
 limpiar = onCleanup(@() terminar(m, dtmp, conservar));
+if ~isempty(json_alt)
+    % solo en la copia: el InitFcn lee el JSON alterno
+    set_param(m, 'InitFcn', sprintf('qd2_cargar_config(bdroot, ''%s'');', strrep(json_alt, '''', '''''')));
+end
 MC = [m '/MISSION CONTROL QDRONE POSITION CONTROL'];
 es_mpc = strcmp(ver, 'MPC');
 

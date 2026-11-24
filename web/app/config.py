@@ -107,6 +107,71 @@ def filtros_vision(cfg):
     return out
 
 
+# Modo de misión (mision.modo / mision.dron_solo). Mismas reglas que qd2_params_from_config.m (§1.2 del
+# contrato "modo solo explorador"): cualquier valor inválido cae a "dual", que con un solo dron se queda en
+# WAIT_TRACKING (exige los dos drones rastreados) y nunca despega.
+MODOS = ("dual", "solo_explorador")
+
+
+def mision_modo(cfg):
+    """``{"modo": "dual"|"solo_explorador", "dron_solo": 0|1|2, "aviso": str|None}`` leído de ``cfg['mision']``.
+
+    * ``modo`` ausente, null, lista vacía o "" -> dual sin aviso; texto -> ``lower(strip())``: "dual" o
+      "solo_explorador"; cualquier otra cosa (texto desconocido, número, bool, lista, objeto) -> dual con aviso.
+    * En solo, ``dron_solo`` ausente/null/lista vacía -> 1; un número real finito (no bool) igual a 1 o 2 (1.0
+      vale) -> ese dron; cualquier otro valor (0, 3, 1.5, "1", true, NaN, [1, 2]) -> dual con aviso.
+    * En dual ``dron_solo`` = 0 (no se mira)."""
+    m = cfg.get("mision") if isinstance(cfg, dict) else None
+    m = m if isinstance(m, dict) else {}
+    dual = {"modo": "dual", "dron_solo": 0, "aviso": None}
+    raw = m.get("modo")
+    if raw is None or (isinstance(raw, list) and not raw) or (isinstance(raw, str) and raw == ""):
+        return dual
+    if not isinstance(raw, str):
+        return dict(dual, aviso=f"mision.modo desconocido ('{_txt(raw)}'): se usa dual")
+    s = raw.strip().lower()
+    if s == "dual":
+        return dual
+    if s != "solo_explorador":
+        return dict(dual, aviso=f"mision.modo desconocido ('{raw}'): se usa dual")
+    d = m.get("dron_solo")
+    if d is None or (isinstance(d, list) and not d):
+        return {"modo": "solo_explorador", "dron_solo": 1, "aviso": None}
+    if (not isinstance(d, bool) and isinstance(d, (int, float)) and math.isfinite(float(d))
+            and float(d) in (1.0, 2.0)):
+        return {"modo": "solo_explorador", "dron_solo": int(float(d)), "aviso": None}
+    return dict(dual, aviso=f"mision.dron_solo inválido ('{_txt(d)}'): se usa dual")
+
+
+def _txt(v):
+    """Valor de la config como se escribió en el JSON (para los avisos)."""
+    if isinstance(v, _Num):
+        return v.text
+    try:
+        return json.dumps(v, ensure_ascii=False)
+    except (TypeError, ValueError):
+        return str(v)
+
+
+LOOPBACK = ("127.0.0.1", "localhost")
+
+
+def es_loopback(host):
+    return str(host or "").strip().lower() in LOOPBACK
+
+
+def validar_host_puente(host):
+    """Host del Stream Server :18700 pasado por ``--host-puente``: ``localhost``/``127.0.0.1`` o una IPv4.
+    Lanza ``ValueError`` si no es válido."""
+    h = str(host or "").strip()
+    if h.lower() == "localhost":
+        return "localhost"
+    try:
+        return str(ipaddress.IPv4Address(h))
+    except ValueError:
+        raise ValueError(f"--host-puente inválido: '{host}' (usa una IPv4, p. ej. 192.168.2.11, o 127.0.0.1)")
+
+
 class _Num(float):
     """float que recuerda cómo estaba escrito en el archivo (para no cambiar 0.20 por 0.2)."""
 

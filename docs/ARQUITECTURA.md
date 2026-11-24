@@ -13,6 +13,13 @@ Si cambias un puerto, un índice de mensaje o el nombre de una función, actuali
   - **Home** = posición (x, y) donde estaba cada dron al arrancar (detectado, no fijo).
 - **Fin de misión:** E terminó la N, la cola de objetivos de R está vacía y R está libre. Entonces ambos regresan a su home, hacen hover y aterrizan cuando el operador lo indica (o automáticamente si `auto_land = true`).
 
+### Modo solo explorador (un solo QDrone, solo por configuración)
+- **Activación:** `config/estacion.json → mision.modo = "solo_explorador"` y `mision.dron_solo = 1 | 2` (por defecto 1). Cualquier otro valor, o la clave ausente, es el modo **dual** de siempre (con texto inválido se avisa). En tierra es el parámetro `P` (`p.modo_mision`, `p.dron_solo`), **no ajustable**: cambiar el modo obliga a recompilar (Build), igual que la pista.
+- **Qué hace:** el dron `dron_solo` es el EXPLORADOR desde INIT (`explorer_id = dron_solo`, `responder_id = 0`); espera **solo su** rastreo (1 s estable), START sin chequeo de homes, despega a `z_E`, recorre la N igual, los objetivos se registran y quedan "detectados" (sin respondedor: nunca "visitados"); al terminar la N + `t_fin_gracia` regresa directo a su home. LAND_ALL / `auto_land` / falla a bordo: aterriza **en su sitio**.
+- **El otro dron ("ausente"):** nunca recibe arm ni takeoff y su consigna es su última pose en el piso `[x y 0 0]`, en todos los estados. Su rastreo, FSM a bordo, protocolo y enlace se ignoran (sin alertas 2/9/10 ni bloqueo de START). El SEPARATION GUARD deja pasar las consignas (no hay con quién separarse).
+- **Telemetría:** y(64) = `dron_solo` (0 en dual), y(5) = 0, y(12) = y(13) = 0 (§3.3).
+- **Validado en PID** (librería, simulador 3D y el modelo de tierra PID en SIL). En MPC funciona igual en la librería, pero no se ha validado (qd2_cargar_config avisa).
+
 ### Dos versiones
 | | Versión **PID** | Versión **MPC** |
 |---|---|---|
@@ -122,7 +129,7 @@ Simulink es el **Stream Server** y la estación Python es el cliente. Simulink e
 | 61 | `explorer_roll`: roll del **explorador** (rad) |
 | 62 | `explorer_pitch`: pitch del **explorador** (rad) |
 | 63 | `explorer_att_ok`: 1 si y(61:62) son válidos (actitud medida y explorador rastreado), 0 si no |
-| 64 | Reservado (0) |
+| 64 | `dron_solo`: 0 = modo dual (o modelo de tierra anterior); 1 o 2 = modo solo explorador con ese dron. Firma: `explorer_id` = 1 o 2 con `responder_id = 0` (nunca ocurre en dual); entonces y(12) = y(13) = 0 |
 
 **Actitud del explorador, y(61:63).** Sale de la MISMA "Corrected Pose Data [x y z roll pitch yaw isTracking]" de OptiTrack con la que se llenan x, y, z, yaw del explorador en y(o+3…o+6) (`d(4)`, `d(5)`; el dron que va en y(61:62) se elige por `explorer_id`, igual que pose). Si el explorador no está rastreado, si no hay explorador o si algún ángulo no es finito: y(61:63) = 0. Convención (ángulos de Euler ZYX intrínsecos, regla de la mano derecha, cuerpo FLU: +x nariz, +y izquierda, +z arriba):
 
@@ -217,14 +224,14 @@ Las firmas exactas están en `simulink_qdrone2/lib/README.md`; aquí va el resum
 
 | Función | Firma (resumen) |
 |---|---|
-| `qd2_params()` · `qd2_params_from_config(...)` | Struct con todos los valores por defecto (alturas, `d_min_h`, `dz_min`, `t_mark`, tolerancias, límites de la arena, ganancias, parámetros del MPC). La segunda lo llena con `config/estacion.json` (solo MATLAB, no codegen). |
+| `qd2_params()` · `[p, aviso] = qd2_params_from_config(...)` | Struct con todos los valores por defecto (alturas, `d_min_h`, `dz_min`, `t_mark`, tolerancias, límites de la arena, ganancias, parámetros del MPC, `modo_mision` = 0 dual / 1 solo explorador y `dron_solo` = 1 o 2). La segunda lo llena con `config/estacion.json` (solo MATLAB, no codegen); `aviso` explica un `mision.modo` / `mision.dron_solo` inválido (se usa dual). |
 | `qd2_assign_roles(p1, p2, tracked1, tracked2)` | Devuelve `[explorer_id, responder_id, home1(2), home2(2), ok]`. La menor x es el explorador. Requiere los 2 rastreados de forma estable durante 1 s. |
 | `qd2_track_waypoints(vertices, spacing, z [, n_vertices])` | Densifica la polilínea de la N en waypoints `[128x4]` (tamaño fijo) y un conteo. |
 | `s = qd2_mission_init(p)` · `[s, sp_E, sp_R, tel] = qd2_mission_step(s, in, p)` | Supervisor de misión (FSM de §3.3). `s` es un struct de tamaño fijo con la tabla de 32 objetivos. `tel` trae los campos de §3.3, incluida `alerta`. |
 | `[spE_o, spR_o, guard_active, gs] = qd2_separation_guard(pE, pR, spE, spR, p [, gs, ctx])` | Versión PID. Ajusta las consignas para mantener la distancia horizontal ≥ `d_min_h` entre poses y entre consignas. Prioridad: E sigue explorando; R espera en un punto seguro. Si R está marcando y E se acerca, E espera. |
 | `y = qd2_rate_limit(y_prev, u, rate, dt [, xy_norma])` | Limitador de consignas `[x y z yaw]`. Con `xy_norma = 1` limita x,y **por la norma** (camino recto). Ver el requisito de abajo. |
 | `[u, mst, info] = qd2_mpc_position(x_est, ref, other, p, mst)` | MPC lineal a bordo, 50 Hz, horizonte N = 20. Modelo de doble integrador con actitud de primer orden. QP con cotas en las entradas (roll, pitch, empuje), resuelto con FISTA de iteraciones fijas. Incluye observador de perturbación en z (offset-free) y *feedforward* de downwash si el otro dron está encima. `u = [T roll pitch yaw_rate status]`. |
-| `y64 = qd2_telemetry_pack(...)` | Arma los 64 doubles de §3.3 (y(55) = alerta, y(56:60) = objetivo rotando, y(61:63) = roll, pitch y validez de la actitud del explorador). |
+| `y64 = qd2_telemetry_pack(...)` | Arma los 64 doubles de §3.3 (y(55) = alerta, y(56:60) = objetivo rotando, y(61:63) = roll, pitch y validez de la actitud del explorador, y(64) = `dron_solo`). |
 | `[est, t_mal] = qd2_enlace_mpc(t_mal, t, tel1, tel2, lb, cs, p, version)` | MPC LINK CHECK de tierra (§3.2): valida la respuesta de 8 doubles de cada dron y entrega `Onboard Status [4] = [fsm1 fsm2 cod1 cod2]`. |
 | `qd2_quad_plant(x, u, dist, dt)` · `qd2_onboard_step(...)` | Planta y emulación del stack a bordo para simulación: traslación 3D, actitud de primer orden, ruido y downwash. |
 | `qd2_downwash(p_low, p_high)` | Fuerza vertical y ruido sobre el dron de abajo en función de Δxy y Δz. |
@@ -255,7 +262,8 @@ Las firmas exactas están en `simulink_qdrone2/lib/README.md`; aquí va el resum
   - **TELEMETRY PACK:** y(55) = alerta (la del operador tiene prioridad) e y(56:60) = objetivo rotando, igual que el simulador 3D.
   - **Versión MPC:** manda la etiqueta 2 en el índice 24 (§3.2) y publica las alertas 9 y 10.
 - **Versiones.** Los scripts `simulink_qdrone2/construir_modelos.m` (librería y modelos de tierra PID y MPC) y `simulink_qdrone2/construir_dron_y_sim.m` (`QD2_DroneStack_MPC` y `QD2_Sim_Dual`) generan todo de forma programática a partir de las copias. Después exportan con `ExportToVersion` a `simulink_qdrone2/versiones/{R2022a,R2022b,R2023a,R2023b,R2025a}/`.
-- **Configuración.** `qd2_cargar_config.m` lee `config/estacion.json` (rutas de Motive, IDs de rigid body, IPs, pista, alturas) en `InitFcn`. Es la única fuente de verdad, compartida con la UI.
+- **Configuración.** `qd2_cargar_config.m` lee `config/estacion.json` (rutas de Motive, IDs de rigid body, IPs, pista, alturas, modo de misión) en `InitFcn`. Es la única fuente de verdad, compartida con la UI. Imprime el modo (`MODO SOLO EXPLORADOR -> dron N …` o `modo dual (2 drones)`).
+- **Modo solo explorador sin regenerar modelos.** Vive en las funciones `.m` de `lib/` y en el struct `P` (`QD2P`), que ya llega como parámetro a MISSION SUPERVISOR, SEPARATION GUARD y SETPOINT RATE LIMITER; el TELEMETRY PACK lo deduce de `explorer_id`/`responder_id` (Mission Info). Ningún `.slx` (tierra PID/MPC, `QD2_Sim_Dual`, `QD2_DroneStack_MPC`, librería, `versiones/`) se regeneró, así que tierra MPC y dron MPC siguen siendo de la misma construcción. La PC compila los mismos `.slx` y toma las `.m` nuevas.
 
 ## 6. UI web (`web/`) y configuración (`config/estacion.json`)
 - **Mapa en tiempo real (2D y 3D):** arena 3×3, polilínea de la N, ambos drones con su rol, sus consignas y su estela, la huella de la cámara del explorador, las anomalías (fuego o toma) con su estado (detectada → asignada → visitada) y coordenadas, y el feed de cámara si existe.

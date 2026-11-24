@@ -21,7 +21,11 @@ lib = fullfile(raiz, 'simulink_qdrone2', 'lib');
 if isempty(which('qd2_mission_step'))
     addpath(lib);
 end
-C = sim3d_config(raiz);
+if isstruct(opc.config)
+    C = sim3d_config(raiz, opc.config);      % estacion.json ya decodificado (pruebas, demo)
+else
+    C = sim3d_config(raiz);
+end
 % uso de la actitud en la geolocalización del detector interno ([] = config/estacion.json, vision.*)
 if ~isempty(opc.usar_actitud), C.vis.usar_actitud = logical(opc.usar_actitud); end
 if ~isempty(opc.inclinacion_max_deg)
@@ -32,6 +36,28 @@ sb_ = deg2rad(opc.sesgo_montaje_deg);
 R_montaje = rot_zyx(0, sb_(2), sb_(1));   % error del soporte (solo la cámara real; la estación no lo conoce)
 p = C.p;
 if ~isempty(opc.auto_land), p.auto_land = double(opc.auto_land); end
+% modo de misión: config (mision.modo / dron_solo, ya en C.p) o forzado por opciones
+if ~isempty(opc.modo_mision)
+    switch lower(strtrim(char(opc.modo_mision)))
+        case 'dual'
+            p.modo_mision = 0;
+        case 'solo_explorador'
+            p.modo_mision = 1;
+        otherwise
+            error('sim3d:modo', 'modo_mision "%s" desconocido (''dual'' o ''solo_explorador'').', char(opc.modo_mision));
+    end
+end
+if ~isempty(opc.dron_solo)
+    if ~(isnumeric(opc.dron_solo) && isscalar(opc.dron_solo) && any(opc.dron_solo == [1 2]))
+        error('sim3d:dron_solo', 'dron_solo debe ser 1 o 2.');
+    end
+    p.dron_solo = double(opc.dron_solo);
+end
+solo = p.modo_mision > 0.5 && (p.dron_solo == 1 || p.dron_solo == 2);
+ds = 1;
+if solo, ds = p.dron_solo; end
+da = 3 - ds;                                 % dron ausente (solo explorador)
+aus_fuera = solo && ~strcmpi(char(opc.dron_ausente), 'piso');
 version = 1 + double(strcmpi(char(opc.version), 'MPC'));
 dt = opc.dt;
 % Flujo de números aleatorios PROPIO para sensores, planta y detector: la corrida da lo
@@ -41,6 +67,10 @@ reloj_hb = tic;          % reloj de pared para el heartbeat de Python (ver sim3d
 esc = sim3d_escenario(opc, C);
 log_msg(opc, 'Simulador 3D QDrone 2 · versión %s · escenario "%s" (%d objetos)', ...
     ternario(version == 1, 'PID', 'MPC'), esc.nombre, numel(esc.obj));
+if solo
+    log_msg(opc, 'Modo SOLO EXPLORADOR: vuela el dron %d; el dron %d no recibe arm/takeoff (%s). Pista de %d vértices.', ...
+        ds, da, ternario(aus_fuera, 'fuera de OptiTrack', 'rastreado en el piso'), p.n_vertices);
+end
 
 % ---------------- estado de la simulación ---------------------------------
 X = zeros(10, 2);
@@ -96,6 +126,7 @@ Lg.explorer_id = nan(1, n_max); Lg.t_mark_acum = nan(1, n_max); Lg.t_en_estado =
 Lg.t_dwell = nan(1, n_max);
 Lg.F_dw = nan(2, n_max); Lg.ack = nan(1, n_max); Lg.det_cuadros = nan(1, n_max);
 Lg.tel_att = nan(3, n_max);   % y(61:63) de la telemetría [roll pitch válido] del explorador
+Lg.y64 = nan(1, n_max);       % y(64) de la telemetría: dron_solo (0 = dual)
 k = 0;
 t = 0;
 y64 = zeros(64, 1);
@@ -235,6 +266,8 @@ R.log = Lg;
 R.opc = opc;
 R.esc = esc;
 R.version = version;
+R.modo = struct('solo', solo, 'dron_solo', solo*ds, 'dron_ausente', ternario(solo, da, 0), ...
+    'ausente_fuera', aus_fuera);
 R.p = p;
 R.s_final = s;
 R.tel_final = tel;
@@ -286,6 +319,14 @@ end
         % solo la usa la telemetría (y(61:63)); sin ruido para no mover el generador aleatorio
         in.att = [X(7,1) X(8,1) X(7,2) X(8,2)];
         in.tracked1 = 1; in.tracked2 = 1;
+        if aus_fuera
+            % solo explorador con el otro dron fuera de la arena: OptiTrack no lo ve
+            if da == 1
+                in.tracked1 = 0; in.pose1 = nan(4, 1); in.att(1:2) = NaN;
+            else
+                in.tracked2 = 0; in.pose2 = nan(4, 1); in.att(3:4) = NaN;
+            end
+        end
         for j = 1:size(opc.perdida_rastreo, 1)
             pr = opc.perdida_rastreo(j, :);
             if tt >= pr(2) && tt < pr(3)
@@ -400,10 +441,12 @@ end
                 det.ult_act = [];
             end
         end
-        % ---- métricas de separación
+        % ---- métricas de separación (solo en dual: en solo explorador no aplican -> NaN)
         dh = norm(X(1:2, 1) - X(1:2, 2));
         dz = abs(X(3, 1) - X(3, 2));
-        if all(X(3, :) > 0.2)
+        if solo
+            dh = NaN; dz = NaN;
+        elseif all(X(3, :) > 0.2)
             dh_min = min(dh_min, dh);
             if dh < 0.3, dz_min_apil = min(dz_min_apil, dz); end
         end
@@ -413,6 +456,7 @@ end
             if ~isempty(pt), n_tel = n_tel + 1; end
             y64 = telemetria();
             Lg.tel_att(:, k) = y64(61:63);   % y(61:63) también sin puente (probar_sim3d)
+            Lg.y64(k) = y64(64);
             if ~isempty(pt), pt = sim3d_puente('enviar', pt, y64); end
         end
         % ---- estelas (cada 0.1 s)
@@ -431,6 +475,7 @@ end
         Lg.att(:, k, 1) = X(7:9, 1); Lg.att(:, k, 2) = X(7:9, 2);
         Lg.sp(:, k, 1) = sp_rl(1, :).'; Lg.sp(:, k, 2) = sp_rl(2, :).';
         Lg.estado(k) = s.estado; Lg.guard(k) = ga; Lg.dh(k) = dh; Lg.dz(k) = X(3, 1) - X(3, 2);
+        if solo, Lg.dz(k) = NaN; end
         Lg.arm(:, k) = tel.arm(:); Lg.takeoff(:, k) = tel.takeoff(:);
         Lg.fsm(:, k) = [ob(1).fsm; ob(2).fsm];
         Lg.wp_idx(k) = s.wp_idx; Lg.n_wp(k) = s.n_wp;
@@ -458,7 +503,9 @@ end
         else
             fsm_tel = [ob(1).fsm ob(2).fsm];
         end
-        aux = [in_ult.tracked1 in_ult.tracked2 fsm_tel(1) fsm_tel(2) bat(1) bat(2) 1 1];
+        comm = [1 1];
+        if solo, comm(da) = 0; end   % solo explorador: el binario del otro dron no se lanza
+        aux = [in_ult.tracked1 in_ult.tracked2 fsm_tel(1) fsm_tel(2) bat(1) bat(2) comm(1) comm(2)];
         % 61-63: roll, pitch y válido del explorador (actitud real de la planta, la misma
         % convención R = Rz(yaw)Ry(pitch)Rx(roll) que OptiTrack); 0 0 0 sin rastreo.
         % opc.actitud_en_tel = false: como un llamador viejo (sin att), y(61:63) = 0
@@ -494,6 +541,7 @@ end
         E.X = X; E.sp = sp_rl; E.fsm = [ob(1).fsm ob(2).fsm]; E.bat = bat;
         E.s = s; E.tel = tel; E.ga = ga; E.p = p; E.esc = esc; E.version = version;
         E.dh = norm(X(1:2, 1) - X(1:2, 2)); E.dz = abs(X(3, 1) - X(3, 2));
+        E.solo = solo; E.dron_solo = ds; E.aus_fuera = aus_fuera;
         E.dh_min = dh_min;
         E.estela = estela;
         ie = max(s.explorer_id, 1);
@@ -608,6 +656,12 @@ end
         M.estados_vistos = find(estados_vistos) - 1;
         M.dh_min_aire = dh_min;
         M.dz_min_apilados = dz_min_apil;
+        if solo
+            M.dh_min_aire = NaN;          % un solo dron en vuelo: no aplica
+            M.dz_min_apilados = NaN;
+        end
+        M.solo = solo;
+        M.dron_solo = solo*ds;
         M.n_objetivos = s.n_obj;
         M.n_visitados = tel.n_targets_visited;
         M.n_reales = numel(esc.obj);

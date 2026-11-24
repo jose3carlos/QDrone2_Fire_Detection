@@ -1,9 +1,9 @@
 {
   "version_control": "PID",
   "red": {
-    "ip_pc": "",
+    "ip_pc": "192.168.2.11",
     "interfaz_preferida": "Wi-Fi 2",
-    "ip_dron1": "",
+    "ip_dron1": "192.168.2.16",
     "ip_dron2": "",
     "puerto_dron1": 18001,
     "puerto_dron2": 18002,
@@ -30,11 +30,13 @@
     "tol_xy": 0.12,
     "tol_z": 0.12,
     "auto_land": false,
-    "limites_xy": [-1.5, 1.5]
+    "limites_xy": [-1.5, 1.5],
+    "modo": "solo_explorador",
+    "dron_solo": 1
   },
   "pista": {
-    "nota": "Estimación inicial desde fotos; medir en laboratorio con 'capturar vértice'",
-    "vertices": [[-1.2, 1.2], [1.2, 1.2], [-1.2, -1.2], [1.2, -1.2]]
+    "nota": "Dibujo del usuario 23-nov (arriba del dibujo = +x, escalado a ±1.2 m). Estimación: medir con 'Capturar vértice'",
+    "vertices": [[1.02, 0.41], [0.99, 1.2], [-0.9, 1.1], [-0.27, 0.29], [0.47, -0.25], [0.99, -1.01], [-1.02, -1.2]]
   },
   "camara": {
     "fuente": "dron",
@@ -46,7 +48,7 @@
   },
   "vision": {
     "modelo": "vision/modelos/mejor.pt",
-    "confianza_min": 0.5,
+    "confianza_min": 0.9,
     "backend": "auto",
     "radio_cluster_m": 0.25,
     "min_observaciones": 3,
