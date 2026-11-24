@@ -55,7 +55,7 @@
     "min_observaciones": 3,
     "tam_max_m": 0.35,
     "tam_min_m": 0.0,
-    "dist_max_tubo_toma_m": 0.25,
+    "dist_max_tubo_toma_m": 0.45,
     "dist_max_tubo_fuego_m": null,
     "usar_actitud": true,
     "inclinacion_max_deg": 15,
