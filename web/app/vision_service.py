@@ -37,7 +37,7 @@ import unicodedata
 
 from . import protocol as P
 from .config import actitud_vision, filtros_vision
-from .geo import CameraModel, Clusterer, corregir_actitud, dist_polilinea, inclinacion
+from .geo import CameraModel, Clusterer, corregir_actitud, dist_polilinea, inclinacion, tramos_sin_tubo
 
 try:
     import cv2
@@ -245,7 +245,7 @@ class VisionService(threading.Thread):
         izq, der, arr, aba = pts
         return math.hypot(der[0] - izq[0], der[1] - izq[1]), math.hypot(aba[0] - arr[0], aba[1] - arr[1])
 
-    def filtrar(self, cam, pose, cls, box, g, filtros, vertices):
+    def filtrar(self, cam, pose, cls, box, g, filtros, vertices, sin_tubo=None):
         """Aplica los filtros a una detección ya geolocalizada en ``g`` = (x, y).
         Devuelve (motivo o None, tamaño en m o None, distancia al tubo en m o None)."""
         med = self.medir_caja(cam, pose, *box)
@@ -260,7 +260,7 @@ class VisionService(threading.Thread):
                 return MOTIVO_TAMANO, tam, None
             if filtros["tam_min_m"] is not None and tam < filtros["tam_min_m"]:
                 return MOTIVO_TAMANO, tam, None
-        dist = dist_polilinea(g[0], g[1], vertices)
+        dist = dist_polilinea(g[0], g[1], vertices, sin_tubo)
         lim = filtros["dist_max_tubo_toma_m"] if cls == 1 else filtros["dist_max_tubo_fuego_m"] if cls == 0 else None
         if dist is not None and lim is not None and dist > lim:
             return MOTIVO_TUBO, tam, dist
@@ -275,6 +275,7 @@ class VisionService(threading.Thread):
         filtros = self.filtros = filtros_vision(cfg)         # en cada frame: se pueden cambiar en caliente
         act_cfg = self.actitud = actitud_vision(cfg)
         vertices = (cfg.get("pista") or {}).get("vertices") or []
+        sin_tubo = tramos_sin_tubo(cfg.get("pista"))
         latency = 0.0 if self.synthetic_fn() else float(cfg.get("web", {}).get("camara_latencia_s", 0.12))
         if pose is None:
             pose = self.poses.at(stamp - latency)
@@ -313,7 +314,7 @@ class VisionService(threading.Thread):
                 g = cam.pixel_to_ground((x1 + x2) / 2.0, (y1 + y2) / 2.0, *pose, z_plane=Z_PLANE)
                 if g is not None:
                     d["xy"] = [round(g[0], 3), round(g[1], 3)]
-                    motivo, tam, dist = self.filtrar(cam, pose, cls, (x1, y1, x2, y2), g, filtros, vertices)
+                    motivo, tam, dist = self.filtrar(cam, pose, cls, (x1, y1, x2, y2), g, filtros, vertices, sin_tubo)
                     d["tam_m"] = round(tam, 3) if tam is not None else None
                     d["dist_tubo_m"] = round(dist, 3) if dist is not None else None
                     if motivo:

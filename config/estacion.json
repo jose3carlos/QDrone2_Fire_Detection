@@ -36,7 +36,8 @@
   },
   "pista": {
     "nota": "Dibujo del usuario 23-nov (arriba del dibujo = +x, escalado a ±1.2 m). Estimación: medir con 'Capturar vértice'",
-    "vertices": [[1.02, 0.41], [0.99, 1.2], [-0.9, 1.1], [-0.27, 0.29], [0.47, -0.25], [0.99, -1.01], [-1.02, -1.2]]
+    "vertices": [[1.02, 0.41], [0.99, 1.2], [-0.9, 1.1], [-0.27, 0.29], [0.47, -0.25], [0.99, -1.01], [-1.02, -1.2]],
+    "tramos_sin_tubo": [4]
   },
   "camara": {
     "fuente": "dron",

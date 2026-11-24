@@ -40,7 +40,7 @@ from .bridge import BridgeClient, PuenteNoListo
 from .cameras import CameraHub, FolderCamera, OpenCVCamera, QDF1Client, SyntheticCamera
 from .config import (DEFAULT_PATH, PROJECT_DIR, WEB_DIR, Config, actitud_vision, es_loopback, mision_modo,
                      validar_host_puente, validar_ip)
-from .geo import CameraModel, corregir_actitud
+from .geo import CameraModel, corregir_actitud, tramos_sin_tubo
 from .mock_sim import MockServer, contar_waypoints
 from .mock_world import default_anomalies, render_view
 from .vision_service import PoseHistory, VisionService, load_detector, pose_para_geo
@@ -676,6 +676,7 @@ class Station:
             "huella": foot, "camara": self.camera.status(), "vision": self.vision.status(),
             "actitud_explorador": self.actitud_ui(),
             "pista": cfg.get("pista", {}).get("vertices", []),
+            "pista_sin_tubo": sorted(tramos_sin_tubo(cfg.get("pista"))),
             "mision": cfg.get("mision", {}), "version_config": cfg.get("version_control", "PID"),
             "verdad_mock": self.world if self.fuente == "mock" else [],
             "mock": self.mock.estado_pruebas() if self.mock is not None else None,

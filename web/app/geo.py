@@ -261,10 +261,26 @@ class CameraModel:
         return out
 
 
-def dist_polilinea(x, y, vertices):
+def tramos_sin_tubo(pista):
+    """Tramos de la pista que el dron recorre pero donde NO hay tubo (hueco entre dos piezas).
+    ``pista.tramos_sin_tubo`` = lista de números de tramo base 1 (tramo k = vértice k -> vértice k+1).
+    Simulink lo ignora (solo lee ``pista.vertices``): la ruta de vuelo no cambia. Devuelve un set."""
+    out = set()
+    for k in (pista or {}).get("tramos_sin_tubo") or []:
+        try:
+            k = int(k)
+        except (TypeError, ValueError):
+            continue
+        if k >= 1:
+            out.add(k)
+    return out
+
+
+def dist_polilinea(x, y, vertices, sin_tubo=None):
     """Distancia horizontal (m) del punto (x, y) a la polilínea ``vertices`` (en el orden dado,
     segmentos consecutivos, como ``densify`` de mock_sim y ``path_points`` de mock_world).
-    None si hay menos de 2 vértices válidos."""
+    ``sin_tubo``: números de tramo (base 1) que no cuentan como tubo.
+    None si hay menos de 2 vértices válidos o si ningún tramo tiene tubo."""
     V = []
     for v in vertices or []:
         try:
@@ -273,8 +289,11 @@ def dist_polilinea(x, y, vertices):
             continue
     if len(V) < 2:
         return None
+    sin_tubo = sin_tubo or ()
     best = None
-    for (ax, ay), (bx, by) in zip(V[:-1], V[1:]):
+    for k, ((ax, ay), (bx, by)) in enumerate(zip(V[:-1], V[1:]), start=1):
+        if k in sin_tubo:
+            continue
         dx, dy = bx - ax, by - ay
         L = dx * dx + dy * dy
         t = 0.0 if L < 1e-12 else min(1.0, max(0.0, ((x - ax) * dx + (y - ay) * dy) / L))

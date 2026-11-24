@@ -74,9 +74,16 @@ export class Mapa2D {
     const verts = this.draft || S.pista || [];
     if (verts.length) {
       g.strokeStyle = this.draft ? '#facc15' : '#f1f3f5'; g.lineWidth = Math.max(2, 0.0267 * s);
-      g.setLineDash(this.draft ? [8 * lw, 6 * lw] : []);
-      g.beginPath(); verts.forEach(([x, y], i) => { const [u, v] = this.px(x, y); i ? g.lineTo(u, v) : g.moveTo(u, v); }); g.stroke();
-      g.setLineDash([]);
+      // tramos sin tubo (pista.tramos_sin_tubo, base 1): el dron pasa por ahí pero no hay tubo -> línea fina punteada
+      const sinTubo = new Set(this.draft ? [] : (S.pista_sin_tubo || []));
+      for (let i = 0; i + 1 < verts.length; i++) {
+        const hueco = sinTubo.has(i + 1);
+        g.setLineDash(this.draft ? [8 * lw, 6 * lw] : hueco ? [4 * lw, 6 * lw] : []);
+        g.globalAlpha = hueco ? 0.45 : 1; g.lineWidth = hueco ? 1.5 * lw : Math.max(2, 0.0267 * s);
+        const [a, b] = this.px(verts[i][0], verts[i][1]), [c, d] = this.px(verts[i + 1][0], verts[i + 1][1]);
+        g.beginPath(); g.moveTo(a, b); g.lineTo(c, d); g.stroke();
+      }
+      g.setLineDash([]); g.globalAlpha = 1;
       g.font = `bold ${11 * lw}px Segoe UI, sans-serif`;
       verts.forEach(([x, y], i) => {
         const [u, v] = this.px(x, y);

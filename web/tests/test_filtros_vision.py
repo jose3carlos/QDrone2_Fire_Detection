@@ -14,7 +14,7 @@ import numpy as np
 import pytest
 
 from app.config import filtros_vision
-from app.geo import CameraModel, dist_polilinea
+from app.geo import CameraModel, dist_polilinea, tramos_sin_tubo
 from app.mock_world import ColorDetector, default_anomalies, render_view
 from app.vision_service import MOTIVO_INCLINACION, MOTIVO_TAMANO, MOTIVO_TUBO, Z_PLANE, PoseHistory, VisionService
 
@@ -87,6 +87,21 @@ def test_distancia_a_polilinea_respeta_el_orden():
     assert dist_polilinea(0.0, 1.5, N) == pytest.approx(0.3)                   # sobre el tramo de arriba
     assert dist_polilinea(0.0, 0.0, [[1.0, 1.0]]) is None                      # < 2 vértices
     assert dist_polilinea(0.0, 0.0, []) is None
+
+
+def test_tramos_sin_tubo_lab_23nov():
+    # Pista del 23-nov: el tramo 4 (v4 -> v5, diagonal por el centro) es un hueco entre las dos piezas de tubo
+    V = [[1.02, 0.41], [0.99, 1.2], [-0.9, 1.1], [-0.27, 0.29], [0.47, -0.25], [0.99, -1.01], [-1.02, -1.2]]
+    sin = tramos_sin_tubo({"vertices": V, "tramos_sin_tubo": [4]})
+    assert sin == {4}
+    assert dist_polilinea(0.0, 0.0, V) == pytest.approx(0.075, abs=0.002)         # contando el hueco: "sobre el tubo"
+    d = dist_polilinea(0.0, 0.0, V, sin)                                         # sin el hueco: al extremo más cercano
+    assert d == pytest.approx(math.hypot(0.27, 0.29), abs=1e-9)
+    assert dist_polilinea(1.0, 0.8, V, sin) == pytest.approx(0.0, abs=0.02)     # sobre el tramo 1 (sí hay tubo)
+    assert dist_polilinea(0.0, 0.0, [[0, 0], [1, 0]], {1}) is None               # ningún tramo con tubo
+    assert tramos_sin_tubo({"vertices": V}) == set()                             # campo opcional
+    assert tramos_sin_tubo({"tramos_sin_tubo": ["x", 0, -1, 2.0]}) == {2}        # se ignora lo inválido
+    assert tramos_sin_tubo(None) == set()
 
 
 def test_tamano_de_pieza_real_a_1_5_m():

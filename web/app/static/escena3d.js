@@ -252,14 +252,16 @@ export class Escena3D {
     this.renderer.render(this.scene, this.camera);
   }
 
-  _setPipe(verts) {
-    const key = JSON.stringify(verts);
+  _setPipe(verts, sinTubo = []) {
+    const key = JSON.stringify([verts, sinTubo]);
     if (key === this.pipeKey) return;
     this.pipeKey = key;
     this.pipe.clear();
     const mat = new THREE.MeshStandardMaterial({ color: 0xf1f3f5, roughness: 0.35 });
     const r = 0.0267 / 2;
+    const huecos = new Set(sinTubo);   // pista.tramos_sin_tubo (base 1): tramo sin tubo -> no se dibuja cilindro
     for (let i = 0; i + 1 < verts.length; i++) {
+      if (huecos.has(i + 1)) continue;
       const a = w2t(verts[i][0], verts[i][1], r), b = w2t(verts[i + 1][0], verts[i + 1][1], r);
       const len = a.distanceTo(b);
       const cyl = new THREE.Mesh(new THREE.CylinderGeometry(r, r, len, 12), mat);
@@ -282,7 +284,7 @@ export class Escena3D {
   }
 
   update(s) {
-    this._setPipe(s.pista || []);
+    this._setPipe(s.pista || [], s.pista_sin_tubo || []);
     this._setTruth(s.verdad_mock || []);
     const tel = s.tel;
     const ds = soloDe(s);
