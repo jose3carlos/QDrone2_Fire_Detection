@@ -14,7 +14,7 @@ import numpy as np
 import pytest
 
 from app.config import filtros_vision
-from app.geo import CameraModel, dist_polilinea, tramos_sin_tubo
+from app.geo import CameraModel, dist_polilinea, dist_tubos, tramos_sin_tubo, tubos_pista
 from app.mock_world import ColorDetector, default_anomalies, render_view
 from app.vision_service import MOTIVO_INCLINACION, MOTIVO_TAMANO, MOTIVO_TUBO, Z_PLANE, PoseHistory, VisionService
 
@@ -102,6 +102,26 @@ def test_tramos_sin_tubo_lab_23nov():
     assert tramos_sin_tubo({"vertices": V}) == set()                             # campo opcional
     assert tramos_sin_tubo({"tramos_sin_tubo": ["x", 0, -1, 2.0]}) == {2}        # se ignora lo inválido
     assert tramos_sin_tubo(None) == set()
+
+
+def test_tubos_reales_separados_de_la_ruta():
+    # Sin pista.tubos: la ruta partida en los tramos sin tubo (dos piezas)
+    V = [[1.02, 0.41], [0.99, 1.2], [-1.05, 1.1], [-0.27, 0.29], [0.47, -0.25], [0.99, -1.01], [-1.17, -1.2]]
+    T = tubos_pista({"vertices": V, "tramos_sin_tubo": [4]})
+    assert T == [V[:4], V[4:]]
+    assert tubos_pista({"vertices": V}) == [V]                                   # sin huecos: una sola pieza
+    assert tubos_pista(None) == []
+    # Con pista.tubos: mandan los tubos reales (la ruta de vuelo no cuenta)
+    reales = [[[1.02, 0.41], [0.99, 1.41], [-1.05, 1.37], [-0.27, 0.29]], [[0.47, -0.25], [0.99, -1.41], [-1.17, -1.52]]]
+    T = tubos_pista({"vertices": V, "tramos_sin_tubo": [4], "tubos": reales})
+    assert T == reales
+    # las tomas que faltaban (puntos rojos del vuelo 6) quedan pegadas a los tubos reales
+    assert dist_tubos(-0.86, 1.37, T) < 0.02
+    assert dist_tubos(1.04, -1.41, T) < 0.06
+    assert dist_polilinea(-0.86, 1.37, V, {4}) > 0.25                              # contra la ruta se descartaban
+    assert dist_tubos(0.0, 0.0, []) is None
+    # tubos inválidos o de un solo punto se ignoran y se usa la ruta
+    assert tubos_pista({"vertices": V, "tubos": [[[0, 0]], "x"]}) == [V]
 
 
 def test_tamano_de_pieza_real_a_1_5_m():

@@ -276,6 +276,57 @@ def tramos_sin_tubo(pista):
     return out
 
 
+def _puntos(pts):
+    """[[x, y], ...] válidos de una lista (se ignoran los que no son pares de números)."""
+    out = []
+    for p in pts or []:
+        try:
+            out.append([float(p[0]), float(p[1])])
+        except (TypeError, ValueError, IndexError):
+            continue
+    return out
+
+
+def tubos_pista(pista):
+    """Tubos REALES (en el piso) como lista de polilíneas [[x, y], ...].
+
+    ``pista.vertices`` es la ruta de VUELO (la que compila Simulink); los tubos pueden estar en otro lugar
+    (p. ej. más afuera, donde OptiTrack ya no rastrea al dron en vuelo). Si ``pista.tubos`` trae polilíneas
+    (lista de listas de puntos, una por pieza de tubo) se usan esas; si no, se parte ``pista.vertices`` en los
+    ``tramos_sin_tubo``. Lo usan el filtro de tomas y el dibujo de la UI; Simulink no lo lee."""
+    pista = pista or {}
+    tubos = pista.get("tubos")
+    if isinstance(tubos, list) and tubos:
+        out = [P for P in (_puntos(q) for q in tubos if isinstance(q, list)) if len(P) >= 2]
+        if out:
+            return out
+    V = _puntos(pista.get("vertices"))
+    sin = tramos_sin_tubo(pista)
+    out, cur = [], []
+    for k in range(1, len(V)):
+        if k in sin:
+            if len(cur) >= 2:
+                out.append(cur)
+            cur = []
+            continue
+        if not cur:
+            cur = [V[k - 1]]
+        cur.append(V[k])
+    if len(cur) >= 2:
+        out.append(cur)
+    return out
+
+
+def dist_tubos(x, y, tubos):
+    """Distancia horizontal (m) de (x, y) al tubo más cercano (lista de polilíneas). None si no hay tubos."""
+    best = None
+    for P in tubos or []:
+        d = dist_polilinea(x, y, P)
+        if d is not None and (best is None or d < best):
+            best = d
+    return best
+
+
 def dist_polilinea(x, y, vertices, sin_tubo=None):
     """Distancia horizontal (m) del punto (x, y) a la polilínea ``vertices`` (en el orden dado,
     segmentos consecutivos, como ``densify`` de mock_sim y ``path_points`` de mock_world).

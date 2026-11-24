@@ -252,24 +252,31 @@ export class Escena3D {
     this.renderer.render(this.scene, this.camera);
   }
 
-  _setPipe(verts, sinTubo = []) {
-    const key = JSON.stringify([verts, sinTubo]);
+  // tubos: polilíneas de los tubos REALES (s.tubos = pista.tubos o la ruta sin los huecos) -> cilindros en el piso.
+  // ruta: pista.vertices (ruta de vuelo que compila Simulink) -> línea fina punteada en el piso.
+  _setPipe(tubos, ruta = []) {
+    const key = JSON.stringify([tubos, ruta]);
     if (key === this.pipeKey) return;
     this.pipeKey = key;
     this.pipe.clear();
     const mat = new THREE.MeshStandardMaterial({ color: 0xf1f3f5, roughness: 0.35 });
     const r = 0.0267 / 2;
-    const huecos = new Set(sinTubo);   // pista.tramos_sin_tubo (base 1): tramo sin tubo -> no se dibuja cilindro
-    for (let i = 0; i + 1 < verts.length; i++) {
-      if (huecos.has(i + 1)) continue;
-      const a = w2t(verts[i][0], verts[i][1], r), b = w2t(verts[i + 1][0], verts[i + 1][1], r);
-      const len = a.distanceTo(b);
-      const cyl = new THREE.Mesh(new THREE.CylinderGeometry(r, r, len, 12), mat);
-      cyl.position.copy(a.clone().add(b).multiplyScalar(0.5));
-      cyl.quaternion.setFromUnitVectors(new THREE.Vector3(0, 1, 0), b.clone().sub(a).normalize());
-      this.pipe.add(cyl);
+    for (const P of tubos) {
+      for (let i = 0; i + 1 < P.length; i++) {
+        const a = w2t(P[i][0], P[i][1], r), b = w2t(P[i + 1][0], P[i + 1][1], r);
+        const len = a.distanceTo(b);
+        const cyl = new THREE.Mesh(new THREE.CylinderGeometry(r, r, len, 12), mat);
+        cyl.position.copy(a.clone().add(b).multiplyScalar(0.5));
+        cyl.quaternion.setFromUnitVectors(new THREE.Vector3(0, 1, 0), b.clone().sub(a).normalize());
+        this.pipe.add(cyl);
+      }
+      P.forEach(([x, y]) => { const s = new THREE.Mesh(new THREE.SphereGeometry(r * 1.35, 12, 8), mat); s.position.copy(w2t(x, y, r)); this.pipe.add(s); });
     }
-    verts.forEach(([x, y]) => { const s = new THREE.Mesh(new THREE.SphereGeometry(r * 1.35, 12, 8), mat); s.position.copy(w2t(x, y, r)); this.pipe.add(s); });
+    if (ruta.length > 1) {
+      const l = new THREE.Line(new THREE.BufferGeometry().setFromPoints(ruta.map(([x, y]) => w2t(x, y, 0.004))),
+        new THREE.LineDashedMaterial({ color: 0x38bdf8, dashSize: 0.05, gapSize: 0.05, transparent: true, opacity: 0.7 }));
+      l.computeLineDistances(); this.pipe.add(l);
+    }
   }
 
   _setTruth(list) {
@@ -284,7 +291,7 @@ export class Escena3D {
   }
 
   update(s) {
-    this._setPipe(s.pista || [], s.pista_sin_tubo || []);
+    this._setPipe(s.tubos || [], s.pista || []);
     this._setTruth(s.verdad_mock || []);
     const tel = s.tel;
     const ds = soloDe(s);
