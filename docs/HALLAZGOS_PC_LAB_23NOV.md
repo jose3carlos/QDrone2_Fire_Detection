@@ -25,3 +25,22 @@ Resultado: el modelo de tierra `versiones/R2022a/QD2_MissionCtrl_Dual_PID.slx` *
 2. MATLAB: `cd …\simulink_qdrone2\versiones\R2022a`, `open_system('QD2_MissionCtrl_Dual_PID.slx')` (sin errores, con pestaña HARDWARE).
 3. HARDWARE → Monitor & Tune (switches abajo, Command Source = 0). En el log: `qd2_cargar_config: MODO SOLO EXPLORADOR -> dron 1 …`.
 4. `web\iniciar_web.bat --fuente simulink` en la misma PC.
+
+## Modo dual (2 drones) en esta PC, sin tocar el de solo explorador
+
+Archivos aparte (el modo solo explorador sigue en `config/estacion.json` y `QD2_MissionCtrl_Dual_PID.slx`):
+
+| Archivo | Qué es |
+|---|---|
+| `config/estacion_dual.json` | Igual que `estacion.json` pero `"modo": "dual"` (sin `dron_solo`) |
+| `versiones/R2022a/QD2_MissionCtrl_Dual_PID_2D.slx` | Copia del modelo de tierra PID (mismos 451 bloques) cuyo `PostLoadFcn` e `InitFcn` llaman a `qd2_cargar_config(..., <repo>/config/estacion_dual.json)`. Guardada en R2022a con `ExtModeMexArgs` entre comillas (pestaña HARDWARE) |
+
+Comprobado sin hardware (MATLAB R2022a): al abrir dice `qd2_cargar_config: modo dual (2 drones)`, Update Diagram OK, `modo_mision = 0`, `rb_ids = [1 2]`, `qc_get_model_arguments` sin error (`-uri shmem://QD2_MissionCtrl_Dual_PID_2D:1 -URI_Host …:18001 -URI_Host2 …:18002`). **No se ha compilado ni volado en dual.**
+
+Uso:
+1. Motive cerrado, ningún otro modelo QUARC corriendo, solo un modelo de tierra a la vez (los dos usan 18001, 18002 y 18700).
+2. `cd …\simulink_qdrone2\versiones\R2022a`, `open_system('QD2_MissionCtrl_Dual_PID_2D.slx')`, HARDWARE → Monitor & Tune.
+3. Estación: `web\iniciar_web.bat --fuente simulink --config <repo>\config\estacion_dual.json` (la UI debe mostrar modo dual).
+4. Drones: `quarc_run` del dron 1 (`:18001`) y del dron 2 (`:18002`) desde la pestaña Conexiones.
+
+Falta (necesita la arena): un `.motive` con el rigid body **real** del dron 2 (ID 2, geometría de marcadores distinta a la del dron 1) y apuntar `optitrack.archivo_motive` de `estacion_dual.json` a ese archivo. Con el auxiliar actual el dron 2 nunca se rastrea y la misión se queda en WAIT_TRACKING (no despega). También falta `red.ip_dron2`.
