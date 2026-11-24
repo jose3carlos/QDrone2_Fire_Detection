@@ -34,8 +34,8 @@
     "modo": "dual"
   },
   "pista": {
-    "nota": "Dibujo del usuario 23-nov (arriba del dibujo = +x, escalado a ±1.2 m). Estimación: medir con 'Capturar vértice'",
-    "vertices": [[1.02, 0.41], [0.99, 1.2], [-0.9, 1.1], [-0.27, 0.29], [0.47, -0.25], [0.99, -1.01], [-1.02, -1.2]],
+    "nota": "Dibujo del usuario 23-nov enderezado y encuadrado en la arena 3x3 (home = (0,0), arriba del dibujo = +x). Esquinas a ±1.35 m = límite real de las consignas (xy_lim ± 1.5 menos xy_margen 0.15). Tramo 4 = hueco sin tubo",
+    "vertices": [[1.35, 0.42], [1.35, 1.35], [-1.35, 1.35], [-0.74, 0.68], [0.74, -0.68], [1.35, -1.35], [-1.35, -1.35]],
     "tramos_sin_tubo": [4]
   },
   "camara": {
