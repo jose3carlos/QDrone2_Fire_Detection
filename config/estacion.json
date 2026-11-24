@@ -14,7 +14,7 @@
   "optitrack": {
     "carpeta": "C:\\Users\\user\\Documents\\OptiTrack",
     "archivo_cal": "",
-    "archivo_motive": "",
+    "archivo_motive": "C:\\Users\\user\\Documents\\OptiTrack\\Nov 20_Team2\\RigidBody_dron1_aux2.motive",
     "rigid_body_dron1": 1,
     "rigid_body_dron2": 2,
     "bias_z_dron1": -0.07,
