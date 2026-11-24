@@ -34,8 +34,8 @@
     "modo": "dual"
   },
   "pista": {
-    "nota": "Dibujo del usuario 23-nov enderezado y encuadrado en la arena 3x3 (home = (0,0), arriba del dibujo = +x). Esquinas a ±1.35 m = límite real de las consignas (xy_lim ± 1.5 menos xy_margen 0.15). Tramo 4 = hueco sin tubo",
-    "vertices": [[1.35, 0.42], [1.35, 1.35], [-1.35, 1.35], [-0.74, 0.68], [0.74, -0.68], [1.35, -1.35], [-1.35, -1.35]],
+    "nota": "Dibujo del usuario 23-nov enderezado y encuadrado en la arena 3x3 (home = (0,0), arriba del dibujo = +x). Esquinas a ±1.28 m: a ±1.35 OptiTrack perdió el dron en la esquina (+x,+y) en los vuelos 2 y 3 del 24-nov. Tramo 4 = hueco sin tubo",
+    "vertices": [[1.28, 0.4], [1.28, 1.28], [-1.28, 1.28], [-0.7, 0.64], [0.7, -0.64], [1.28, -1.28], [-1.28, -1.28]],
     "tramos_sin_tubo": [4]
   },
   "camara": {
