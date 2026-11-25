@@ -7,7 +7,13 @@ function R = construir_modelos(varargin)
 %     4. Update Diagram de los dos modelos (verificación)
 %     5. versiones/{R2022a,R2022b,R2023a,R2023b,R2025a}/ (ExportToVersion)
 %     6. capturas/*.png (original vs. nuevo)
-%   Opciones (nombre, valor): 'verificar', 'exportar', 'capturas' (true/false).
+%     7. comprueba que cada .slx de tierra guardado (pid/, mpc/ y versiones/*/) trae
+%        ExtModeMexArgs entre comillas simples (qd2_ext_mode_args_slx); si no, error.
+%        QUARC lo lee al abrir y al compilar, ANTES del InitFcn.
+%   Ojo: versiones/R2022a/QD2_MissionCtrl_Dual_PID.slx es la copia guardada en R2022a y
+%   validada con QUARC en la PC del laboratorio (23-nov-2026): la exportación la SALTA
+%   salvo con 'pisar_r2022a_lab', true.
+%   Opciones (nombre, valor): 'verificar', 'exportar', 'capturas', 'pisar_r2022a_lab' (true/false).
 %
 %   Los modelos NUEVOS son COPIAS del modelo de tierra del Equipo2
 %   (equipo2_original/QD2_MissionCtrl_NoJoystick_2021a.slx, que no se toca)
@@ -20,7 +26,7 @@ function R = construir_modelos(varargin)
 %   Requisitos: MATLAB/Simulink R2022a+ y QUARC instalado (bloques de
 %   quarc_library). Ver pid/README.md.
 
-op = struct('verificar', true, 'exportar', true, 'capturas', true);
+op = struct('verificar', true, 'exportar', true, 'capturas', true, 'pisar_r2022a_lab', false);
 for k = 1:2:numel(varargin)
     op.(lower(varargin{k})) = varargin{k+1};
 end
@@ -46,9 +52,12 @@ if op.capturas
     capturas(raiz, orig, {R.pid, R.mpc});
 end
 if op.exportar
-    R.versiones = exportar(raiz, {R.lib, R.pid, R.mpc});
+    R.versiones = exportar(raiz, {R.lib, R.pid, R.mpc}, op.pisar_r2022a_lab);
 end
 cerrar({'QD2_MissionCtrl_Dual_PID', 'QD2_MissionCtrl_Dual_MPC', 'QD2_Mission_Lib'});
+% Lo que QUARC lee al abrir y al compilar es el ExtModeMexArgs GUARDADO (antes del InitFcn):
+% se comprueba en el .slx de cada modelo de tierra generado y exportado.
+R.ext_mode_args = comprobar_ext_mode_args(raiz, op.exportar);
 fprintf('Total: %.1f s\n', toc(t0));
 end
 
@@ -931,6 +940,14 @@ h.ForegroundColor = 'red';
 
 % Parámetros del modelo
 cfg = evalin('base', 'QD2CFG');
+% ExtModeMexArgs va GUARDADO entre comillas simples: QUARC lo evalúa al abrir el modelo y al
+% empezar el build, antes del InitFcn (docs/HALLAZGOS_PC_LAB_23NOV.md, fila 1). Un
+% qd2_cargar_config viejo en el path lo daría sin comillas: se rechaza aquí.
+if ~ext_mode_args_ok(cfg.ext_mode_args)
+    error('construir_modelos:ext_mode_args', ...
+        'QD2CFG.ext_mode_args no va entre comillas simples (%s). Revisa qué qd2_cargar_config.m está en el path.', ...
+        cfg.ext_mode_args);
+end
 set_param(mdl, 'ExtModeMexArgs', cfg.ext_mode_args);
 set_param(mdl, 'PreLoadFcn', preload_fcn());
 set_param(mdl, 'PostLoadFcn', 'try, qd2_cargar_config(); catch qd2_e, warning(qd2_e.message); end');
@@ -1599,7 +1616,7 @@ warning(w);
 fprintf('Capturas en %s\n', dcap);
 end
 
-function res = exportar(raiz, archivos)
+function res = exportar(raiz, archivos, pisar_r2022a_lab)
 versiones = {'R2022a', 'R2022b', 'R2023a', 'R2023b', 'R2025a'};
 res = struct('version', {}, 'archivo', {}, 'ok', {}, 'mensaje', {});
 for i = 1:numel(versiones)
@@ -1609,6 +1626,15 @@ for i = 1:numel(versiones)
         [~, m] = fileparts(archivos{k});
         destino = fullfile(dv, [m '.slx']);
         r = struct('version', versiones{i}, 'archivo', destino, 'ok', false, 'mensaje', '');
+        if strcmp(versiones{i}, 'R2022a') && strcmp(m, 'QD2_MissionCtrl_Dual_PID') ...
+                && exist(destino, 'file') && ~pisar_r2022a_lab
+            % Guardada en R2022a y validada con QUARC en el laboratorio: no se pisa.
+            r.ok = true;
+            r.mensaje = 'SALTADO (validado en el lab; usar ''pisar_r2022a_lab'', true para reescribirlo)';
+            fprintf('Exportar %s %s: %s\n', versiones{i}, m, r.mensaje);
+            res(end+1) = r; %#ok<AGROW>
+            continue
+        end
         try
             if exist(destino, 'file'), delete(destino); end
             if strcmp(versiones{i}, 'R2025a')
@@ -1625,6 +1651,44 @@ for i = 1:numel(versiones)
         fprintf('Exportar %s %s: %s\n', versiones{i}, m, r.mensaje);
         res(end+1) = r; %#ok<AGROW>
     end
+end
+end
+
+function res = comprobar_ext_mode_args(raiz, con_versiones)
+% Lee ExtModeMexArgs de la configuración activa de cada .slx de tierra guardado (pid/, mpc/ y,
+% si se exportó, versiones/*/) y falla si alguno no va entre comillas simples.
+archivos = {fullfile(raiz, 'pid', 'QD2_MissionCtrl_Dual_PID.slx'), ...
+            fullfile(raiz, 'mpc', 'QD2_MissionCtrl_Dual_MPC.slx')};
+if con_versiones
+    d = dir(fullfile(raiz, 'versiones', '*', 'QD2_MissionCtrl_Dual_*.slx'));
+    for k = 1:numel(d)
+        archivos{end+1} = fullfile(d(k).folder, d(k).name); %#ok<AGROW>
+    end
+end
+res = struct('archivo', archivos, 'ext_mode_args', '', 'ok', false);
+for k = 1:numel(archivos)
+    res(k).ext_mode_args = qd2_ext_mode_args_slx(archivos{k});
+    res(k).ok = ext_mode_args_ok(res(k).ext_mode_args);
+    fprintf('ExtModeMexArgs guardado %s: %s\n', ternario(res(k).ok, 'OK', 'SIN COMILLAS'), archivos{k});
+end
+malos = archivos(~[res.ok]);
+if ~isempty(malos)
+    error('construir_modelos:ext_mode_args_guardado', ...
+        'ExtModeMexArgs guardado sin comillas simples (QUARC falla al abrir/compilar):\n%s', ...
+        strjoin(malos, newline));
+end
+end
+
+function ok = ext_mode_args_ok(a)
+% Entre comillas y evaluable como lista de cadenas (lo que hace QUARC con el campo).
+ok = false;
+if ~ischar(a) || numel(a) < 2 || a(1) ~= '''' || a(end) ~= ''''
+    return
+end
+try
+    c = eval(['{' a '}']);
+    ok = iscell(c) && ~isempty(c) && all(cellfun(@ischar, c)) && startsWith(c{1}, '-w ');
+catch
 end
 end
 

@@ -4,9 +4,12 @@ function C = sim3d_config(raiz, cfg)
 %   C = sim3d_config(raiz, cfg)   usa el struct cfg (ya decodificado) en lugar del archivo
 %   C.cfg  : estacion.json decodificado
 %   C.p    : qd2_params_from_config(cfg) (pista, alturas, d_min_h, ...)
+%   C.ruta : ruta de vuelo (pista.vertices, la de Simulink) · C.tubos: tubos reales (geo.tubos_pista;
+%            {} sin pista.vertices ni pista.tubos, como la estación)
 %   C.cam  : modelo de cámara igual al de la estación (web/app/geo.py), con el pivote de Motive
-%   C.vis  : radio de cluster, mínimo de observaciones, confianza mínima y uso de la actitud
-%            (usar_actitud, signos, offset, inclinación máxima) como web/app/config.py
+%   C.vis  : radio de cluster, mínimo de observaciones, confianza mínima, uso de la actitud
+%            (usar_actitud, signos, offset, inclinación máxima) y distancia máxima al tubo de
+%            tomas y fuegos (dist_toma, dist_fuego) como web/app/config.py
 %   C.puerto : red.puerto_puente
 
 if isempty(which('qd2_params_from_config'))
@@ -24,6 +27,26 @@ end
 C.cfg = cfg;
 C.ruta_cfg = ruta;
 C.p = qd2_params_from_config(cfg);
+
+% ---------------- Pista: ruta de vuelo y tubos REALES ---------------------
+% C.ruta  : pista.vertices = ruta de VUELO que compila Simulink (C.p, máx. 16 vértices)
+% C.tubos : tubos reales en el piso, cell de polilíneas Nx2, con las reglas de geo.tubos_pista:
+%           pista.tubos (polilíneas válidas, >= 2 puntos) o, si no hay, la ruta partida en
+%           pista.tramos_sin_tubo. Es lo que usa el filtro de tomas del detector interno (como
+%           vision_service.filtrar). Sin pista.vertices ni pista.tubos en la config queda VACÍO,
+%           igual que en la estación (tubos_pista da [] y no filtra): la N por defecto de C.ruta
+%           solo se dibuja (sim3d_escenario la usa como esc.tubos para el dibujo y la colocación).
+% C.tubos_reales : true si salen de pista.tubos (false = ruta partida en los huecos)
+pista = struct();
+if isfield(cfg, 'pista') && isstruct(cfg.pista), pista = cfg.pista; end
+C.ruta = C.p.vertices(1:C.p.n_vertices, :);
+C.tubos = sim3d_tubos('leer', pista);
+C.sin_tubo = sim3d_tubos('sin_tubo', pista);
+C.tubos_reales = false;
+if isfield(pista, 'tubos')
+    solo_tubos.tubos = pista.tubos;
+    C.tubos_reales = ~isempty(sim3d_tubos('leer', solo_tubos));
+end
 
 % ---------------- Cámara (misma convención que web/app/geo.py) ------------
 cam.W = 640; cam.H = 480;
@@ -134,6 +157,15 @@ if isfield(cfg, 'vision') && isstruct(cfg.vision)
         end
     end
 end
+% Filtro de distancia al tubo (filtros_vision de web/app/config.py): toma 0.25 m y fuego sin filtro
+% por defecto; null, <= 0 o no finito -> [] (sin filtro); bool, texto o lista -> el valor por defecto
+% (sim3d_leer_json cambia una lista por el texto "[]" al leer el archivo).
+vis.dist_toma = 0.25;
+vis.dist_fuego = [];
+if isfield(cfg, 'vision') && isstruct(cfg.vision)
+    vis.dist_toma = lim_filtro(cfg.vision, 'dist_max_tubo_toma_m', vis.dist_toma);
+    vis.dist_fuego = lim_filtro(cfg.vision, 'dist_max_tubo_fuego_m', vis.dist_fuego);
+end
 C.vis = vis;
 
 C.puerto = 18700;
@@ -146,6 +178,23 @@ end
 function ok = es_num(v)
 % número real finito (no logical), como el isinstance(v, (int, float)) de Python sin bool
 ok = isnumeric(v) && isscalar(v) && isreal(v) && isfinite(v);
+end
+
+function out = lim_filtro(v, clave, dflt)
+% un umbral de filtros_vision: ausente -> dflt; null -> []; número real (no bool) -> él mismo si es
+% finito y > 0, si no []; cualquier otra cosa -> dflt
+out = dflt;
+if ~isfield(v, clave), return; end
+a = v.(clave);
+if isempty(a) && isnumeric(a)
+    out = [];
+elseif isnumeric(a) && isscalar(a) && isreal(a)
+    if isfinite(a) && a > 0
+        out = double(a);
+    else
+        out = [];
+    end
+end
 end
 
 function out = par(val, dflt, valido)

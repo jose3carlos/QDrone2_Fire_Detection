@@ -39,10 +39,10 @@ from . import protocol as P
 from .bridge import BridgeClient, PuenteNoListo
 from .cameras import CameraHub, FolderCamera, OpenCVCamera, QDF1Client, SyntheticCamera
 from .config import (DEFAULT_PATH, PROJECT_DIR, WEB_DIR, Config, actitud_vision, es_loopback, mision_modo,
-                     validar_host_puente, validar_ip)
+                     mision_t_perdida_aterrizar, validar_host_puente, validar_ip)
 from .geo import CameraModel, corregir_actitud, tramos_sin_tubo, tubos_pista
 from .mock_sim import MockServer, contar_waypoints
-from .mock_world import default_anomalies, render_view
+from .mock_world import anomalias_mock, render_view
 from .vision_service import PoseHistory, VisionService, load_detector, pose_para_geo
 
 STATIC = os.path.join(WEB_DIR, "app", "static")
@@ -92,6 +92,9 @@ class Station:
         # MPC: drones que la estación VIO fallar en esta corrida de Simulink (FSM a bordo 7/8, o 9 debiendo
         # volar). La alerta 9 es global; con esto solo sale en rojo el dron que falló (ver protocol.fsm_info).
         self._falla_vista = {1: False, 2: False}
+        # alerta 2 (pérdida de rastreo): drones vistos con tracked = 0 mientras dura (el número del dron no viaja
+        # en y(1..64); ver protocol.texto_alerta_rastreo). Se olvida cuando la alerta deja de ser 2.
+        self._perdida_vista = frozenset()
         # con el estacion.json real se guarda en web/datos; con otro (pruebas) junto a ese archivo
         same = os.path.abspath(config_path) == os.path.abspath(DEFAULT_PATH)
         self._persist_path = os.path.join(DATA_DIR if same else os.path.dirname(os.path.abspath(config_path)),
@@ -124,8 +127,10 @@ class Station:
             self.sim_targets = {}
         self._last_alerta = 0
         self._falla_vista = {1: False, 2: False}
+        self._perdida_vista = frozenset()
         self._load_targets()
-        self.world = cfg.get("web", {}).get("mock_anomalias") or default_anomalies(cfg["pista"]["vertices"])
+        # web.mock_anomalias o, si no, sobre los tubos reales (pista.tubos) o la ruta (sin pista.tubos)
+        self.world = anomalias_mock(cfg)
         if self.fuente == "mock":
             self.mock = MockServer(cfg, "127.0.0.1", 0, speed=self.mock_speed,
                                    cfg_fn=self.cfg.reload_if_changed).start()
@@ -237,6 +242,7 @@ class Station:
             self._persisted = False
         if restarted:
             self._falla_vista = {1: False, 2: False}
+            self._perdida_vista = frozenset()
         if restarted and (self.vision.targets()[0] or self.vision.targets()[1]):
             self.vision.reset()
             self._saved_sig = None
@@ -274,11 +280,33 @@ class Station:
                 self.log(f"Simulink reporta el objetivo {ob['id']} ({P.CLASSES.get(ob['cls'])}, "
                          f"{ob['x']:+.2f}, {ob['y']:+.2f}) que esta estación no publicó")
 
+    def _registrar_perdida(self, tel):
+        """Alerta 2: recuerda qué drones se vieron con tracked = 0 (en solo explorador, solo el que vuela)."""
+        if int(tel.get("alerta") or 0) != 2:
+            self._perdida_vista = frozenset()
+            return
+        if tel.get("mission_state") not in P.ESTADOS_ATERRIZAJE_RASTREO + (P.PAUSED,):
+            return
+        for d in P.drones_sin_rastreo(tel):
+            if d not in self._perdida_vista:
+                self._perdida_vista = self._perdida_vista | {d}   # copia: _tel_ui la lee desde otro hilo
+                que = ("aterrizaje por pérdida de rastreo" if tel.get("mission_state") in P.ESTADOS_ATERRIZAJE_RASTREO
+                       else "pérdida de rastreo (PAUSED)")
+                self.log(f"Dron {d}: {que} (tracked = 0)")
+
+    def _texto_alerta(self, tel):
+        """y(55) con contexto: la alerta 2 dice qué dron aterriza (o si la misión está en PAUSA)."""
+        if int(tel.get("alerta") or 0) == 2:
+            txt = P.texto_alerta_rastreo(tel.get("mission_state"), self._perdida_vista or P.drones_sin_rastreo(tel))
+            if txt:
+                return txt
+        return tel.get("alerta_texto")
+
     def _check_alerta(self, tel):
         a = int(tel.get("alerta") or 0)
         if a != self._last_alerta:
             if a:
-                self.log(f"ALERTA {a}: {tel.get('alerta_texto')}")
+                self.log(f"ALERTA {a}: {self._texto_alerta(tel)}")
             else:
                 self.log(f"Alerta {self._last_alerta} despejada")
             self._last_alerta = a
@@ -288,6 +316,7 @@ class Station:
     def _on_telemetry(self, tel, stamp):
         self._sync_sim_targets(tel, stamp)
         self._sync_ids(tel)
+        self._registrar_perdida(tel)
         self._check_alerta(tel)
         self._registrar_fallas(tel)
         e = tel.get("explorer_id", 0)
@@ -314,7 +343,13 @@ class Station:
                 self.log(f"Dron {d}: falla a bordo (FSM {dd['fsm_state']}, {dd['fsm_texto']})")
 
     def _tel_ui(self, tel):
-        """Telemetría para la UI: en MPC, con la alerta 9, el 9 del dron que NO falló es su fin de vuelo."""
+        """Telemetría para la UI: en MPC, con la alerta 9, el 9 del dron que NO falló es su fin de vuelo. Con la
+        alerta 2, el texto dice qué dron aterriza por pérdida de rastreo (deducido de tracked = 0)."""
+        if tel and int(tel.get("alerta") or 0) == 2:
+            txt = self._texto_alerta(tel)
+            if txt != tel.get("alerta_texto"):
+                tel = dict(tel)
+                tel["alerta_texto"] = txt
         if not tel or tel.get("version") != 2 or not any(self._falla_vista.values()):
             return tel
         tel = dict(tel)
@@ -444,6 +479,13 @@ class Station:
                             "PC y recompila."})
         if mc["aviso"]:
             out.append({"nivel": "amarillo", "msg": "estacion.json: " + mc["aviso"]})
+        tp = mision_t_perdida_aterrizar(self.cfg.data)
+        if tp["aviso"]:
+            out.append({"nivel": "amarillo", "msg": "estacion.json: " + tp["aviso"]})
+        elif tp["valor"] > 0.2:
+            out.append({"nivel": "amarillo", "msg": f"estacion.json: mision.t_perdida_aterrizar_s = {tp['valor']:g} s: "
+                        f"entre 0.2 s y {tp['valor']:g} s sin rastreo la misión pasa a PAUSED; con el binario PID el dron "
+                        "ya cae a los 0.2 s (déjalo en 0.2)."})
         if tel and m["efectivo"] == "solo_explorador" and m["dron_solo"] in (1, 2):
             da = 3 - m["dron_solo"]
             dd = (tel.get("drones") or {}).get(da) or {}
@@ -570,7 +612,11 @@ class Station:
         # la cámara virtual simula la cámara FÍSICA: siempre con la actitud verdadera (sin importar
         # vision.usar_actitud), para que apagar la corrección muestre el error en lugar de esconderlo
         att = self.explorer_attitude() or (0.0, 0.0)
-        return render_view(cam, tuple(pose) + tuple(att), self.cfg.get("pista", "vertices"), self.world, rng=self.rng)
+        # tubería = tubos reales (pista.tubos o la ruta partida en tramos_sin_tubo), el mismo criterio del filtro
+        # de tomas; el explorador vuela pista.vertices
+        pista = self.cfg.data.get("pista") or {}
+        return render_view(cam, tuple(pose) + tuple(att), pista.get("vertices") or [], self.world, rng=self.rng,
+                           tubos=tubos_pista(pista))
 
     def _vision_gate(self):
         tel = self.bridge.telemetry if self.bridge else None

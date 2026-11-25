@@ -1,13 +1,22 @@
 """Mundo sintético para probar sin hardware: anomalías "verdaderas", cámara virtual y
 un detector falso por color.
 
-* ``default_anomalies(vertices)``: coloca fuegos y tomas sobre la N (fracciones del recorrido).
+* ``default_anomalies(vertices, tubos=None)``: coloca fuegos y tomas sobre la ruta (fracciones del recorrido)
+  o, si la pista trae tubos reales (``pista.tubos``), SOBRE esos tubos. ``anomalias_mock(cfg)`` = las que usa
+  la estación (``web.mock_anomalias`` o las de la pista de la config).
 * ``render_view(...)``: imagen BGR de lo que vería la RealSense del explorador hacia abajo
-  (tapete oscuro, retícula, tubería blanca, fuego = disco rojo-naranja, toma = bloque azul).
+  (tapete oscuro, retícula, tubería blanca, fuego = disco rojo-naranja, toma = bloque azul). La tubería son
+  las polilíneas ``tubos`` que se le pasen (la estación pasa ``geo.tubos_pista``) o, sin ``tubos``, la
+  polilínea ``vertices`` completa (comportamiento anterior).
 * ``ColorDetector``: implementa la misma interfaz que ``vision/detector.py``
   (``detect(frame_bgr) -> [(cls, conf, x1, y1, x2, y2)]``) segmentando esos colores.
   Es un detector *de verdad* sobre la imagen (no hace trampa leyendo la posición real), así la
   cadena imagen → caja → rayo → suelo → cluster → objetivo se prueba completa.
+
+Ruta y tubos (laboratorio del 24-nov): ``pista.vertices`` es la RUTA DE VUELO (la que compila Simulink y
+recorre el dron mock) y ``pista.tubos`` la posición REAL de los tubos, a 0.1-0.45 m de la ruta (más afuera,
+donde OptiTrack ya no rastrea al dron). Las piezas reales están sobre los tubos, así que con ``pista.tubos``
+el mundo sintético pone ahí las anomalías y dibuja esos tubos (no la ruta).
 """
 from __future__ import annotations
 
@@ -19,6 +28,8 @@ try:
     import cv2
 except Exception:  # pragma: no cover
     cv2 = None
+
+from .geo import tubos_pista
 
 PIPE_D = 0.0267          # PVC 3/4" SCH40, diámetro exterior (m)
 Z_PIPE = PIPE_D / 2.0
@@ -50,8 +61,27 @@ def path_points(vertices, fractions):
     return out
 
 
-def default_anomalies(vertices):
-    """3 anomalías: fuego, toma, fuego, separadas 8 cm a un lado del tubo."""
+def default_anomalies(vertices, tubos=None):
+    """Anomalías "verdaderas" del mundo sintético.
+
+    Sin ``tubos`` (comportamiento anterior): 3 anomalías (fuego, toma, fuego) a las fracciones 0.22 / 0.52 /
+    0.83 de la ruta ``vertices``, separadas 8 cm a un lado.
+
+    Con ``tubos`` (polilíneas de los tubos REALES, ``pista.tubos``): las anomalías van SOBRE los tubos (en su
+    eje, como las piezas del laboratorio), no sobre la ruta de vuelo: con 2 o más piezas, 2 por pieza a las
+    fracciones 0.35 y 0.75 de su longitud; con una sola pieza, 3 a 0.22 / 0.52 / 0.83. Las clases alternan
+    toma, fuego, toma, ... Con la pista del 24-nov caen en (0.46, 1.40) toma, (-0.91, 1.176) fuego,
+    (0.962, -1.347) toma y (-0.313, -1.476) fuego: sobre el tubo (distancia 0) y a 0.23 / 0.07 / 0.33 /
+    0.35 m de la ruta (orillas en y ~ +1.40 / -1.35 / -1.48), dentro de lo que ve la cámara del explorador a
+    1.5 m. Contra la ruta, la toma de (0.962, -1.347) se descartaría "lejos del tubo" (> 0.25 m)."""
+    T = _tubos_validos(tubos)
+    if T:
+        fr = [0.35, 0.75] if len(T) >= 2 else [0.22, 0.52, 0.83]
+        out = []
+        for P in T:
+            for x, y, _, _ in path_points(P, fr):
+                out.append({"cls": (len(out) + 1) % 2, "x": round(x, 3), "y": round(y, 3)})
+        return out
     pts = path_points(vertices, [0.22, 0.52, 0.83])
     out = []
     for k, (x, y, dx, dy) in enumerate(pts):
@@ -61,9 +91,33 @@ def default_anomalies(vertices):
     return out
 
 
-def render_view(cam, pose, vertices, anomalies, arena_half=1.5, rng=None):
+def _tubos_validos(tubos):
+    """Polilíneas de >= 2 puntos de ``tubos`` (mismo criterio que ``geo.tubos_pista``) o []."""
+    if not isinstance(tubos, list) or not tubos:
+        return []
+    return tubos_pista({"tubos": tubos})        # sin vertices: si no hay tubos válidos da []
+
+
+def tubos_reales(pista):
+    """Tubos REALES de la pista (``pista.tubos`` válidos) o None si la pista no los trae.
+    (``geo.tubos_pista`` en cambio cae a la ruta partida en los huecos.)"""
+    return _tubos_validos((pista or {}).get("tubos")) or None
+
+
+def anomalias_mock(cfg):
+    """Anomalías de la cámara sintética de la estación (y la verdad de la e2e): ``web.mock_anomalias`` si está;
+    si no, ``default_anomalies`` de la pista de la config (sobre ``pista.tubos`` si los hay, si no sobre la ruta)."""
+    cfg = cfg or {}
+    pista = cfg.get("pista") or {}
+    return ((cfg.get("web") or {}).get("mock_anomalias")
+            or default_anomalies(pista.get("vertices") or [], tubos_reales(pista)))
+
+
+def render_view(cam, pose, vertices, anomalies, arena_half=1.5, rng=None, tubos=None):
     """Imagen BGR (cam.h x cam.w) vista por la cámara del explorador en ``pose`` = (x, y, z, yaw) o
-    (x, y, z, yaw, roll, pitch) (actitud en la convención de ``geo.R_mundo_cuerpo``)."""
+    (x, y, z, yaw, roll, pitch) (actitud en la convención de ``geo.R_mundo_cuerpo``).
+    La tubería son las polilíneas ``tubos`` (tubos reales, p. ej. ``geo.tubos_pista(pista)``); con
+    ``tubos`` = None se dibuja la polilínea ``vertices`` completa (comportamiento anterior)."""
     x, y, z, yaw, *att = pose
     roll, pitch = (tuple(att) + (0.0, 0.0))[:2]
     img = np.empty((cam.h, cam.w, 3), np.uint8)
@@ -91,10 +145,13 @@ def render_view(cam, pose, vertices, anomalies, arena_half=1.5, rng=None):
         line_y = np.array([[-arena_half, g, 0.0], [arena_half, g, 0.0]])
         draw_poly(_densify(line_x, 0.1), COL_GRID, 2)
         draw_poly(_densify(line_y, 0.1), COL_GRID, 2)
-    # tubería
-    V = np.asarray(vertices, dtype=float)
-    P = np.column_stack([V, np.full(len(V), Z_PIPE)])
-    draw_poly(_densify(P, 0.02), COL_PIPE, PIPE_D * cam.fx / depth)
+    # tubería: los tubos reales si se pasan; si no, la ruta completa
+    for T in ([vertices] if tubos is None else tubos):
+        V = np.asarray(T, dtype=float)
+        if V.ndim != 2 or len(V) < 2:
+            continue
+        P = np.column_stack([V[:, :2], np.full(len(V), Z_PIPE)])
+        draw_poly(_densify(P, 0.02), COL_PIPE, PIPE_D * cam.fx / depth)
     # anomalías
     for a in anomalies:
         if int(a["cls"]) == 0:
@@ -156,8 +213,15 @@ class ColorDetector:
                 if area < self.min_area:
                     continue
                 fill = area / float(max(1, w * hh))
-                # en el borde de la imagen la pieza está cortada: confianza menor
+                # Pieza cortada por el borde de la imagen: confianza baja (<= 0.594, igual que antes), nunca
+                # pasa el umbral real 0.9. Pieza completa: 0.90-0.99, como el detector real con las piezas del
+                # laboratorio (fuegos >= 0.93; una planta de hojas rojas <= 0.87), así la demo mock funciona con
+                # el vision.confianza_min = 0.9 de config/estacion.json. Antes era 0.55 + 0.4 * relleno: un disco
+                # de fuego (relleno ~pi/4) daba 0.86 y con 0.9 la demo no veía ningún fuego.
                 edge = x1 <= 1 or y1 <= 1 or x1 + w >= frame_bgr.shape[1] - 1 or y1 + hh >= frame_bgr.shape[0] - 1
-                conf = min(0.99, 0.55 + 0.4 * fill) * (0.6 if edge else 1.0)
+                if edge:
+                    conf = min(0.99, 0.55 + 0.4 * fill) * 0.6
+                else:
+                    conf = min(0.99, 0.90 + 0.09 * fill)
                 out.append((cls, round(float(conf), 3), int(x1), int(y1), int(x1 + w), int(y1 + hh)))
         return out

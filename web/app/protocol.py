@@ -49,7 +49,8 @@ ROLE_NONE, ROLE_EXPLORER, ROLE_RESPONDER = 0, 1, 2
 ALERTAS = {
     0: ("nada", ""),
     1: ("Homes demasiado cerca: START rechazado. Separa los drones y vuelve a dar START.", "aviso"),
-    2: ("Pérdida de rastreo (OptiTrack): misión en PAUSA, los dos drones en hover.", "grave"),
+    2: ("Pérdida de rastreo (OptiTrack, más de 0.2 s): ese dron aterriza en su sitio y no vuelve a despegar; "
+        "en dual el otro se aparta, regresa a su home y aterriza.", "grave"),
     3: ("Timeout de despegue: se canceló o se abortó el despegue.", "grave"),
     4: ("Timeout de aterrizaje: un dron no se vio en el suelo (revisa el pivot del rigid body).", "aviso"),
     5: ("E-STOP del operador: motores cortados en los dos drones.", "grave"),
@@ -72,6 +73,45 @@ def alerta_info(code):
         return ("y(55) no es un número (NaN o inf): telemetría corrupta o TELEMETRY PACK mal cableado. "
                 "Revisa el modelo de Simulink.", "grave")
     return (f"Alerta desconocida (código {code}): revisa el modelo de Simulink.", "grave")
+
+
+# Alerta 2 (pérdida de rastreo) según el estado de misión (qd2_mission_step): en el aire ese dron aterriza
+# (9 ABORT = reacción del otro dron, 7 LANDING, 8 DONE); PAUSED solo si mision.t_perdida_aterrizar_s > 0.2 s.
+# El número del dron no viaja en y(1..64) (tel.falla solo va al bus Mission Info): se deduce de tracked = 0.
+ESTADOS_ATERRIZAJE_RASTREO = (ABORT, LANDING, DONE)
+
+
+def drones_sin_rastreo(tel):
+    """Drones con ``tracked = 0`` en la trama; en solo explorador (y(64) = 1 o 2) solo cuenta el dron que vuela."""
+    if not tel:
+        return []
+    ds = tel.get("dron_solo") or 0
+    out = []
+    for d, blk in sorted((tel.get("drones") or {}).items()):
+        if ds in (1, 2) and d != ds:
+            continue
+        if not (blk or {}).get("tracked"):
+            out.append(int(d))
+    return out
+
+
+def texto_alerta_rastreo(mission_state, perdidos):
+    """Texto de la alerta 2 con el contexto: ``perdidos`` = drones vistos con tracked = 0 (ver
+    ``drones_sin_rastreo``). None si el estado no aclara nada (se queda el texto de ``ALERTAS[2]``)."""
+    ds = sorted(set(int(d) for d in perdidos or []))
+    if not ds:
+        quien = "dron ?"
+    elif len(ds) == 1:
+        quien = f"dron {ds[0]}"
+    else:
+        quien = "drones " + " y ".join(str(d) for d in ds)
+    if mission_state in ESTADOS_ATERRIZAJE_RASTREO:
+        return (f"Aterrizaje por pérdida de rastreo ({quien}): ese dron baja en su sitio y no vuelve a despegar; "
+                "en dual el otro se aparta, regresa a su home y aterriza.")
+    if mission_state == PAUSED:
+        return (f"Pérdida de rastreo ({quien}): misión en PAUSA (mision.t_perdida_aterrizar_s > 0.2 s); si sigue "
+                "sin rastreo, ese dron aterriza.")
+    return None
 
 
 # Estado del dron en o+2 (``fsm_state``). Depende de la versión y(3):

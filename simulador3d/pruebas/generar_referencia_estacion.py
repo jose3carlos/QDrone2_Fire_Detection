@@ -10,6 +10,15 @@ pivote de Motive (``optitrack.bias_z_dronN``), ``vision.usar_actitud`` / ``actit
 ``process`` de web/app/vision_service.py). Se generan DESPUÉS de los casos de siempre con el mismo
 generador aleatorio, así que los casos nivelados no cambian.
 
+Casos de tubos (``tubos``): ``geo.tubos_pista`` / ``tramos_sin_tubo`` / ``dist_tubos`` con y sin
+``pista.tubos`` (ruta partida en ``tramos_sin_tubo``, valores inválidos), los umbrales
+``dist_max_tubo_toma_m`` / ``dist_max_tubo_fuego_m`` de ``filtros_vision`` y la decisión "lejos del tubo"
+de ``VisionService.filtrar`` con la cámara real. Usan un generador aleatorio APARTE (semilla 24) y se
+escriben al final, así que no cambian ninguno de los casos anteriores.
+
+``anomalias_web`` se calcula con la N de 4 vértices fija de ``probar_sim3d.m`` (la que usan las pruebas
+en modo dual), no con la pista del día de config/estacion.json.
+
 Uso (necesita numpy; por ejemplo la venv de la web):
     C:\\Users\\<usuario>\\.venvs\\qd2_web\\Scripts\\python.exe simulador3d\\pruebas\\generar_referencia_estacion.py
 """
@@ -24,9 +33,16 @@ AQUI = os.path.dirname(os.path.abspath(__file__))
 RAIZ = os.path.dirname(os.path.dirname(AQUI))
 sys.path.insert(0, os.path.join(RAIZ, "web"))
 from app.config import actitud_vision, filtros_vision  # noqa: E402
-from app.geo import CameraModel, Clusterer  # noqa: E402
+from app.geo import CameraModel, Clusterer, dist_tubos, tramos_sin_tubo, tubos_pista  # noqa: E402
 from app.mock_world import default_anomalies  # noqa: E402
-from app.vision_service import pose_para_geo  # noqa: E402
+try:                                          # cámara sintética con tubos reales (mock_world.anomalias_mock)
+    from app.mock_world import anomalias_mock  # noqa: E402
+except ImportError:                           # pragma: no cover (estación anterior a pista.tubos en el mock)
+    anomalias_mock = None
+from app.vision_service import MOTIVO_TUBO, VisionService, pose_para_geo  # noqa: E402
+
+# N de 4 vértices fija de las pruebas en modo dual (probar_sim3d.m: cfg_dual.pista.vertices)
+N_PRUEBAS = [[-1.2, 1.2], [1.2, 1.2], [-1.2, -1.2], [1.2, -1.2]]
 
 with open(os.path.join(RAIZ, "config", "estacion.json"), encoding="utf-8") as f:
     cfg = json.load(f)
@@ -125,6 +141,83 @@ for vis_var, opt_var in VARIANTES:
             "incl_deg": math.degrees(info["incl"]) if info["ok"] else None, "inclinado": inclinado,
             "suelo": lista(cam_v.pixel_to_ground(u, v, *q6, z_plane=0.02))})
 
+
+# ---------------------------------------------------------------- tubos reales (pista.tubos)
+rt = random.Random(24)          # generador aparte: los casos anteriores no cambian
+pista_real = cfg.get("pista") or {}
+sin_tubos = {k: v for k, v in pista_real.items() if k != "tubos"}
+V_real = pista_real.get("vertices") or N_PRUEBAS
+PISTAS = [
+    ("config real (pista.tubos)", pista_real),
+    ("config real sin pista.tubos: ruta partida en tramos_sin_tubo", sin_tubos),
+    ("ruta entera (sin tubos ni tramos_sin_tubo)", {"vertices": V_real}),
+    ("varios huecos [1, 4, 6]", {"vertices": V_real, "tramos_sin_tubo": [1, 4, 6]}),
+    ("tramos_sin_tubo con basura", {"vertices": V_real, "tramos_sin_tubo": [4, "2", 0, -1, 2.7, None, "x", True]}),
+    ("tubos con entradas inválidas", {"vertices": V_real, "tramos_sin_tubo": [4], "tubos": [
+        [[0, 0], [1, 0]], [[0.5, 0.5]], "x", [[1, 1], ["a", 2], ["1.5", 1]], [], [1, 2]]}),
+    ("tubos todos inválidos: ruta partida", {"vertices": V_real, "tramos_sin_tubo": [4], "tubos": [[[0, 0]]]}),
+    ("tubos vacío: ruta partida", {"vertices": V_real, "tramos_sin_tubo": [4], "tubos": []}),
+    ("tubos que no son lista", {"vertices": V_real, "tubos": "abc"}),
+    ("tubos objeto", {"vertices": V_real, "tramos_sin_tubo": [2], "tubos": {"a": 1}}),
+    ("tubos del mismo largo", {"vertices": V_real, "tubos": [[[0, 0], [1, 0]], [[0, 1], [1, 1]]]}),
+    ("un solo tubo", {"vertices": V_real, "tubos": [[[-1, -1], [0, 0], [1, -1]]]}),
+    ("puntos con 3 coordenadas", {"tubos": [[[0, 0, 5], [1, 1, 5]], [[-1, 0, 0], [-1, 1, 0], [-1.5, 1.5, 0]]]}),
+    ("vértices con basura", {"vertices": [[0, 0], [1, "a"], [2, 0], [3], [2, 1]], "tramos_sin_tubo": [2]}),
+    ("pista vacía", {}),
+    ("la N de las pruebas", {"vertices": N_PRUEBAS}),
+]
+casos_tubos = []
+for nombre, pista in PISTAS:
+    T = tubos_pista(pista)
+    pts = []
+    for _ in range(15):
+        x, y = rt.uniform(-1.8, 1.8), rt.uniform(-1.8, 1.8)
+        pts.append([x, y, dist_tubos(x, y, T)])
+    casos_tubos.append({"nombre": nombre, "pista_json": json.dumps(pista), "tubos": T,
+                        "sin_tubo": sorted(tramos_sin_tubo(pista)), "puntos": pts})
+
+# umbrales del filtro de tubo (filtros_vision) con valores raros
+VARIANTES_TUBO = [
+    {},
+    {"dist_max_tubo_toma_m": 0.45},
+    {"dist_max_tubo_toma_m": None},
+    {"dist_max_tubo_toma_m": 0},
+    {"dist_max_tubo_toma_m": -1, "dist_max_tubo_fuego_m": 0.3},
+    {"dist_max_tubo_toma_m": "x", "dist_max_tubo_fuego_m": True},
+    {"dist_max_tubo_toma_m": [], "dist_max_tubo_fuego_m": [0.3]},
+    {"dist_max_tubo_toma_m": 0.1, "dist_max_tubo_fuego_m": 0.2},
+]
+casos_lim = []
+for var in VARIANTES_TUBO:
+    cfg_v = copy.deepcopy(cfg)
+    cfg_v.setdefault("vision", {}).update(var)
+    f = filtros_vision(cfg_v)
+    casos_lim.append({"vision_json": json.dumps(var), "toma": f["dist_max_tubo_toma_m"],
+                      "fuego": f["dist_max_tubo_fuego_m"]})
+
+# decisión "lejos del tubo" de VisionService.filtrar: caja de 24 px vista por la cámara real desde una
+# pose nivelada sobre la arena, con los filtros de tamaño apagados (el simulador no tiene cajas)
+casos_filtrar = []
+for nombre, pista, var in [("config real (pista.tubos)", pista_real, {}),
+                           ("sin pista.tubos (ruta partida)", sin_tubos, {}),
+                           ("toma 0.45, fuego 0.15", pista_real,
+                            {"dist_max_tubo_toma_m": 0.45, "dist_max_tubo_fuego_m": 0.15})]:
+    cfg_v = copy.deepcopy(cfg)
+    cfg_v["pista"] = pista
+    cfg_v.setdefault("vision", {}).update(var)
+    f = dict(filtros_vision(cfg_v), tam_max_m=None, tam_min_m=None)
+    T = tubos_pista(cfg_v.get("pista"))
+    for _ in range(20):
+        q = (rt.uniform(-1.3, 1.3), rt.uniform(-1.3, 1.3), rt.uniform(1.0, 1.8), rt.uniform(-3.1, 3.1), 0.0, 0.0)
+        u, v = rt.uniform(12, cam.w - 13), rt.uniform(12, cam.h - 13)
+        cls = rt.randint(0, 1)
+        g = cam.pixel_to_ground(u, v, *q, z_plane=0.02)
+        motivo, _, dist = VisionService.filtrar(VisionService, cam, q, cls, (u - 12, v - 12, u + 12, v + 12), g, f,
+                                                cfg_v["pista"].get("vertices") or [], tubos=T)
+        casos_filtrar.append({"nombre": nombre, "pista_json": json.dumps(pista), "vision_json": json.dumps(var),
+                              "pose": list(q), "uv": [u, v], "cls": cls, "suelo": [g[0], g[1]], "dist": dist,
+                              "lejos": motivo == MOTIVO_TUBO})
+
 ref = {"camara": {"w": cam.w, "h": cam.h, "fx": cam.fx, "fy": cam.fy, "cx": cam.cx, "cy": cam.cy,
                   "origen": cam.origen, "pivote": cam.pivote_m},
        "huellas": casos_huella, "pixeles": casos_pixel,
@@ -132,11 +225,18 @@ ref = {"camara": {"w": cam.w, "h": cam.h, "fx": cam.fx, "fy": cam.fy, "cx": cam.
        "clusters": {"radio": cl.radius, "min_obs": cl.min_obs, "observaciones": obs, "objetivos": objetivos,
                     "pendientes": len(cl.pending())},
        # objetos que dibuja la cámara sintética de la UI (igual que Station en web/app/server.py)
-       "anomalias_web": cfg.get("web", {}).get("mock_anomalias") or default_anomalies(cfg["pista"]["vertices"])}
+       "anomalias_web": cfg.get("web", {}).get("mock_anomalias") or default_anomalies(N_PRUEBAS),
+       # tubos reales y filtro "lejos del tubo" (geo.tubos_pista / dist_tubos, filtros_vision, filtrar)
+       "tubos": {"pistas": casos_tubos, "limites": casos_lim, "filtrar": casos_filtrar}}
+if anomalias_mock is not None:
+    # cámara sintética con la pista REAL de config/estacion.json (sobre pista.tubos si los hay)
+    ref["anomalias_web_pista_real"] = anomalias_mock(cfg)
 ruta = os.path.join(AQUI, "referencia_estacion.json")
 with open(ruta, "w", encoding="utf-8") as f:
     json.dump(ref, f, indent=1)
 print(f"escrito {ruta}: {len(casos_huella)} huellas, {len(casos_pixel)} píxeles, "
       f"{len(obs)} observaciones -> {len(objetivos)} objetivos; con actitud: {len(casos_pixel_att)} píxeles, "
       f"{len(casos_huella_att)} huellas, {len(casos_geo)} casos de pose_para_geo "
-      f"({sum(c['inclinado'] for c in casos_geo)} descartados por inclinación)")
+      f"({sum(c['inclinado'] for c in casos_geo)} descartados por inclinación); tubos: {len(casos_tubos)} pistas, "
+      f"{len(casos_lim)} variantes de umbral, {len(casos_filtrar)} casos de filtrar "
+      f"({sum(c['lejos'] for c in casos_filtrar)} lejos del tubo)")

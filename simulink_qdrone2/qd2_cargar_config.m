@@ -69,6 +69,9 @@ cfg.uri_puente = sprintf('tcpip://localhost:%d', cfg.puerto_puente);
 % QUARC lee ExtModeMexArgs como una lista de cadenas de MATLAB: van ENTRE COMILLAS, como en el
 % original del Equipo2 ('-w -d %d -uri %u -URI_Host tcpip://localhost:18001'). Sin ellas,
 % qc_get_model_arguments / qc_get_target_uri fallan con "This statement is incomplete."
+% El InitFcn NO basta: QUARC lee el valor GUARDADO al abrir el modelo y al empezar el build,
+% antes del InitFcn. Por eso construir_modelos lo guarda con comillas y lo comprueba en cada
+% .slx de tierra (qd2_ext_mode_args_slx); aquí solo se mantiene al día con los puertos del JSON.
 cfg.ext_mode_args = sprintf('''-w -d %%d -uri %%u -URI_Host %s -URI_Host2 %s''', ...
     cfg.uri_dron1, cfg.uri_dron2);
 

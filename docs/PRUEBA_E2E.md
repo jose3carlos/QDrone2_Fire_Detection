@@ -42,11 +42,11 @@ Contrato: `docs/ARQUITECTURA.md`. Última corrida: **22-nov-2026, R2025a, en est
 | `--sin-actitud` | `vision.usar_actitud = false` en la copia de la config: geolocalización nivelada, para comparar. La cámara sintética sigue dibujando con la actitud real. |
 | `--inclinacion-max G` | `vision.inclinacion_max_deg = G` en la copia (p. ej. 1.5 para ver el descarte por inclinación con los ~3° de la simulación). |
 
-En todas las corridas el script compara cada detección que entra al cluster y cada objetivo publicado (sin el manual) con la **verdad** de la cámara sintética (`web.mock_anomalias` o `mock_world.default_anomalies`). Imprime `ACTITUD <corrida>` y `GEOLOCALIZACIÓN <corrida>` al final y lo guarda en `resumen_<fuente>.json` (`actitud`, `geolocalizacion`).
+En todas las corridas el script compara cada detección que entra al cluster y cada objetivo publicado (sin el manual) con la **verdad** de la cámara sintética: `mock_world.anomalias_mock(cfg)` de la copia de la config, lo mismo que dibuja la estación (`web.mock_anomalias` si está; si no, `default_anomalies` de la pista: con `pista.tubos`, 2 anomalías por pieza **sobre los tubos reales**, alternando toma y fuego; sin `pista.tubos`, las 3 de antes sobre la ruta `pista.vertices`). Imprime `ACTITUD <corrida>` y `GEOLOCALIZACIÓN <corrida>` al final y lo guarda en `resumen_<fuente>.json` (`actitud`, `geolocalizacion`).
 
 **La copia de la config.** La prueba **no toca** `config/estacion.json`: escribe `estacion_e2e.json` en la carpeta de salida. En la copia:
 
-- la cámara es la **sintética**: anomalías inventadas de `mock_world` (2 fuegos y 1 toma sobre la N), que detecta el detector falso;
+- la cámara es la **sintética**: anomalías inventadas de `mock_world.anomalias_mock` (sin `pista.tubos`: 2 fuegos y 1 toma sobre la ruta; con `pista.tubos`: 2 por pieza sobre los tubos reales, p. ej. 4 con las 2 piezas del 24-nov), que detecta el detector falso. Los resultados de las tablas de abajo son de antes de `pista.tubos` (verdad 3/3);
 - con la fuente `simulink` se pone `web.permitir_sintetica_en_simulink = true`, **solo** porque `QD2_Sim_Dual` es una simulación. La UI muestra una barra roja que lo recuerda.
 
 **Nunca uses esa copia con los drones reales.**

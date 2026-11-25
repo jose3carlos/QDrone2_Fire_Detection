@@ -9,6 +9,7 @@ Los dos modelos de tierra son **copias extendidas** del modelo del Equipo2 `equi
 | `lib/QD2_Mission_Lib.slx` | Librería con los subsistemas nuevos. También la usa la simulación (`sim/QD2_Sim_Dual.slx`) |
 | `construir_modelos.m` | Genera todo lo anterior, verifica, exporta y toma capturas |
 | `qd2_cargar_config.m` | Lee `config/estacion.json`. La llama el `InitFcn` de los modelos |
+| `qd2_ext_mode_args_slx.m` | Lee el `ExtModeMexArgs` guardado en un `.slx` (configuración activa) sin cargarlo. Lo usan `construir_modelos` y `test_ext_mode_args_slx` |
 | `versiones/R20xx/` | Exportaciones a R2022a, R2022b, R2023a y R2023b, más la copia nativa de R2025a. Cada carpeta lleva su propia `QD2_Mission_Lib.slx` |
 | `capturas/` | Capturas del original (`original_*.png`) y de los modelos nuevos (`dual_*.png`) |
 | `pid/qd2_probar_tierra.m` | Prueba funcional SIL del modelo de tierra completo, sin hardware, con casos del operador |
@@ -33,11 +34,11 @@ Si MATLAB corre con `-batch`, la ventana "QUARC Tip of the Day" lo bloquea (ver 
    - `optitrack.rigid_body_dron1` y `optitrack.rigid_body_dron2`: van a `rigid_body_ids` del bloque OptiTrack Trackables. **Si son iguales, `qd2_cargar_config` da error** y el modelo no arranca.
    - `optitrack.bias_z_dron1` y `optitrack.bias_z_dron2`: van al Bias de cada Measurement Conditioning.
    - `optitrack.archivo_cal` y `optitrack.archivo_motive`: el `InitFcn` los escribe en el bloque OptiTrack. Si están vacíos, se conservan las rutas del Equipo2.
-   - `red.puerto_*`: van a `ExtModeMexArgs` (`'-w -d %d -uri %u -URI_Host … -URI_Host2 …'`, entre comillas como el original del Equipo2) y al PYTHON BRIDGE.
+   - `red.puerto_*`: van a `ExtModeMexArgs` (`'-w -d %d -uri %u -URI_Host … -URI_Host2 …'`, entre comillas como el original del Equipo2) y al PYTHON BRIDGE. **El valor también tiene que ir guardado entre comillas en el `.slx`**: QUARC lo lee al abrir el modelo y al empezar el build, antes del `InitFcn` (sin comillas: `This statement is incomplete.` y sin pestaña HARDWARE; `docs/HALLAZGOS_PC_LAB_23NOV.md` fila 1). Todos los `.slx` de tierra ya lo traen así (23-nov-2026); `construir_modelos` lo comprueba al guardar y exportar (`qd2_ext_mode_args_slx`) y `tests/test_qd2_lib.m` (`test_ext_mode_args_slx`) lo vigila.
    - `mision.*` y `pista.vertices`: van a `QD2P`.
    - El `.motive` debe definir **los dos** rigid bodies (el del Equipo2 del 20-nov solo tiene uno).
    - **Motive tiene que estar cerrado** al correr el modelo: OptiTrack Trackables usa la API de Motive con el `.cal` y el `.motive`, no NatNet.
-   - **Todo esto se aplica al compilar.** Si cambias `estacion.json` (rutas de Motive, rigid bodies, bias, pista, `mision.*`), vuelve a hacer el build QUARC; conectar al binario anterior no relee el JSON. El `InitFcn` deja el modelo modificado (rutas de Motive y `ExtModeMexArgs`); guardarlo o no da igual, porque se vuelve a aplicar en cada build.
+   - **Todo esto se aplica al compilar.** Si cambias `estacion.json` (rutas de Motive, rigid bodies, bias, pista, `mision.*`), vuelve a hacer el build QUARC; conectar al binario anterior no relee el JSON. El `InitFcn` deja el modelo modificado (rutas de Motive y, si cambiaron los puertos, `ExtModeMexArgs`); guardarlo o no da igual para el JSON, porque se vuelve a aplicar en cada build, pero el `ExtModeMexArgs` guardado debe seguir entre comillas (ver arriba).
 3. Compila con QUARC y conecta con Monitor & Tune, igual que el original. **Antes del primer vuelo haz un build QUARC completo**: aquí solo se pudo hacer Update Diagram y la simulación SIL (ver abajo). Orden: build → Connect → Start de tierra **antes** de lanzar los drones (el dron se detiene solo si a ~1.2 s no recibe `isTracking = 1`).
 4. Arranca la estación Python (`web/`). Se conecta como cliente a `tcpip://localhost:18700`.
 5. Lanza el modelo de cada dron con `quarc_run` desde `simulink_qdrone2/binarios_dron/` (comandos en la pestaña **Conexiones** de la UI; ver `binarios_dron/README.md`):

@@ -93,23 +93,36 @@ for q = [1.95 -1.95; 1.95 1.95; 2.05 0].'
         'MarkerEdgeColor', 'none');
 end
 
-% ---------------- pista (PVC 3/4" SCH40, Ø 26.7 mm, blanco) ---------------
+% ---------------- tubos reales (PVC 3/4" SCH40, Ø 26.7 mm, blanco) --------
+% Como la UI (escena3d.js): cilindros en los tubos REALES (esc.tubos = pista.tubos o la ruta
+% partida en pista.tramos_sin_tubo) y la ruta de vuelo (pista.vertices, la de Simulink) aparte,
+% como línea celeste punteada en el piso.
 V = esc.V;
+tubos = {V};
+if isfield(esc, 'tubos'), tubos = esc.tubos; end
 r_tubo = 0.0267/2;
-for k = 1:size(V, 1) - 1
-    [Vt, Ft] = tubo([V(k,:) r_tubo], [V(k+1,:) r_tubo], r_tubo, 18);
-    patch(ax, 'Vertices', Vt, 'Faces', Ft, 'FaceColor', [0.97 0.97 0.97], 'EdgeColor', 'none', ...
-        'FaceLighting', 'gouraud', 'AmbientStrength', 0.55);
-end
 [xs, ys, zs] = sphere(12);
-for k = 2:size(V, 1) - 1
-    surf(ax, V(k,1) + 1.15*r_tubo*xs, V(k,2) + 1.15*r_tubo*ys, r_tubo + 1.15*r_tubo*zs, ...
-        'FaceColor', [0.95 0.95 0.95], 'EdgeColor', 'none', 'FaceLighting', 'gouraud', 'AmbientStrength', 0.55);
+for i = 1:numel(tubos)
+    P = tubos{i};
+    for k = 1:size(P, 1) - 1
+        [Vt, Ft] = tubo([P(k,:) r_tubo], [P(k+1,:) r_tubo], r_tubo, 18);
+        patch(ax, 'Vertices', Vt, 'Faces', Ft, 'FaceColor', [0.97 0.97 0.97], 'EdgeColor', 'none', ...
+            'FaceLighting', 'gouraud', 'AmbientStrength', 0.55);
+    end
+    for k = 2:size(P, 1) - 1     % codos
+        surf(ax, P(k,1) + 1.15*r_tubo*xs, P(k,2) + 1.15*r_tubo*ys, r_tubo + 1.15*r_tubo*zs, ...
+            'FaceColor', [0.95 0.95 0.95], 'EdgeColor', 'none', 'FaceLighting', 'gouraud', 'AmbientStrength', 0.55);
+    end
+    for k = [1 size(P, 1)]       % tapones
+        surf(ax, P(k,1) + r_tubo*xs, P(k,2) + r_tubo*ys, r_tubo + r_tubo*zs, ...
+            'FaceColor', [0.90 0.90 0.90], 'EdgeColor', 'none');
+    end
 end
-for k = [1 size(V, 1)]     % tapones
-    surf(ax, V(k,1) + r_tubo*xs, V(k,2) + r_tubo*ys, r_tubo + r_tubo*zs, ...
-        'FaceColor', [0.90 0.90 0.90], 'EdgeColor', 'none');
-end
+col.ruta = [0.22 0.74 0.97];     % celeste, como la ruta punteada de la UI (0x38bdf8)
+line(ax, V(:,1), V(:,2), 0.004*ones(size(V, 1), 1), 'Color', col.ruta, 'LineStyle', '--', 'LineWidth', 1.2);
+plot3(ax, V(:,1), V(:,2), 0.004*ones(size(V, 1), 1), 'o', 'MarkerSize', 3, 'MarkerFaceColor', col.ruta, ...
+    'MarkerEdgeColor', 'none');
+G.col = col;
 
 % ---------------- objetos reales (fuegos y tomas) -------------------------
 O = sim3d_mallas_objetos(raiz, opc.usar_stl);
@@ -231,7 +244,10 @@ mx = axes('Parent', G.fig, 'Position', [0.745 0.07 0.215 0.27], 'Color', col.tap
 hold(mx, 'on'); axis(mx, 'equal');
 xlim(mx, lx + [-0.1 0.1]); ylim(mx, lx + [-0.1 0.1]);
 xlabel(mx, 'y (m)  [+y izquierda]'); ylabel(mx, 'x (m)  [+x adelante]');
-plot(mx, V(:,2), V(:,1), '-', 'Color', [0.95 0.95 0.95], 'LineWidth', 2);
+for i = 1:numel(tubos)        % tubos reales (blanco) y ruta de vuelo (celeste punteada), como el mapa 2D de la UI
+    plot(mx, tubos{i}(:,2), tubos{i}(:,1), '-', 'Color', [0.95 0.95 0.95], 'LineWidth', 2);
+end
+plot(mx, V(:,2), V(:,1), '--', 'Color', col.ruta, 'LineWidth', 0.9);
 for j = 1:numel(esc.obj)
     mk = 's'; if esc.obj(j).clase == 0, mk = '^'; end
     plot(mx, esc.obj(j).y, esc.obj(j).x, mk, 'MarkerSize', 5, 'MarkerFaceColor', [0.85 0.15 0.1], ...
@@ -426,15 +442,32 @@ est_es = {'INIT · inicio', 'WAIT_TRACKING · esperando OptiTrack', 'ASSIGN_ROLE
 col_est = [0.7 0.7 0.7; 0.7 0.7 0.7; 0.4 0.8 1; 1 0.85 0.3; 0.4 1 0.6; 0.3 1 0.5; 0.5 0.8 1; ...
     1 0.85 0.3; 0.8 0.8 0.8; 1 0.35 0.3; 1 0.6 0.2];
 e = min(max(s.estado, 0), 10);
+if e == 9 && s.falla_fase > 0.5
+    % reacción a una falla (a bordo o pérdida de rastreo): el sano se aparta, regresa y aterriza
+    est_es{10} = 'ABORT · reacción a falla (el sano se aparta)';
+end
 modo = 'tiempo real';
 if ~E.tiempo_real, modo = 'rápido'; end
 txt_ver = ternario(E.version == 1, 'PID', 'MPC');
 if solo, txt_ver = sprintf('%s · SOLO', txt_ver); end
 setc(G.cache, 'titulo', G.hud_titulo, 'String', sprintf('QDrone 2 · simulador 3D   [%s]', txt_ver));
 setc(G.cache, 'estado', G.hud_estado, 'String', est_es{e + 1}, 'Color', col_est(e + 1, :));
-alertas = {'', 'homes demasiado cerca: START rechazado', 'pausa por pérdida de rastreo', ...
-    'timeout de despegue', 'timeout de aterrizaje'};
-fsm_n = {'IDLE', 'ARMED', 'TAKEOFF_THR', 'TAKEOFF_H', 'FLIGHT', 'AUTOLAND', '?', '?', 'DISABLE'};
+% códigos de y(55) como ALERTAS de web/app/protocol.py (el simulador no emite 5-8: no hay capa del operador)
+alertas = {'homes demasiado cerca: START rechazado', 'pérdida de rastreo', 'timeout de despegue', ...
+    'timeout de aterrizaje', 'E-STOP del operador', 'switch Takeoff/Land abajo: LAND ALL', ...
+    'switch Arm abajo: desarmados y LAND ALL', 'respaldo del operador: se soltó el takeoff', ...
+    'falla a bordo de un dron', 'protocolo MPC incorrecto'};
+% alerta 2 según el estado: PAUSED = pausa (solo con mision.t_perdida_aterrizar_s > 0.2 s y una
+% pérdida más corta que ese valor); si no, el dron perdido (s.falla = 2) aterriza en su sitio
+dr_perd = find(s.falla == 2);
+if s.estado == 10
+    alertas{2} = 'pausa por pérdida de rastreo (hover; RESUME al volver)';
+elseif ~isempty(dr_perd)
+    txt_d = sprintf('dron %d', dr_perd(1));
+    if numel(dr_perd) > 1, txt_d = 'drones 1 y 2'; end
+    alertas{2} = sprintf('pérdida de rastreo: aterriza %s (sin takeoff)', txt_d);
+end
+fsm_n = {'IDLE', 'ARMED', 'TAKEOFF_THR', 'TAKEOFF_H', 'FLIGHT', 'AUTOLAND', 'ERROR', '?', 'DISABLE'};
 L = {};
 L{end+1} = sprintf('t = %6.1f s   x%.2g (%s)   sim/real %.2f', E.t, E.vel, modo, E.factor_real);
 L{end+1} = sprintf('estación: %s', E.txt_estacion);
@@ -443,7 +476,11 @@ if solo
     L{end+1} = sprintf('modo: SOLO EXPLORADOR (dron %d; el dron %d no se usa)', E.dron_solo, ausente);
 end
 if tel.alerta > 0
-    L{end+1} = sprintf('ALERTA %d: %s', tel.alerta, alertas{min(tel.alerta, 4) + 1});
+    if tel.alerta >= 1 && tel.alerta <= numel(alertas) && tel.alerta == round(tel.alerta)
+        L{end+1} = sprintf('ALERTA %d: %s', tel.alerta, alertas{tel.alerta});
+    else
+        L{end+1} = sprintf('ALERTA %g: desconocida', tel.alerta);
+    end
 else
     L{end+1} = 'alerta: ninguna';
 end

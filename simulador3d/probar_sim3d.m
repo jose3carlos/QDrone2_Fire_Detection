@@ -12,7 +12,8 @@ function res = probar_sim3d(con_capturas)
 %   5. Escenario aleatorio (PID).
 %   6. Ritmo de tiempo real sin figura (10 s).
 %   7. Costo de dibujar un cuadro (figura invisible) -> fps alcanzables.
-%   8. Escenario 'web' = objetos de la cámara sintética de la UI (mock_world).
+%   8. Escenario 'web' = objetos de la cámara sintética de la UI (mock_world), con la N y
+%      con la pista real (anomalías sobre pista.tubos, mock_world.anomalias_mock).
 %   9. Heartbeat de Python medido en reloj (x16 no pausa; si Python se calla, sí).
 %  10. Primer paquete de Python con un comando: no se ejecuta ni se confirma.
 %  11. El detector solo trabaja en MISSION/PAUSED (como _vision_gate de la estación).
@@ -26,13 +27,31 @@ function res = probar_sim3d(con_capturas)
 %      nivelado y con el error del soporte; descarte por inclinación.
 %  17. Misión PID con usar_actitud = false y con inclinacion_max_deg = 1.5: error por
 %      observación con y sin actitud, y descartadas por inclinación.
-%  18. Modo SOLO EXPLORADOR (PID) con la pista del laboratorio y el dron 2 fuera de
-%      OptiTrack: DONE, recorrido completo, el dron 2 nunca arma ni sube, y(64) = 1,
-%      >= 3 de 4 objetos detectados y 0 visitados (no hay respondedor).
+%  18. Modo SOLO EXPLORADOR (PID) con la pista REAL del laboratorio (pista.vertices y
+%      pista.tubos de config/estacion.json, escenario_solo_lab.json con los objetos sobre los
+%      tubos reales) y el dron 2 fuera de OptiTrack: DONE, todos los waypoints (los mismos que
+%      qd2_track_waypoints con la ruta de la config), el dron 2 nunca
+%      arma ni sube, y(64) = 1, TODOS los objetos detectados (también las tomas de las orillas,
+%      a > 0.25 m de la ruta), ninguna observación de un objeto real descartada por "lejos del
+%      tubo" y 0 visitados (no hay respondedor). Umbral de confianza: el de la config (0.9).
 %  19. Solo explorador con el dron 2 y el dron 1 (no usado) RASTREADO en el piso debajo de
 %      la N: el guard nunca se activa y la misión termina (DONE).
-%   Las pruebas 3-17 usan la config real con mision.modo = "dual" y la N de 4 vértices
-%   fija (no dependen del modo ni de la pista del día en config/estacion.json).
+%  20. Los mismos objetos con la config SIN pista.tubos (filtro contra la ruta partida en los
+%      huecos, como antes de b65603f): las tomas a más de dist_max_tubo_toma_m + 5 cm de la
+%      ruta se descartan por "lejos del tubo" y no se publican; las del borde (0.25-0.30 m)
+%      pierden la mayoría de sus observaciones; el resto se detecta.
+%  21. Tubos reales y filtro "lejos del tubo" contra la estación (geo.tubos_pista,
+%      tramos_sin_tubo, dist_tubos, filtros_vision y VisionService.filtrar; casos "tubos" de
+%      referencia_estacion.json).
+%  22. Pérdida de rastreo en el aire con el stack a bordo emulado (trk_a_bordo): solo explorador
+%      (3 s: takeoff 0 a los 0.2 s, a bordo 7 -> 9, sin PAUSED, RESUME no hace nada, DONE con
+%      alerta 2), lo mismo con trk_a_bordo = false (autoland), 0.15 s (nada) y dual PID (el
+%      otro se aparta, regresa y aterriza: 5 -> 9 -> 7 -> 8).
+%  23. Config sin pista.vertices ni pista.tubos: C.tubos vacío y sin filtro de tubo (como la
+%      estación); la N por defecto solo se dibuja y sirve para colocar objetos.
+%   Las pruebas 3-17 y 22 usan la config real con mision.modo = "dual" y la N de 4 vértices
+%   fija sin pista.tubos ni tramos_sin_tubo (el tubo es la N entera), así que no dependen del
+%   modo ni de la pista del día en config/estacion.json.
 %   La prueba TCP con Python está en prueba_cliente_puente.py (ver README).
 
 if nargin < 1, con_capturas = true; end
@@ -43,19 +62,20 @@ addpath(fullfile(raiz, 'simulink_qdrone2', 'lib'));
 res = struct('nombre', {}, 'ok', {}, 'detalle', {});
 base = struct('mostrar', false, 'tiempo_real', false, 'usar_tcp', false, 'auto_start', 3, ...
     'graficas_finales', false, 't_final', 300, 'verbose', false);
-% Config de las pruebas: la real con modo dual y la N de 4 vértices fija (las pruebas no
-% dependen de mision.modo ni de la pista del día en config/estacion.json).
+% Config de las pruebas: la real con modo dual y la N de 4 vértices fija, sin pista.tubos ni
+% tramos_sin_tubo (las pruebas no dependen de mision.modo ni de la pista del día en
+% config/estacion.json).
 cfg_real = sim3d_leer_json(fileread(fullfile(raiz, 'config', 'estacion.json')));
 cfg_dual = cfg_real;
 cfg_dual.mision.modo = 'dual';
 if isfield(cfg_dual.mision, 'dron_solo'), cfg_dual.mision = rmfield(cfg_dual.mision, 'dron_solo'); end
-cfg_dual.pista.vertices = [-1.2 1.2; 1.2 1.2; -1.2 -1.2; 1.2 -1.2];
+cfg_dual.pista = struct('vertices', [-1.2 1.2; 1.2 1.2; -1.2 -1.2; 1.2 -1.2]);
 base.config = cfg_dual;
-% Modo solo explorador con la pista del laboratorio (23-nov)
+% Modo solo explorador con la pista REAL del laboratorio: ruta (pista.vertices) y tubos
+% (pista.tubos) tal como están en config/estacion.json, sin copiarlos aquí
 cfg_solo = cfg_real;
 cfg_solo.mision.modo = 'solo_explorador';
 cfg_solo.mision.dron_solo = 1;
-cfg_solo.pista.vertices = [1.02 0.41; 0.99 1.20; -0.90 1.10; -0.27 0.29; 0.47 -0.25; 0.99 -1.01; -1.02 -1.20];
 
 % ---- 1. malla
 % Motores en (±101.6, ±127) mm (thrust parametrization, tabla 1) con aros concéntricos de 119 mm:
@@ -125,6 +145,32 @@ if exist(ref_f, 'file')
         end
         res = anotar(res, 'escenario ''web'' = cámara sintética de la UI', ew < 1e-9, ...
             sprintf('%d objetos (Python %d), error máx. %.2g m', numel(escw.obj), numel(aw), ew));
+    end
+    % ---- 8b. escenario 'web' con la pista REAL (cámara sintética sobre pista.tubos)
+    if isfield(ref, 'anomalias_web_pista_real')
+        aw = ref.anomalias_web_pista_real;
+        if ~iscell(aw), aw = num2cell(aw); end
+        Cr = sim3d_config(raiz, cfg_solo);
+        escw = sim3d_escenario(sim3d_opciones(struct('escenario', 'web')), Cr);
+        ew = inf; dt = NaN;
+        if numel(escw.obj) == numel(aw)
+            ew = 0;
+            for k = 1:numel(aw)
+                ew = max([ew, abs(escw.obj(k).x - aw{k}.x), abs(escw.obj(k).y - aw{k}.y), ...
+                    1e3*abs(escw.obj(k).clase - aw{k}.cls)]);
+            end
+            dt = max(arrayfun(@(ob) sim3d_tubos('dist', ob.x, ob.y, Cr.tubos), escw.obj));
+        end
+        res = anotar(res, 'escenario ''web'' con la pista real = cámara sintética (sobre los tubos)', ...
+            ew < 1e-9 && dt < 1e-3, sprintf(['%d objetos (Python %d), error máx. %.2g m, distancia máx. ' ...
+            'al tubo real %.4f m'], numel(escw.obj), numel(aw), ew, dt));
+    end
+    % ---- 21. tubos reales y filtro "lejos del tubo" vs estación
+    if isfield(ref, 'tubos')
+        res = prueba_tubos(res, ref.tubos, raiz, cfg_real);
+    else
+        res = anotar(res, 'tubos y filtro de tubo = estación', false, ...
+            'referencia_estacion.json sin casos de tubos: córrela con pruebas/generar_referencia_estacion.py');
     end
 else
     res = anotar(res, 'referencia de la estación', false, 'falta pruebas/referencia_estacion.json');
@@ -271,7 +317,7 @@ m = R3.met;
 ok = m.estado_final == 8 && m.dh_min_aire >= R3.p.d_min_h && m.reales_detectados == m.n_reales;
 res = anotar(res, 'escenario aleatorio (semilla 11, 6 objetos)', ok, sprintf(['DONE en %.1f s, detectados %d/%d, ' ...
     'visitados %d/%d, dh mín. %.3f m'], m.t_sim, m.reales_detectados, m.n_reales, m.reales_visitados, m.n_reales, m.dh_min_aire));
-% ---- 18. solo explorador PID: pista del laboratorio, dron 2 fuera de OptiTrack
+% ---- 18. solo explorador PID: pista REAL del laboratorio (ruta + tubos), dron 2 fuera de OptiTrack
 o = base; o.config = cfg_solo; o.escenario = 'escenarios/escenario_solo_lab.json';
 if con_capturas
     o.capturas = [45 45.1]; o.capturas_vistas = [1 2]; o.graficas_finales = true; o.prefijo_capturas = 'prueba_solo';
@@ -280,13 +326,29 @@ R5 = sim3d_correr(o);
 m = R5.met; L = R5.log; s5 = R5.s_final;
 kt = ~isnan(L.y64);
 z_aus = max(L.pos(3, :, 2));
-ok = R5.modo.solo && m.estado_final == 8 && s5.n_wp == 35 && s5.wp_idx == s5.n_wp && s5.explorer_done == 1 ...
+C5 = sim3d_config(raiz, cfg_solo);
+d_ruta = arrayfun(@(ob) sim3d_tubos('dist_polilinea', ob.x, ob.y, C5.ruta), R5.esc.obj);
+d_tubo = arrayfun(@(ob) sim3d_tubos('dist', ob.x, ob.y, C5.tubos), R5.esc.obj);
+% waypoints esperados: la N que arma qd2_mission_step en START con la ruta de la config
+[wp5, n_wp5] = qd2_track_waypoints(C5.p.vertices, C5.p.wp_spacing, C5.p.z_E, C5.p.n_vertices);
+wp_ok = n_wp5 > 1 && s5.n_wp == n_wp5 && max(abs(s5.wp(1:n_wp5, 1:2) - wp5(1:n_wp5, 1:2)), [], 'all') < 1e-12;
+ok = R5.modo.solo && m.estado_final == 8 && wp_ok && s5.wp_idx == s5.n_wp && s5.explorer_done == 1 ...
     && z_aus == 0 && max(L.arm(2, :)) == 0 && max(L.takeoff(2, :)) == 0 && all(L.explorer_id == 1) ...
-    && any(kt) && all(L.y64(kt) == 1) && m.reales_detectados >= 3 && m.n_visitados == 0 && m.reales_visitados == 0;
-res = anotar(res, 'solo explorador PID (pista del lab, dron 2 fuera)', ok, sprintf(['DONE en %.1f s sim, %d/%d wp, ' ...
-    'detectados %d/%d (%d objetivos, 0 visitados = %d), dron 2: z máx. %.3f m, arm máx. %d, takeoff máx. %d; ' ...
-    'y(64) = 1 en %d/%d mensajes'], m.t_sim, s5.wp_idx, s5.n_wp, m.reales_detectados, m.n_reales, m.n_objetivos, ...
-    m.n_visitados == 0, z_aus, max(L.arm(2, :)), max(L.takeoff(2, :)), sum(L.y64(kt) == 1), sum(kt)));
+    && any(kt) && all(L.y64(kt) == 1) && C5.tubos_reales && m.tubos_reales ...
+    && m.reales_detectados == m.n_reales && all(propia_clase(R5)) && all(m.det_desc_tubo_obj == 0) ...
+    && all(m.det_obs_obj >= R5.det.min_obs) ...
+    && m.n_visitados == 0 && m.reales_visitados == 0;
+res = anotar(res, 'solo explorador PID (pista real del lab con tubos, dron 2 fuera)', ok, sprintf(['DONE en %.1f s sim, ' ...
+    '%d/%d wp (config: %d; ruta de %d vértices, %.2f m; %d tubos reales); detectados %d/%d (%d objetivos, error %s mm; ' ...
+    'a %s m de la ruta y %s m del tubo), observaciones por objeto %s, descartadas por tubo: %d de objetos reales, ' ...
+    '%d en total, confianza_min %.2f; 0 visitados = %d; dron 2: z máx. %.3f m, arm máx. %d, takeoff máx. %d; ' ...
+    'y(64) = 1 en %d/%d mensajes'], m.t_sim, s5.wp_idx, s5.n_wp, n_wp5, size(C5.ruta, 1), ...
+    sum(sqrt(sum(diff(C5.ruta).^2, 2))), numel(C5.tubos), m.reales_detectados, m.n_reales, m.n_objetivos, ...
+    mat2str(round(1e3*m.err_pos)), mat2str(round(d_ruta, 2)), mat2str(round(d_tubo, 2)), mat2str(m.det_obs_obj), ...
+    sum(m.det_desc_tubo_obj), m.det_desc_tubo, C5.vis.conf_min, m.n_visitados == 0, z_aus, max(L.arm(2, :)), ...
+    max(L.takeoff(2, :)), sum(L.y64(kt) == 1), sum(kt)));
+% ---- 20. los mismos objetos con el filtro contra la RUTA (config sin pista.tubos)
+res = prueba_sin_tubos(res, R5, cfg_solo, base, raiz);
 % ---- 19. solo explorador con el dron 2; el dron 1 (no usado) rastreado en el piso bajo la N
 o = base; o.modo_mision = 'solo_explorador'; o.dron_solo = 2; o.dron_ausente = 'piso';
 o.homes = [0.10 0.02; 1.25 0];
@@ -300,6 +362,10 @@ d_paso = min(hypot(L.pos(1, L.estado == 5, 2) - 0.10, L.pos(2, L.estado == 5, 2)
 res = anotar(res, 'solo explorador dron 2 (dron 1 en el piso bajo la N)', ok, sprintf(['DONE en %.1f s sim, %d/%d wp, ' ...
     'guard activo %d pasos, dron 1: arm máx. %d, z máx. %.3f m; E pasó a %.2f m (horizontal) del dron 1; y(64) = 2 en %d/%d'], ...
     m.t_sim, s6.wp_idx, s6.n_wp, sum(L.guard > 0), max(L.arm(1, :)), max(L.pos(3, :, 1)), d_paso, sum(L.y64(kt) == 2), sum(kt)));
+% ---- 22. pérdida de rastreo en el aire: aterriza (stack a bordo emulado, trk_a_bordo)
+res = prueba_rastreo(res, base);
+% ---- 23. config sin pista.vertices ni pista.tubos: C.tubos vacío (la estación no filtra)
+res = prueba_sin_pista(res, cfg_real, raiz);
 % ---- 6. tiempo real sin figura
 close all force; drawnow; pause(1);     % que la limpieza de figuras anteriores no caiga en la medición
 o = base; o.tiempo_real = true; o.t_final = 10; o.parar_en_done = false;
@@ -415,6 +481,11 @@ function res = prueba_cuadro_actitud(res, raiz)
 % positivos y objetos de 4 cm de alto (su centro está en el plano z = 0.02 m de la estación): con la
 % actitud, la estación debe devolver los objetos EXACTOS.
 C = sim3d_config(raiz);
+C.vis.dist_toma = [];          % objetos en una retícula bajo el dron, no sobre los tubos: sin filtro de tubo
+% Umbral de prueba: el detector sintético da confianzas de 0.55 a 0.95 y vision.confianza_min de la
+% config real es 0.9 (separa la planta de hojas rojas del detector real); con 0.9 solo ~1/8 de las
+% observaciones de un cuadro pasarían y la prueba (que cuenta las 12) fallaba desde 853cd9d.
+C.vis.conf_min = 0.5;
 xr = [0.1; -0.2; 1.5; 0; 0; 0; deg2rad(4); deg2rad(-3); 0.7];
 qr = xr([1:3 9 7 8]);
 [uu, vv] = meshgrid(linspace(170, 470, 4), linspace(130, 350, 3));
@@ -445,6 +516,235 @@ res = anotar(res, 'detector interno con actitud (cuadro sin ruido)', ok, sprintf
     'pitch -3° (%.2f° de inclinación), %d objetos: con actitud error máx. %.1e m; nivelado (usar_actitud=false) ' ...
     '%.3f m, sin y(61:63) %.3f m; con el error del soporte [0.8 -0.6]° %.3f m; inclinacion_max_deg=4.9: %d de %d ' ...
     'descartadas, %d al cluster'], rad2deg(d1.incl_max), n, e1, e2, e3, e4, d5.n_desc_incl, n, d5.n_obs));
+end
+
+function res = prueba_sin_tubos(res, R5, cfg_solo, base, raiz)
+% Prueba 20: los objetos del escenario del lab en su lugar REAL (sobre pista.tubos), pero la config
+% sin pista.tubos: el filtro mide contra la ruta partida en tramos_sin_tubo (como antes de b65603f y
+% como en los vuelos 5 y 6 del 24-nov). Las tomas a más de dist_max_tubo_toma_m de esa ruta se pierden.
+cfg = cfg_solo;
+cfg.pista = rmfield(cfg.pista, 'tubos');
+Cs = sim3d_config(raiz, cfg);
+obj = R5.esc.obj;
+L = cell(1, numel(obj));
+for j = 1:numel(obj)
+    L{j} = struct('clase', ternario(obj(j).clase == 1, 'toma', 'fuego'), 'x', obj(j).x, 'y', obj(j).y, ...
+        'yaw_deg', rad2deg(obj(j).yaw), 'variante', obj(j).variante);
+end
+js = struct('homes', R5.esc.home, 'yaw0_deg', rad2deg(R5.esc.yaw0));
+js.objetos = L;
+f = [tempname '_escenario_lab_absoluto.json'];
+fid = fopen(f, 'w'); fwrite(fid, jsonencode(js), 'char'); fclose(fid);
+limpiar = onCleanup(@() delete(f)); %#ok<NASGU>
+o = base; o.config = cfg; o.escenario = f;
+R = sim3d_correr(o);
+m = R.met;
+d_ruta = arrayfun(@(ob) sim3d_tubos('dist', ob.x, ob.y, Cs.tubos), obj);
+% Tomas fuera del límite: "lejos" con margen de 5 cm (2 veces el error de geolocalización) no se
+% publican; las del "borde" (límite < d <= límite + 5 cm, como la de 0.26 m del vuelo 6) pierden la
+% mayoría de sus observaciones y pueden o no confirmarse; el resto se detecta.
+% Una observación de toma confundida como fuego (p_confusion) no tiene filtro de tubo (fuego: null),
+% igual que en la estación; por eso se mira el objetivo publicado de la MISMA clase.
+toma = [obj.clase] == 1;
+fuera = toma & d_ruta > Cs.vis.dist_toma;
+lejos = toma & d_ruta > Cs.vis.dist_toma + 0.05;
+borde = fuera & ~lejos;
+pc = propia_clase(R);
+ok = ~Cs.tubos_reales && ~m.tubos_reales && m.estado_final == 8 && any(lejos) ...
+    && ~any(pc(lejos)) && all(m.det_desc_tubo_obj(fuera) > m.det_obs_obj(fuera)) && all(pc(~fuera));
+res = anotar(res, 'sin pista.tubos: las tomas de las orillas se pierden (filtro contra la ruta)', ok, sprintf(['%d tubos ' ...
+    '(ruta partida en %s); tomas a %s m de la ruta (límite %.2f): fuera del límite %s, de ellas lejos (> +5 cm) %s ' ...
+    'sin publicar = %d; descartadas por tubo / aceptadas de las de fuera: %s / %s (borde %s publicada = %d); ' ...
+    'objetos con objetivo de su clase %d/%d (con pista.tubos: %d/%d)'], numel(Cs.tubos), mat2str(Cs.sin_tubo), ...
+    mat2str(round(d_ruta(toma), 3)), Cs.vis.dist_toma, mat2str(find(fuera)), mat2str(find(lejos)), ~any(pc(lejos)), ...
+    mat2str(m.det_desc_tubo_obj(fuera)), mat2str(m.det_obs_obj(fuera)), mat2str(find(borde)), any(pc(borde)), ...
+    sum(pc), numel(pc), sum(propia_clase(R5)), numel(obj)));
+end
+
+function res = prueba_rastreo(res, base)
+% Prueba 22: pérdida de rastreo en el aire con mision.t_perdida_aterrizar_s = 0.2 (config) y el
+% stack a bordo emulado (trk_a_bordo = true, por defecto): a los 0.2 s tierra le baja takeoff al
+% perdido (alerta 2, sin PAUSED) y a bordo pasa a 7 (rampa) y luego a 9; nunca más takeoff, RESUME
+% no hace nada. Dual: el otro se aparta, regresa y aterriza (9 -> 7 -> 8). Una pérdida de 0.15 s no
+% hace nada. Con trk_a_bordo = false el perdido baja por autoland (6 -> 9).
+tl = 40;
+o = base; o.modo_mision = 'solo_explorador'; o.dron_solo = 1;
+o.perdida_rastreo = [1 tl tl + 3]; o.comandos = [tl + 6 5];          % RESUME a los 46 s
+Rs = sim3d_correr(o);
+[ok_s, ds] = revisar_perdida(Rs, 1, tl);
+o.trk_a_bordo = false;
+Rf = sim3d_correr(o);
+[ok_f, df] = revisar_perdida(Rf, 1, tl);
+ok_f = ok_f && isnan(df.t7) && any(Rf.log.fsm(1, :) == 6);
+o = base; o.modo_mision = 'solo_explorador'; o.dron_solo = 1;
+o.perdida_rastreo = [1 tl tl + 0.15];
+Rc = sim3d_correr(o);
+Lc = Rc.log; sc = Rc.s_final;
+ok_c = Rc.met.estado_final == 8 && isnan(Rc.met.t_trk7(1)) && ~any(Lc.alerta == 2) && ~any(Lc.estado == 10) ...
+    && all(sc.falla == 0) && sc.wp_idx == sc.n_wp;
+o = base; o.perdida_rastreo = [2 tl tl + 5];                       % dual PID (la config de las pruebas)
+Rd = sim3d_correr(o);
+[ok_d, dd] = revisar_perdida(Rd, 2, tl);
+Ld = Rd.log;
+k_aire = Ld.t >= tl & squeeze(Ld.pos(3, :, 1)) > 0.2 & squeeze(Ld.pos(3, :, 2)) > 0.2;
+dh_aire = min([Ld.dh(k_aire) inf]);
+ok_d = ok_d && isequal(dd.seq, [5 9 7 8]) && Ld.pos(3, end, 1) < 0.05 && dh_aire >= Rd.p.d_min_h;
+ok = ok_s && isequal(ds.seq, [5 7 8]) && ok_f && ok_c && ok_d;
+res = anotar(res, 'pérdida de rastreo en el aire: aterriza (stack a bordo emulado)', ok, sprintf(['solo, pérdida ' ...
+    '[%g %g): takeoff 0 a +%.2f s, a bordo 7 a +%.2f s y 9 a +%.2f s, z %.2f m -> suelo a +%.2f s a %.2f m ' ...
+    'de donde se perdió; estados %s, alerta final %d, PAUSED %d, takeoff de vuelta %d (RESUME a los %g s); ' ...
+    'trk_a_bordo = false: takeoff 0 a +%.2f s, autoland, suelo a +%.2f s, estados %s; 0.15 s: nada (DONE, ' ...
+    'alerta 2 %d, falla %s); dual PID, dron 2 [%g %g): takeoff 0 a +%.2f s, 7 a +%.2f s, estados %s, ' ...
+    'alerta %d, dron 1 z final %.3f m, dh mín. con los dos arriba de 0.2 m %.2f m'], tl, tl + 3, ds.t_drop, ...
+    ds.t7, ds.t9, ds.z0, ds.t_suelo, ds.deriva, mat2str(ds.seq), ds.alerta, ds.pausa, ds.resube, tl + 6, ...
+    df.t_drop, df.t_suelo, mat2str(df.seq), any(Lc.alerta == 2), mat2str(sc.falla), tl, tl + 5, dd.t_drop, ...
+    dd.t7, mat2str(dd.seq), dd.alerta, Ld.pos(3, end, 1), dh_aire));
+end
+
+function [ok, d] = revisar_perdida(R, dr, tl)
+% Verificaciones comunes de una pérdida de rastreo del dron dr desde tl (> 0.2 s)
+L = R.log;
+k_drop = find(L.t >= tl & L.takeoff(dr, :) == 0, 1);
+d.t_drop = L.t(k_drop) - tl;
+d.t7 = R.met.t_trk7(dr) - tl;
+k9 = find(L.t >= tl & L.fsm(dr, :) == 9, 1);
+d.t9 = L.t(k9) - tl;
+k0 = find(L.t >= tl, 1);
+d.z0 = L.pos(3, k0, dr);
+k_suelo = find(L.t >= tl & L.pos(3, :, dr) < 0.02, 1);
+d.t_suelo = L.t(k_suelo) - tl;
+d.deriva = norm(L.pos(1:2, k_suelo, dr) - L.pos(1:2, k0, dr));
+e = L.estado(k0:end);
+d.seq = [L.estado(k0 - 1) e([true diff(e) ~= 0])];
+d.seq = d.seq([true diff(d.seq) ~= 0]);
+d.alerta = L.alerta(end);
+d.pausa = any(L.estado == 10);
+d.resube = any(L.takeoff(dr, k_drop:end) > 0);
+ok = ~isempty(k_drop) && abs(d.t_drop - 0.2) < 0.03 && R.met.estado_final == 8 && d.alerta == 2 && ~d.pausa ...
+    && ~d.resube && L.fsm(dr, end) == 9 && L.pos(3, end, dr) < 0.05 && R.s_final.falla(dr) == 2 ...
+    && (isnan(d.t7) || abs(d.t7 - 0.2) < 0.03);
+end
+
+function res = prueba_sin_pista(res, cfg_real, raiz)
+% Prueba 23: sin pista.vertices ni pista.tubos la estación no tiene tubos (geo.tubos_pista da [])
+% y no filtra; el simulador igual (C.tubos vacío). La N por defecto (C.ruta) solo se dibuja y sirve
+% para colocar los objetos. Con solo pista.tubos, los tubos son esos.
+cfg = cfg_real;
+cfg = rmfield(cfg, 'pista');
+C1 = sim3d_config(raiz, cfg);
+esc1 = sim3d_escenario(sim3d_opciones(struct('escenario', 'aleatorio', 'semilla', 3)), C1);
+det1 = sim3d_detector('init', [], C1, struct());
+[lejos1, d1] = sim3d_detector('tubo', det1, 1, 1.4, 1.4);
+cfg.pista = struct('tubos', {{[0 0; 1 0]}});
+C2 = sim3d_config(raiz, cfg);
+det2 = sim3d_detector('init', [], C2, struct());
+[lejos2, d2] = sim3d_detector('tubo', det2, 1, 0.5, 1.0);
+ok = isempty(C1.tubos) && ~C1.tubos_reales && ~lejos1 && isempty(d1) && numel(esc1.tubos) == 1 ...
+    && isequal(esc1.tubos{1}, C1.ruta) && numel(esc1.obj) == 4 && numel(C2.tubos) == 1 && C2.tubos_reales ...
+    && lejos2 && abs(d2 - 1.0) < 1e-12;
+res = anotar(res, 'config sin pista: sin tubos ni filtro (como la estación)', ok, sprintf(['sin pista: %d tubos, ' ...
+    'toma en (1.4, 1.4) lejos = %d (distancia %s); dibujo y objetos sobre la ruta de %d vértices (%d objetos); ' ...
+    'solo pista.tubos: %d tubo, toma a %.2f m -> lejos = %d'], numel(C1.tubos), lejos1, mat2str(d1), ...
+    size(C1.ruta, 1), numel(esc1.obj), numel(C2.tubos), d2, lejos2));
+end
+
+function pc = propia_clase(R)
+% por objeto real: hay un objetivo publicado por el detector interno de su MISMA clase a < 0.35 m
+T = R.objetivos_detector;
+pc = false(1, numel(R.esc.obj));
+for j = 1:numel(R.esc.obj)
+    o = R.esc.obj(j);
+    k = T(:, 2) == o.clase;
+    pc(j) = any(hypot(T(k, 3) - o.x, T(k, 4) - o.y) < 0.35);
+end
+end
+
+function res = prueba_tubos(res, tb, raiz, cfg_real)
+% Prueba 21: casos de pruebas/generar_referencia_estacion.py con geo.tubos_pista, tramos_sin_tubo,
+% dist_tubos, filtros_vision (dist_max_tubo_*) y VisionService.filtrar (decisión "lejos del tubo").
+P = tb.pistas; if ~iscell(P), P = num2cell(P); end
+n_t = 0; n_s = 0; et = 0; ed = 0; n_none = 0; n_pts = 0;
+for k = 1:numel(P)
+    c = P{k};
+    pista = sim3d_leer_json(c.pista_json);
+    T = sim3d_tubos('leer', pista);
+    Tr = tubos_ref(c.tubos);
+    if numel(T) ~= numel(Tr)
+        n_t = n_t + 1;
+    else
+        for i = 1:numel(T)
+            if ~isequal(size(T{i}), size(Tr{i})), n_t = n_t + 1; else, et = max(et, max(abs(T{i} - Tr{i}), [], 'all')); end
+        end
+    end
+    S = sim3d_tubos('sin_tubo', pista);
+    if ~isequal(S(:), double(c.sin_tubo(:))), n_s = n_s + 1; end
+    Q = c.puntos;
+    for i = 1:size(Q, 1)
+        d = sim3d_tubos('dist', Q(i, 1), Q(i, 2), T);
+        n_pts = n_pts + 1;
+        if isnan(Q(i, 3))
+            n_none = n_none + 1;
+            if ~isempty(d), n_t = n_t + 1; end
+        elseif isempty(d)
+            n_t = n_t + 1;
+        else
+            ed = max(ed, abs(d - Q(i, 3)));
+        end
+    end
+end
+% umbrales dist_max_tubo_toma_m / dist_max_tubo_fuego_m
+Lm = tb.limites; if ~iscell(Lm), Lm = num2cell(Lm); end
+n_l = 0;
+for k = 1:numel(Lm)
+    c = Lm{k};
+    cfg = cfg_vision(cfg_real, c.vision_json);
+    Cv = sim3d_config(raiz, cfg);
+    if ~mismo(Cv.vis.dist_toma, c.toma) || ~mismo(Cv.vis.dist_fuego, c.fuego), n_l = n_l + 1; end
+end
+% decisión "lejos del tubo" de VisionService.filtrar con la cámara real
+F = tb.filtrar; if ~iscell(F), F = num2cell(F); end
+n_f = 0; eg = 0; edf = 0; n_lejos = 0;
+for k = 1:numel(F)
+    c = F{k};
+    cfg = cfg_vision(cfg_real, c.vision_json);
+    cfg.pista = sim3d_leer_json(c.pista_json);
+    Cv = sim3d_config(raiz, cfg);
+    g = sim3d_camara('a_suelo', Cv.cam, c.uv(:), c.pose(:));
+    eg = max(eg, max(abs(g(:) - c.suelo(:))));
+    det = sim3d_detector('init', [], Cv, struct());
+    [lejos, d] = sim3d_detector('tubo', det, c.cls, g(1), g(2));
+    if lejos ~= c.lejos || isempty(d) ~= isempty(c.dist), n_f = n_f + 1; end
+    if ~isempty(d) && ~isempty(c.dist), edf = max(edf, abs(d - c.dist)); end
+    n_lejos = n_lejos + c.lejos;
+end
+ok = n_t == 0 && n_s == 0 && et < 1e-12 && ed < 1e-12 && n_l == 0 && n_f == 0 && eg < 1e-9 && edf < 1e-9;
+res = anotar(res, 'tubos y filtro de tubo = estación (tubos_pista, dist_tubos, filtrar)', ok, sprintf(['%d pistas ' ...
+    '(con y sin pista.tubos, huecos, valores inválidos): %d diferencias de tubos/distancia, %d de tramos_sin_tubo, ' ...
+    'error máx. vértices %.2g m, distancia %.2g m (%d puntos, %d sin tubos); %d variantes de umbral: %d diferencias; ' ...
+    '%d casos de filtrar (%d lejos del tubo): %d diferencias, suelo %.2g m, distancia %.2g m'], numel(P), n_t, n_s, ...
+    et, ed, n_pts, n_none, numel(Lm), n_l, numel(F), n_lejos, n_f, eg, edf));
+end
+
+function cfg = cfg_vision(cfg, vision_json)
+% la config real con los campos de vision del caso (texto JSON: null y listas como la estación)
+v = sim3d_leer_json(['{"vision": ' vision_json '}']);
+v = v.vision;
+f = fieldnames(v);
+for i = 1:numel(f), cfg.vision.(f{i}) = v.(f{i}); end
+end
+
+function ok = mismo(a, b)
+ok = isequal(isempty(a), isempty(b)) && (isempty(a) || abs(a - b) < 1e-12);
+end
+
+function T = tubos_ref(v)
+% lista de polilíneas de la referencia (jsondecode) -> cell de Nx2
+T = {};
+if iscell(v)
+    T = cellfun(@double, reshape(v, 1, []), 'UniformOutput', false);
+elseif ndims(v) == 3
+    for k = 1:size(v, 1), T{end+1} = reshape(v(k, :, :), size(v, 2), size(v, 3)); end %#ok<AGROW>
+end
 end
 
 function v = pct(x, p)

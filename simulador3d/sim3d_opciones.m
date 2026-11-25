@@ -35,6 +35,9 @@ d.auto_land      = [];         % [] = config (mision.auto_land); 0/1 para forzar
 d.comandos       = zeros(0,2); % [t cmd] comandos programados (1 START, 2 ABORT, 3 LAND_ALL, 4 PAUSE, 5 RESUME)
 d.overrides      = [0 0 0 0];  % [z_E z_R t_mark d_min_h] que mandaría la estación (0 = por defecto)
 d.perdida_rastreo = zeros(0,3); % [dron t1 t2] dron sin rastreo (pose NaN) en [t1, t2)
+d.trk_a_bordo    = true;       % true = el stack a bordo también ve isTracking = 0: a los 0.2 s pasa a 7
+                               % (rampa de bajada a 1.75 N/s, luego 9), como el binario del Equipo2;
+                               % false = el dron sigue volando con su estimación (sin caída)
 d.ruido_pos      = 0.002;      % m, ruido de OptiTrack
 % ---- Puente TCP (§3.3) ----------------------------------------------------
 d.usar_tcp       = true;       % servir el protocolo de 64/32 doubles para la UI web

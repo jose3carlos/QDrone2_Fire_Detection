@@ -1,11 +1,14 @@
 {
-  "nota": "Modo solo explorador sobre la pista del laboratorio del 23-nov (dibujo del usuario, 7 vértices, ver config/estacion.json -> pista). Home del explorador (dron 1) en (1.25, 0) mirando a +x; el dron 2 no se usa. Tomas = válvulas sobre el tubo (yaw = dirección del tramo). Fuegos = junto al tubo. Coordenadas RSF en m: +x adelante, +y izquierda.",
-  "homes": [[1.25, 0.0], [1.45, -1.45]],
+  "nota": "Modo solo explorador con la pista REAL del laboratorio (vuelos del 24-nov). La ruta de vuelo (pista.vertices: 7 vértices, 8.0 m, 36 waypoints) y los tubos reales (pista.tubos: 2 piezas, más afuera que la ruta) se leen de config/estacion.json; los objetos se colocan SOBRE los tubos con 'tubo' (1 = lado +y, 2 = lado -y), 's_m' (m desde el primer punto del tubo) y 'lado_m' (m a la izquierda del tubo). Home del explorador (dron 1) en el centro (0, 0) mirando a +x, como voló; el dron 2 no se usa. Tomas = válvulas sobre el tubo (orientadas con el tubo). Fuegos = junto al tubo. Las dos tomas de las orillas (y ~1.37 y ~-1.45) quedan a 0.26 y 0.37 m de la ruta: con el filtro contra la ruta se perdían, contra los tubos reales pasan.",
+  "homes": [[0.0, 0.0], [1.45, -1.45]],
   "yaw0_deg": [0, 0],
   "objetos": [
-    {"clase": "toma",  "x": 0.045, "y": 1.150,  "yaw_deg": 3},
-    {"clase": "fuego", "x": -0.51, "y": 0.76,   "yaw_deg": 0,     "variante": "A"},
-    {"clase": "toma",  "x": 0.73,  "y": -0.63,  "yaw_deg": -55.6},
-    {"clase": "fuego", "x": 0.00,  "y": -1.00,  "yaw_deg": 0,     "variante": "B"}
+    {"clase": "fuego", "tubo": 1, "s_m": 0.55, "lado_m": -0.08, "variante": "A"},
+    {"clase": "fuego", "tubo": 1, "s_m": 1.69, "lado_m": 0.08,  "variante": "C"},
+    {"clase": "toma",  "tubo": 1, "s_m": 2.83, "nota": "orilla +y, ~(-0.84, 1.37): la toma que el vuelo 6 descartaba por lejos del tubo"},
+    {"clase": "toma",  "tubo": 1, "s_m": 3.64},
+    {"clase": "toma",  "tubo": 2, "s_m": 0.60},
+    {"clase": "toma",  "tubo": 2, "s_m": 2.06, "nota": "orilla -y, ~(0.20, -1.45)"},
+    {"clase": "fuego", "tubo": 2, "s_m": 3.30, "lado_m": 0.075, "variante": "B", "nota": "orilla -y, cerca del fuego del vuelo 5 en (-1.18, -1.52)"}
   ]
 }

@@ -90,12 +90,19 @@ f2 = figure('Name', 'Trayectorias (vista cenital)', 'NumberTitle', 'off', 'Posit
 hold on; grid on; axis equal;
 set(gca, 'XDir', 'reverse');
 V = R.esc.V;
-plot(V(:,2), V(:,1), '-', 'Color', [0.6 0.6 0.6], 'LineWidth', 4);
+tubos = {V};
+if isfield(R.esc, 'tubos'), tubos = R.esc.tubos; end
+for i = 1:numel(tubos)     % tubos reales (gris) y ruta de vuelo (celeste punteada)
+    h_tubo = plot(tubos{i}(:,2), tubos{i}(:,1), '-', 'Color', [0.6 0.6 0.6], 'LineWidth', 4);
+end
+h_ruta = plot(V(:,2), V(:,1), '--', 'Color', [0.22 0.74 0.97], 'LineWidth', 1.2);
 lx = R.p.xy_lim;
-plot(lx([1 2 2 1 1]), lx([1 1 2 2 1]), 'k-');
+h_arena = plot(lx([1 2 2 1 1]), lx([1 1 2 2 1]), 'k-');
+h_leg = [h_tubo h_ruta h_arena];
 for i = 1:2
-    plot(squeeze(L.pos(2,:,i)), squeeze(L.pos(1,:,i)), '-', 'Color', cdr(i,:), 'LineWidth', 1.3);
-    plot(R.esc.home(i,2), R.esc.home(i,1), 'p', 'MarkerSize', 13, 'MarkerFaceColor', cdr(i,:), 'MarkerEdgeColor', 'k');
+    h_leg(end+1) = plot(squeeze(L.pos(2,:,i)), squeeze(L.pos(1,:,i)), '-', 'Color', cdr(i,:), 'LineWidth', 1.3); %#ok<AGROW>
+    h_leg(end+1) = plot(R.esc.home(i,2), R.esc.home(i,1), 'p', 'MarkerSize', 13, 'MarkerFaceColor', cdr(i,:), ...
+        'MarkerEdgeColor', 'k'); %#ok<AGROW>
 end
 for j = 1:numel(R.esc.obj)
     o = R.esc.obj(j);
@@ -112,7 +119,8 @@ end
 xlabel('y (m)  [+y a la izquierda]'); ylabel('x (m)  [+x adelante]');
 xlim(lx + [-0.2 0.2]); ylim(lx + [-0.2 0.2]);
 title(sprintf('Trayectorias · %s · %d objetivos publicados (x), %d objetos reales (rojo)', ver, s.n_obj, numel(R.esc.obj)));
-legend({'pista', 'arena', 'D1', 'home D1', 'D2', 'home D2'}, 'Location', 'southoutside', 'Orientation', 'horizontal');
+legend(h_leg, {'tubos', 'ruta de vuelo', 'arena', 'D1', 'home D1', 'D2', 'home D2'}, 'Location', 'southoutside', ...
+    'Orientation', 'horizontal');
 
 if guardar
     if ~isfolder(carpeta), mkdir(carpeta); end

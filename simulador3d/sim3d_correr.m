@@ -8,6 +8,7 @@ function R = sim3d_correr(opc)
 %     poses OptiTrack (con ruido) -> qd2_mission_step
 %     -> qd2_separation_guard (solo PID) -> limitador por NORMA (qd2_rate_limit(...,1))
 %     -> qd2_onboard_step (PID original o MPC) -> downwash + ruido -> qd2_quad_plant
+%        (opc.trk_a_bordo: 0.2 s sin rastreo -> estado 7 a bordo, rampa de bajada y 9)
 %     detector simulado de la RealSense del explorador (clusters de la estación)
 %     -> telemetría de 64 doubles (qd2_telemetry_pack) por TCP :18700
 %
@@ -77,6 +78,11 @@ X = zeros(10, 2);
 X(1:2, 1) = esc.home(1,:).'; X(1:2, 2) = esc.home(2,:).';
 X(9, :) = esc.yaw0;
 ob = [qd2_onboard_init(p), qd2_onboard_init(p)];
+% pérdida de rastreo vista a bordo (opc.trk_a_bordo): rampa del estado 7 del stack original
+T7 = [0 0];              % N, empuje de la rampa de emergencia por dron
+u_prev = zeros(4, 2);    % último mando de cada dron (de ahí arranca la rampa)
+t_sin_trk = [-1 -1];     % desde cuándo cada dron ve isTracking = 0 (-1 = lo ve)
+t_trk7 = [NaN NaN];      % instante en que cada dron pasó a 7 por pérdida de rastreo
 fp = [0 0];              % Flight State de TIERRA (Flight Plan del Equipo2) por dron: o+2 en la versión PID
 s = qd2_mission_init(p);
 gs = qd2_guard_init();
@@ -405,13 +411,45 @@ end
         for i = 1:2
             sp_rl(i, :) = qd2_rate_limit(sp_rl(i, :), sp(i, :), rate, dt, 1);
         end
+        % ---- pérdida de rastreo vista a bordo (opc.trk_a_bordo, como trk_a_bordo de
+        % tests/qd2_sim_lazo_cerrado.m y la FSM de QD2_Sim_Dual): tierra le reenvía isTracking al
+        % dron; con isTracking = 0 sostenido 0.2 s la FSM del Equipo2 pasa a Error (7), irreversible
+        if opc.trk_a_bordo
+            trk_ab = [in.tracked1 in.tracked2];
+            for i = 1:2
+                if trk_ab(i) < 0.5
+                    if t_sin_trk(i) < 0, t_sin_trk(i) = t; end
+                    if t - t_sin_trk(i) >= 0.2 - 1e-9 && ob(i).fsm >= 3 && ob(i).fsm <= 6
+                        ob(i).fsm = 7; T7(i) = u_prev(1, i);
+                        t_trk7(i) = t;
+                        log_msg(opc, ['t = %6.2f s: dron %d sin rastreo desde hace 0.2 s -> estado 7 a bordo ' ...
+                            '(rampa de bajada, z %.2f m)'], t, i, X(3, i));
+                    end
+                else
+                    t_sin_trk(i) = -1;
+                end
+            end
+        end
         % ---- a bordo + planta + downwash
         F_dw = [0 0];
         for i = 1:2
             o = 3 - i;
             xe = [X(1:3, i) + opc.ruido_pos*randn(rs, 3, 1); X(4:6, i) + 0.01*randn(rs, 3, 1); X(7:9, i)];
             other = [X(1:3, o); X(4:6, o)];
-            [u, ob(i)] = qd2_onboard_step(ob(i), tel.arm(i), tel.takeoff(i), sp_rl(i, :), xe, other, p, dt, version);
+            if ob(i).fsm == 7
+                % Error -> EMERGENCY STOP del stack original: actitud nivelada, sin control de
+                % posición (el dron sigue con la velocidad que traía: deriva), empuje bajando a
+                % 1.75 N/s; a 7.38 N -> 9 (motores apagados). Takeoff ya no importa.
+                T7(i) = max(T7(i) - 1.75*dt, 0);
+                u = [T7(i); 0; 0; 0];
+                if T7(i) <= 7.38
+                    ob(i).fsm = 9;
+                    u = zeros(4, 1);
+                end
+            else
+                [u, ob(i)] = qd2_onboard_step(ob(i), tel.arm(i), tel.takeoff(i), sp_rl(i, :), xe, other, p, dt, version);
+            end
+            u_prev(:, i) = u;
             fp(i) = flight_plan(fp(i), tel.arm(i), tel.takeoff(i));
             [Fdw, sg] = qd2_downwash(X(1:3, i), X(1:3, o), p.dw);
             X(:, i) = qd2_quad_plant(X(:, i), u, Fdw + sg.*randn(rs, 3, 1), dt, p.planta);
@@ -556,6 +594,9 @@ end
         E.n_falsos = det.n_falsos;
         E.txt_vision = sprintf('%d cuadros, %d observaciones (radio %.2f m, mín. %d obs.)', ...
             det.n_cuadros, det.n_obs, det.radio, det.min_obs);
+        if det.n_desc_tubo > 0
+            E.txt_vision = sprintf('%s · %d lejos del tubo', E.txt_vision, det.n_desc_tubo);
+        end
         % actitud con la que geolocalizó el último cuadro (como la tarjeta de Visión de la UI)
         E.txt_actitud = '';
         if isfield(det, 'ult_act') && ~isempty(det.ult_act)
@@ -668,6 +709,7 @@ end
         [er, ~] = cruzar_objetivos();
         M.reales_detectados = sum(er > 0);
         M.reales_visitados = sum(er == 3);
+        M.estado_obj = er;                          % por objeto real: 0 no visto, 1 detectado, 2 asignado, 3 visitado
         e = [];
         ox = [esc.obj.x]; oy = [esc.obj.y];
         for kk = 1:s.n_obj
@@ -683,6 +725,13 @@ end
         M.det_desc_incl = det.n_desc_incl;          % observaciones descartadas por inclinación
         M.det_incl_max_deg = rad2deg(det.incl_max); % inclinación máxima usada al geolocalizar
         M.err_obs = det.err_obs;                    % m, error de cada observación real que entró al cluster
+        M.det_desc_tubo = det.n_desc_tubo;          % observaciones descartadas por "lejos del tubo"
+        nobj_ = numel(esc.obj);                     % por objeto real (índice de esc.obj):
+        M.det_obs_obj = [det.obs_obj zeros(1, nobj_ - numel(det.obs_obj))];                 % al cluster
+        M.det_desc_tubo_obj = [det.desc_tubo_obj zeros(1, nobj_ - numel(det.desc_tubo_obj))]; % descartadas
+        M.det_dist_tubo_obs = det.dist_tubo_obs;    % m, distancia al tubo real de cada observación aceptada
+        M.tubos_reales = C.tubos_reales;            % true = pista.tubos; false = ruta partida en los huecos
+        M.t_trk7 = t_trk7;                          % s, paso a 7 a bordo por pérdida de rastreo (NaN = nunca)
         if ~isempty(pt)
             M.tcp_rx = pt.n_rx; M.tcp_tx = pt.n_tx; M.tcp_conex = pt.n_conex;
         end

@@ -5,13 +5,24 @@ function [p, aviso] = qd2_params_from_config(cfg)
 %   p = qd2_params_from_config(cfg_struct)  (ya decodificado con jsondecode)
 %   [p, aviso] = qd2_params_from_config(...)   aviso = '' o el texto del
 %                                              problema con mision.modo / dron_solo
+%                                              / t_perdida_aterrizar_s (varios: '; ')
 %
 %   Solo MATLAB (usa jsondecode): llamarla en InitFcn / en el script de
 %   construcción y pasar 'p' a los bloques MATLAB Function como parámetro
 %   (o usar sus valores para generar constantes). No es para codegen.
 %   Claves usadas: mision.{z_explorador, z_respondedor, t_mark, d_min_h,
 %   dz_min, espaciado_waypoints, tol_xy, tol_z, auto_land, limites_xy,
-%   modo, dron_solo}, pista.vertices (máx. 16) y vision.radio_cluster_m.
+%   modo, dron_solo, t_perdida_aterrizar_s}, pista.vertices (máx. 16) y
+%   vision.radio_cluster_m.
+%
+%   mision.t_perdida_aterrizar_s (s): pérdida de rastreo sostenida en el aire
+%     tras la cual ese dron aterriza (ver qd2_params). Ausente, null o [] ->
+%     valor por defecto (0.2 s = t_perdida_trk) sin aviso. Número real finito en
+%     [p.t_perdida_trk, 2.0] -> se usa. Otro valor (fuera de rango, NaN,
+%     texto, true, vector...) -> valor por defecto con aviso. Con el binario
+%     PID del Equipo2 debe quedar en 0.2 s (su FSM a bordo ya pasa a 7 a los
+%     0.2 s sin rastreo); un valor mayor solo sirve con un stack que sostenga
+%     el hover sin rastreo.
 %
 %   Modo de misión (mismas reglas que config.mision_modo de la estación):
 %     mision.modo      "dual" | "solo_explorador" (sin distinguir mayúsculas,
@@ -70,6 +81,36 @@ end
 [modo, ds, aviso] = modo_mision(m);
 p.modo_mision = modo;
 p.dron_solo = ds;
+[p.t_perdida_aterrizar_s, aviso_t] = t_aterrizar(m, p);
+if ~isempty(aviso_t)
+    if isempty(aviso)
+        aviso = aviso_t;
+    else
+        aviso = [aviso '; ' aviso_t];
+    end
+end
+end
+
+function [v, aviso] = t_aterrizar(m, p)
+% mision.t_perdida_aterrizar_s: número real finito en [p.t_perdida_trk, T_MAX];
+% si no, el valor por defecto de qd2_params (con aviso salvo ausente/null/[]).
+T_MAX = 2.0;        % s: el dron sin pose deriva y cae en ~1-2 s (vuelos 2-4 del 24-nov)
+v = p.t_perdida_aterrizar_s;
+aviso = '';
+if ~isfield(m, 't_perdida_aterrizar_s')
+    return;
+end
+x = m.t_perdida_aterrizar_s;
+if isempty(x) && (isnumeric(x) || iscell(x))
+    return;                                       % null o [] = no definido
+end
+if isnumeric(x) && ~islogical(x) && isscalar(x) && isreal(x) && isfinite(x) && ...
+        x >= p.t_perdida_trk && x <= T_MAX
+    v = double(x);
+    return;
+end
+aviso = sprintf('mision.t_perdida_aterrizar_s inválido (''%s''; válido %.1f a %.1f s): se usa %.2f s', ...
+    texto_valor(x), p.t_perdida_trk, T_MAX, v);
 end
 
 function [modo, ds, aviso] = modo_mision(m)

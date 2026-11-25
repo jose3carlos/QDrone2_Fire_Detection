@@ -31,7 +31,8 @@
     "tol_z": 0.12,
     "auto_land": false,
     "limites_xy": [-1.5, 1.5],
-    "modo": "dual"
+    "modo": "dual",
+    "t_perdida_aterrizar_s": 0.2
   },
   "pista": {
     "nota": "Pista del vuelo 1 del 24-nov (dibujo del usuario a ~±1.2 m, arriba = +x): voló completa sin perder rastreo (vuelos 1 y 5); v3 y v7 alargados 15 cm hacia x- tras el vuelo 5. Con esquinas a ±1.28/±1.35 OptiTrack pierde el dron en la franja x ~1.3, y >= 1.0 (vuelos 2-4, caídas). Tramo 4 = hueco sin tubo",

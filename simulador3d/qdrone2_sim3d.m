@@ -4,8 +4,10 @@
 % - 2 QDrone 2 en 3D con malla procedural fiel al manual (442.58 x 490.8 x 135.53 mm):
 %   aros de carbono, hélices que giran, Jetson, batería y RealSense al frente.
 %   Dron 1 = azul, dron 2 = naranja; la etiqueta muestra el rol (EXPLORADOR / RESPONDEDOR).
-% - Arena 3x3 m con retícula y ejes OptiTrack (+x adelante, +y izquierda), la N invertida
-%   de config/estacion.json (tubo PVC blanco) y fuegos/tomas (STL de impresion3d/stl).
+% - Arena 3x3 m con retícula y ejes OptiTrack (+x adelante, +y izquierda), los tubos REALES
+%   de config/estacion.json (pista.tubos, o la ruta partida en pista.tramos_sin_tubo; tubo PVC
+%   blanco), la ruta de vuelo (pista.vertices, celeste punteada en el piso) y fuegos/tomas
+%   (STL de impresion3d/stl). El detector interno descarta las tomas lejos de esos tubos.
 % - Misión completa con la MISMA librería que Simulink (simulink_qdrone2/lib):
 %   qd2_mission_step + qd2_separation_guard (PID) o vuelo apilado con qd2_mpc_position y
 %   downwash (MPC); stack a bordo (qd2_onboard_step) y planta (qd2_quad_plant).

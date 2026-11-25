@@ -11,6 +11,10 @@ function [det, info] = sim3d_detector(accion, det, varargin)
 %   [q6, act] = sim3d_detector('pose_geo', [], pose_med, C.vis)
 %       pose_para_geo de web/app/vision_service.py: q6 = [x y z yaw roll pitch] con la que se
 %       geolocaliza y act (.ok, .disponible, .roll, .pitch, .incl en rad, .inclinado)
+%   [lejos, dist] = sim3d_detector('tubo', det, clase, x, y)
+%       filtro de distancia al tubo de vision_service.filtrar: dist = distancia (m) al tubo REAL
+%       más cercano (C.tubos = geo.tubos_pista; [] sin tubos) y lejos = true si pasa del límite de
+%       su clase (vision.dist_max_tubo_toma_m / dist_max_tubo_fuego_m; [] = sin filtro)
 %
 %   Cadena (igual a la de la estación, ARQUITECTURA §7):
 %   1. Cada objeto real se proyecta con la pose REAL de la cámara (roll, pitch y
@@ -25,6 +29,10 @@ function [det, info] = sim3d_detector(accion, det, varargin)
 %      pitch de y(61:62) corregidos con vision.actitud_signos / actitud_offset_deg
 %      (sin actitud: nivelado), intersecado con z = 0.02 m. Si la inclinación supera
 %      vision.inclinacion_max_deg la observación se descarta (no entra al cluster).
+%      Luego el filtro de tubo de la estación (VisionService.filtrar con dist_tubos): una toma a
+%      más de vision.dist_max_tubo_toma_m (0.25 m) del tubo REAL más cercano (pista.tubos, o la
+%      ruta partida en pista.tramos_sin_tubo) se descarta; los fuegos, solo con
+%      dist_max_tubo_fuego_m (null por defecto). El filtro de tamaño no se simula (sin cajas).
 %      La estación no conoce el error del soporte: ese error queda en la posición.
 %   5. Clusters con las reglas de web/app/geo.py (Clusterer): misma clase,
 %      centroide más cercano dentro de radio_cluster_m, se publica con
@@ -51,6 +59,15 @@ switch accion
         det.incl_max = 0;          % rad, inclinación máxima usada en la geolocalización
         det.err_obs = zeros(1, 0); % m, error horizontal de cada observación real que entró al cluster
         det.ult_act = [];          % actitud usada en el último cuadro (pose_geo)
+        % filtro de distancia al tubo (vision_service.filtrar): tubos reales y límites por clase
+        det.tubos = {};
+        if isfield(C, 'tubos'), det.tubos = C.tubos; end
+        det.lim_tubo = {[], 0.25};  % {fuego, toma}
+        if isfield(C.vis, 'dist_toma'), det.lim_tubo = {C.vis.dist_fuego, C.vis.dist_toma}; end
+        det.n_desc_tubo = 0;       % observaciones (conf >= confianza_min) descartadas por "lejos del tubo"
+        det.desc_tubo_obj = zeros(1, 0);  % descartadas por tubo de cada objeto real (índice de esc.obj)
+        det.obs_obj = zeros(1, 0);        % observaciones de cada objeto real que entraron al cluster
+        det.dist_tubo_obs = zeros(1, 0);  % m, distancia al tubo de cada observación que entró al cluster
         info = [];
     case 'cuadro'
         [det, info] = cuadro(det, varargin{:});
@@ -62,6 +79,9 @@ switch accion
         info = [];
     case 'pose_geo'         % [q6, act] = sim3d_detector('pose_geo', [], pose_med, C.vis)
         [det, info] = pose_geo(varargin{:});
+    case 'tubo'             % [lejos, dist] = sim3d_detector('tubo', det, clase, x, y)
+        [lejos, info] = filtro_tubo(det, varargin{:});
+        det = lejos;
     otherwise
         error('sim3d:detector', 'Acción desconocida: %s', accion);
 end
@@ -137,11 +157,24 @@ for k = 1:size(obs, 1)
             det.n_desc_incl = det.n_desc_incl + 1;
             continue;
         end
+        j = obs(k, 5);
+        [lejos, dist] = filtro_tubo(det, obs(k, 1), obs(k, 2), obs(k, 3));
+        if lejos
+            % como la estación: "lejos del tubo" (una toma va abrazada al tubo real)
+            det.n_desc_tubo = det.n_desc_tubo + 1;
+            if j > 0
+                if numel(det.desc_tubo_obj) < j, det.desc_tubo_obj(j) = 0; end
+                det.desc_tubo_obj(j) = det.desc_tubo_obj(j) + 1;
+            end
+            continue;
+        end
         det = agregar(det, obs(k, 1), obs(k, 2), obs(k, 3), obs(k, 4));
         det.n_obs = det.n_obs + 1;
-        if obs(k, 5) > 0
-            j = obs(k, 5);
+        if ~isempty(dist), det.dist_tubo_obs(end+1) = dist; end
+        if j > 0
             det.err_obs(end+1) = hypot(obs(k, 2) - esc.obj(j).x, obs(k, 3) - esc.obj(j).y);
+            if numel(det.obs_obj) < j, det.obs_obj(j) = 0; end
+            det.obs_obj(j) = det.obs_obj(j) + 1;
         end
     end
 end
@@ -150,6 +183,15 @@ det.ultimas = obs(:, 1:4);
 det.ult_act = act;
 info.n = size(obs, 1);
 info.actitud = act;
+end
+
+function [lejos, dist] = filtro_tubo(det, cls, x, y)
+% parte de distancia al tubo de VisionService.filtrar: dist_tubos(g, tubos) y límite de la clase
+dist = [];
+if isfield(det, 'tubos'), dist = sim3d_tubos('dist', x, y, det.tubos); end
+lim = [];
+if isfield(det, 'lim_tubo') && (cls == 0 || cls == 1), lim = det.lim_tubo{cls + 1}; end
+lejos = ~isempty(dist) && ~isempty(lim) && dist > lim;
 end
 
 function [q, act] = pose_geo(pm, vis)

@@ -18,7 +18,10 @@ function L = qd2_sim_lazo_cerrado(op)
 %     rl_norma (1 = rate limiter xy por norma, recomendado; 0 = por eje
 %     como el Rate Limiter2 original),
 %     trk_off (Kx3 [dron t1 t2]: ese dron sin rastreo y con pose NaN en
-%     [t1, t2)), py_extra (Mx2 [índice valor]: ranuras fijas de Python,
+%     [t1, t2)), trk_a_bordo (1 = el stack a bordo también ve isTracking = 0
+%     en esas ventanas y, como el original del Equipo2, a los 0.2 s pasa a
+%     Error: estado 7, rampa de bajada sin control de posición; 0 = el dron
+%     sigue volando con su estado real, como antes), py_extra (Mx2 [índice valor]: ranuras fijas de Python,
 %     p. ej. overrides 20-23).
 %   Falla a bordo (versión MPC, ver qd2_mission_step):
 %     a_bordo (1 = tierra recibe la FSM a bordo y el chequeo de protocolo
@@ -58,7 +61,7 @@ d = struct('version', 1, 'home1', [-1.0 0.0], 'home2', [1.0 -0.3], ...
     'trk_off', zeros(0,3), 'py_extra', zeros(0,2), ...
     'a_bordo', -1, 'falla_fsm', zeros(0,2), 'falla_apilado', 0, 't_apilado_falla', 1.0, ...
     'proto_mal', zeros(0,3), 'rate_escape', -1, 'enlace_off', zeros(0,3), ...
-    'p', [], 'z_ausente', NaN);
+    'p', [], 'z_ausente', NaN, 'trk_a_bordo', 0);
 f = fieldnames(d);
 for i = 1:numel(f)
     if ~isfield(op, f{i}), op.(f{i}) = d.(f{i}); end
@@ -128,6 +131,8 @@ rx = zeros(2, 6);           % último paquete recibido a bordo [arm takeoff x y 
 t_sin = [-1 -1];            % desde cuándo cada dron no recibe paquetes
 L.t_falla = NaN;            % instante de la falla inyectada
 L.dron_falla = 0;
+t_sin_trk = [-1 -1];        % trk_a_bordo: desde cuándo el dron ve isTracking = 0
+L.t_trk7 = [NaN NaN];       % trk_a_bordo: instante en que cada dron pasó a 7 por rastreo
 t_apil = -1;
 
 for k = 1:n
@@ -274,6 +279,23 @@ for k = 1:n
             end
         else
             t_apil = -1;
+        end
+    end
+
+    % pérdida de rastreo vista a bordo (trk_a_bordo): isTracking = 0
+    % sostenido 0.2 s -> Error (7), como la FSM del Equipo2
+    if op.trk_a_bordo > 0.5
+        trk_ab = [in.tracked1 in.tracked2];
+        for i = 1:2
+            if trk_ab(i) < 0.5
+                if t_sin_trk(i) < 0, t_sin_trk(i) = t; end
+                if t - t_sin_trk(i) >= 0.2 - 1e-9 && ob(i).fsm >= 3 && ob(i).fsm <= 6
+                    ob(i).fsm = 7; T7(i) = u_prev(1,i);
+                    L.t_trk7(i) = t;
+                end
+            else
+                t_sin_trk(i) = -1;
+            end
         end
     end
 

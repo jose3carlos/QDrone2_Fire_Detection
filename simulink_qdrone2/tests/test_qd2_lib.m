@@ -127,6 +127,29 @@ tc.verifyTrue(contains(c{1}, sprintf('-URI_Host2 tcpip://localhost:%d', cfg.puer
 fprintf('[config] ExtModeMexArgs = %s -> %d argumento(s)\n', a, numel(c));
 end
 
+function test_ext_mode_args_slx(tc)
+% El valor GUARDADO en cada .slx de tierra (pid/, mpc/, versiones/*/) también va entre comillas:
+% QUARC lo lee al abrir el modelo y al empezar el build, ANTES del InitFcn (PC del laboratorio,
+% 23-nov: sin comillas, "This statement is incomplete." y sin pestaña HARDWARE).
+raiz = fileparts(fileparts(mfilename('fullpath')));
+d = [dir(fullfile(raiz, 'pid', 'QD2_MissionCtrl_Dual_*.slx')); ...
+     dir(fullfile(raiz, 'mpc', 'QD2_MissionCtrl_Dual_*.slx')); ...
+     dir(fullfile(raiz, 'versiones', '*', 'QD2_MissionCtrl_Dual_*.slx'))];
+tc.verifyGreaterThanOrEqual(numel(d), 12);
+for k = 1:numel(d)
+    f = fullfile(d(k).folder, d(k).name);
+    [a, config] = qd2_ext_mode_args_slx(f);
+    rel = strrep(f, [raiz filesep], '');
+    tc.verifyEqual(config, 'Configuration1', rel);
+    tc.verifyTrue(startsWith(a, '''') && endsWith(a, ''''), sprintf('%s: ExtModeMexArgs sin comillas: %s', rel, a));
+    c = eval(['{' a '}']);
+    tc.verifyEqual(numel(c), 1, rel);
+    tc.verifyTrue(startsWith(c{1}, '-w -d %d -uri %u ') && contains(c{1}, '-URI_Host tcpip://') && ...
+        contains(c{1}, '-URI_Host2 tcpip://'), rel);
+end
+fprintf('[config] ExtModeMexArgs guardado entre comillas en %d .slx de tierra\n', numel(d));
+end
+
 % =========================================================================
 %  Supervisor: comandos, deduplicación
 % =========================================================================
@@ -631,6 +654,10 @@ tc.verifyTrue(all(isfinite([spE spR])));
 % perdido) se ignora; RESUME a 50 s vuelve a MISSION y la misión termina
 op = struct('version', 1, 'objetivos', [0 1.2; 0.5 0.5], 'trk_off', [2 40 45], ...
     'cmds', [3 1; 42 5; 50 5], 't_final', 400);
+% (pausa larga sin aterrizar: aquí se prueba PAUSED/RESUME; la pérdida
+% sostenida -> aterrizar, con p.t_perdida_aterrizar_s, está en test_trk_*)
+op.p = p;
+op.p.t_perdida_aterrizar_s = 100;
 L = qd2_sim_lazo_cerrado(op);
 k10 = find(L.estado == 10, 1);
 tc.verifyNotEmpty(k10);
@@ -1410,7 +1437,10 @@ for v = 1:2
 end
 % pérdida de rastreo del dron SOLO -> PAUSED (alerta 2); RESUME vuelve a MISSION
 op = struct('cmds', [3 1; 23 5; 50 3], 't_final', 80, 'trk_off', [1 20 21]);
-K = sim_solo(params_solo(1), op);
+% (pausa larga sin aterrizar; la pérdida sostenida -> aterrizar está en test_trk_*)
+p_pausa = params_solo(1);
+p_pausa.t_perdida_aterrizar_s = 100;
+K = sim_solo(p_pausa, op);
 k10 = find(K.estado == 10, 1);
 tc.verifyNotEmpty(k10);
 tc.verifyEqual(K.t(k10), 20 + 0.2, 'AbsTol', 0.05);
@@ -1718,5 +1748,716 @@ end
 function borrar(lista)
 for k = 1:numel(lista)
     if exist(lista{k}, 'file'), delete(lista{k}); end
+end
+end
+
+% =========================================================================
+%  Pérdida de rastreo SOSTENIDA en el aire -> aterrizar (24-nov, vuelos 2-4:
+%  OptiTrack perdió el dron, PAUSED, sin pose derivó ~0.5 m y cayó)
+% =========================================================================
+function test_trk_solo_mision(tc)
+% Solo explorador (PID): pérdida sostenida en MISSION -> takeoff = 0 en
+% <= t_perdida_aterrizar_s + 1 paso, LANDING, DONE en el suelo, alerta 2
+% (no 4), falla 2; el rastreo regresa y nunca vuelve a recibir takeoff.
+p = params_solo(1);
+t_at = p.t_perdida_aterrizar_s;
+K0 = sim_trk(p, struct('t_final', 150));
+tl = K0.t(find(K0.estado == 5, 1)) + 5;
+K = sim_trk(p, struct('t_final', 150, 'trk_off', [1 tl tl + 15]));
+M = verificar_trk(tc, K, 1, tl, p, 'solo cinemático');
+% por defecto t_perdida_aterrizar_s = t_perdida_trk: en el aire no hay
+% PAUSED por rastreo, aterriza directo (antes: PAUSED y RESUME posible)
+tc.verifyEqual(p.t_perdida_aterrizar_s, p.t_perdida_trk);
+tc.verifyFalse(any(K.estado(K.t >= tl) == 10));
+tc.verifyEqual(K.estado(find(K.t >= tl + p.t_perdida_trk + 0.03, 1)), 7);
+tc.verifyTrue(any(K.estado == 7));
+% lazo cerrado con el stack a bordo emulado (isTracking = 0 -> estado 7 a los 0.2 s)
+op = struct('version', 1, 'p', p, 'home1', [1.25 0], 'home2', [1.45 -1.45], 'objetivos', [0 1.2], ...
+    't_final', 200, 'trk_a_bordo', 1);
+L0 = qd2_sim_lazo_cerrado(op);
+tl2 = L0.t(find(L0.estado == 5, 1)) + 10;
+op.trk_off = [1 tl2 tl2 + 20; 2 0 1e9];
+L = qd2_sim_lazo_cerrado(op);
+k0 = find(L.t >= tl2, 1);
+kt = k0 - 1 + find(L.takeoff(1, k0:end) < 0.5, 1);
+tc.verifyLessThanOrEqual(L.t(kt) - tl2, t_at + 0.02 + 1e-9);
+tc.verifyEqual(sum(diff(L.takeoff(1, k0:end)) > 0.5), 0);
+tc.verifyEqual(L.estado(end), 8);
+tc.verifyEqual(L.alerta(end), 2);
+tc.verifyEqual(max(L.falla(1,:)), 2);
+tc.verifyEqual(max(L.takeoff(2,:)), 0);
+tc.verifyLessThan(L.pos(3,end,1), 0.06);
+fprintf(['[trk solo] cinemático: pérdida t=%.1f -> sin PAUSED, takeoff = 0 a los %.2f s, LANDING, DONE %.1f s después (rastreo de vuelta a los 15 s), alerta final %d, takeoff re-subido %d veces; ' ...
+    'lazo cerrado (a bordo 7 a los %.2f s): takeoff = 0 a los %.2f s, deriva %.3f m, DONE t=%.1f, alerta %d\n'], ...
+    tl, M.t_drop, M.t_done, K.alerta(end), M.resubidas, L.t_trk7(1) - tl2, L.t(kt) - tl2, ...
+    norm(L.pos(1:2,end,1) - L.pos(1:2,k0,1)), L.t(end), L.alerta(end));
+end
+
+function test_trk_breve(tc)
+% Pérdidas breves: < t_perdida_trk no hace nada. Con el valor por defecto
+% (t_perdida_aterrizar_s = t_perdida_trk = 0.2 s) una de 0.25 s ya aterriza
+% (la FSM a bordo del Equipo2 ya pasó a 7) y RESUME no hace nada. Solo con
+% t_perdida_aterrizar_s configurado mayor (0.5 s): 0.25 s -> PAUSED como
+% antes, RESUME -> MISSION, DONE normal.
+p = params_solo(1);
+K0 = sim_trk(p, struct('t_final', 150, 'cmds', [3 1; 60 3]));
+t5 = K0.t(find(K0.estado == 5, 1));
+% 0.15 s: nada
+K = sim_trk(p, struct('t_final', 150, 'cmds', [3 1; 60 3], 'trk_off', [1 t5 + 5, t5 + 5.15]));
+tc.verifyFalse(any(K.estado == 10));
+tc.verifyEqual(max(K.falla(:)), 0);
+tc.verifyTrue(isequal(K.estado, K0.estado));
+% 0.25 s con el valor por defecto: aterriza, RESUME a t5 + 8 ignorado
+Kd = sim_trk(p, struct('t_final', 150, 'cmds', [3 1; t5 + 8 5; 60 3], 'trk_off', [1 t5 + 5, t5 + 5.25]));
+k0 = find(Kd.t >= t5 + 5, 1);
+kt = k0 - 1 + find(Kd.takeoff(1, k0:end) < 0.5, 1);
+tc.verifyNotEmpty(kt);
+tc.verifyLessThanOrEqual(Kd.t(kt) - (t5 + 5), p.t_perdida_trk + 0.02 + 1e-9);
+tc.verifyFalse(any(Kd.estado(k0:end) == 10));
+tc.verifyEqual(max(Kd.takeoff(1, kt:end)), 0);
+tc.verifyEqual(max(Kd.falla(1,:)), 2);
+tc.verifyEqual(Kd.estado(end), 8);
+tc.verifyEqual(Kd.alerta(end), 2);
+% 0.25 s con t_perdida_aterrizar_s = 0.5: PAUSED, alerta 2, sin bajar takeoff; RESUME -> MISSION
+p.t_perdida_aterrizar_s = 0.5;
+d = 0.25;
+K = sim_trk(p, struct('t_final', 150, 'cmds', [3 1; t5 + 8 5; 60 3], 'trk_off', [1 t5 + 5, t5 + 5 + d]));
+k10 = find(K.estado == 10, 1);
+tc.verifyNotEmpty(k10);
+tc.verifyEqual(K.alerta(k10), 2);
+tc.verifyEqual(max(K.falla(:)), 0);
+v = K.t >= t5 + 4 & K.t < 60;
+tc.verifyTrue(all(K.takeoff(1, v) == 1));
+kr = find(K.t > t5 + 8 & K.estado == 5, 1);
+tc.verifyNotEmpty(kr);
+tc.verifyEqual(K.estado(end), 8);
+tc.verifyEqual(sum(diff(K.takeoff(1,:)) > 0.5), 1);                % un solo despegue
+fprintf(['[trk breve] 0.15 s: sin pausa (idéntico a sin pérdida); 0.25 s por defecto: takeoff = 0 a los %.2f s, sin PAUSED, RESUME ignorado, DONE; ' ...
+    'con t_perdida_aterrizar_s = 0.5, %.2f s: PAUSED t=%.2f (alerta 2), takeoff siempre 1, RESUME -> MISSION t=%.2f, DONE t=%.1f\n'], ...
+    Kd.t(kt) - (t5 + 5), d, K.t(k10) - (t5 + 5), K.t(kr), K.t(find(K.estado == 8, 1)));
+end
+
+function test_trk_estados(tc)
+% Pérdida sostenida en TAKEOFF (ya despegado), HOVER_READY, RETURN_HOME,
+% PAUSED por heartbeat y LANDING; en solo explorador y en dual PID/MPC
+% (pierde E o R). El perdido baja takeoff y nunca vuelve a subirlo (el
+% rastreo regresa a los 15 s); en dual el sano se aparta, regresa y aterriza;
+% termina en DONE con los dos en el suelo.
+casos = {'solo', 1, 1; 'dual', 1, 1; 'dual', 1, 2; 'dual', 2, 1; 'dual', 2, 2};   % modo, versión, perdido (1 = E, 2 = R)
+n = 0;
+for c = 1:size(casos, 1)
+    if strcmp(casos{c,1}, 'solo')
+        p = params_solo(1);
+        base = struct('t_final', 220);
+    else
+        p = qd2_params();
+        base = struct('t_final', 220, 'homes', [-1.0 0.0; 1.0 -0.3], 'version', casos{c,2});
+    end
+    b0 = base;
+    b0.cmds = [3 1];
+    K0 = sim_trk(p, b0);
+    eid = K0.explorer_id(end);
+    dr = eid;
+    if casos{c,3} == 2, dr = 3 - eid; end
+    t3 = K0.t(find(K0.estado == 3, 1));
+    t4 = K0.t(find(K0.estado == 4, 1));
+    t5 = K0.t(find(K0.estado == 5, 1));
+    t6 = K0.t(find(K0.estado == 6, 1));
+    esc = {'TAKEOFF en el aire', 3, struct('cmds', [3 1]), t3 + p.t_arm_a_despegue + 3.6; ...
+           'HOVER_READY', 4, struct('cmds', [3 1]), t4 + 0.5; ...
+           'RETURN_HOME', 6, struct('cmds', [3 1]), t6 + 1; ...
+           'PAUSED (heartbeat)', 10, struct('cmds', [3 1], 'hb_off', [t5 + 5 1e9]), t5 + 5 + p.hb_timeout + 1; ...
+           'LANDING', 7, struct('cmds', [3 1; t5 + 5 3]), t5 + 5.5};
+    quien = 'E';
+    if casos{c,3} == 2, quien = 'R'; end
+    for e = 1:size(esc, 1)
+        op = base;
+        f = fieldnames(esc{e,3});
+        for j = 1:numel(f), op.(f{j}) = esc{e,3}.(f{j}); end
+        Kr = sim_trk(p, op);
+        tl = esc{e,4};
+        nom = sprintf('%s v%d pierde %s en %s', casos{c,1}, casos{c,2}, quien, esc{e,1});
+        tc.assertEqual(Kr.estado(find(Kr.t >= tl, 1)), esc{e,2}, [nom ': el escenario no cae en su estado']);
+        op.trk_off = [dr tl tl + 15];
+        K = sim_trk(p, op);
+        M = verificar_trk(tc, K, dr, tl, p, nom);
+        n = n + 1;
+        fprintf('[trk estados] %s: takeoff = 0 a los %.2f s%s, estados %s, DONE %.1f s después, alerta final %d\n', ...
+            nom, M.t_drop, ternario(M.encima, ' (estaba encima del sano: espera a que salga)', ''), mat2str(M.estados), M.t_done, K.alerta(end));
+    end
+end
+fprintf('[trk estados] %d casos\n', n);
+end
+
+function test_trk_dual_pid(tc)
+% Dual PID en lazo cerrado con el stack a bordo emulado (isTracking = 0 ->
+% estado 7 a los 0.2 s): pierde E y pierde R en MISSION (t = 40 s; el
+% rastreo vuelve a los 60 s). El perdido baja takeoff a los 0.3 s y cae; el
+% sano se aparta >= d_min_h + margen + deriva de su última pose, regresa y
+% aterriza lejos de él; DONE.
+p = tc.TestData.p;
+for quien = 1:2
+    op = struct('version', 1, 'objetivos', [0 1.2; 0.5 0.5], 't_final', 300, 'trk_a_bordo', 1);
+    L0 = qd2_sim_lazo_cerrado(op);
+    eid = L0.explorer_id(end);
+    dr = eid;
+    if quien == 2, dr = 3 - eid; end
+    op.trk_off = [dr 40 60];
+    L = qd2_sim_lazo_cerrado(op);
+    M = verificar_trk_lazo(tc, L, dr, 40, p);
+    tc.verifyEqual(max(L.falla(dr,:)), 2);
+    fprintf(['[trk dual PID] pierde %s: a bordo 7 a los %.2f s, takeoff = 0 a los %.2f s, alerta 2, falla [%d %d], estados %s; ' ...
+        'dh mín con los dos en el aire %.3f m; deriva del perdido %.3f m; el sano aterriza a %.3f m del perdido; DONE %.1f s después\n'], ...
+        ternario(quien == 1, 'E', 'R'), L.t_trk7(dr) - 40, M.t_drop, max(L.falla(1,:)), max(L.falla(2,:)), mat2str(M.estados), ...
+        M.dh_min, M.deriva, M.dh_final, L.t(end) - 40);
+end
+end
+
+function test_trk_dual_mpc_apilado(tc)
+% Dual MPC apilados (dh < 0.15 m, dz ~1 m): pierde el de ARRIBA (E) o el de
+% ABAJO (R), con la FSM a bordo en tierra (a_bordo = 1: el 7 a los 0.2 s da
+% la alerta 9) y sin ella (a_bordo = 0: solo la pérdida sostenida, falla 2).
+% El sano sale de debajo/encima a su altura; cuando el perdido cruza su
+% altura ya está a >= d_min_h; después nunca queda encima de él a < d_min_h;
+% al de arriba se le baja takeoff cuando el de abajo ya salió.
+p = tc.TestData.p;
+for quien = 1:2
+    for ab = [1 0]
+        op = struct('version', 2, 'objetivos', [0.5 0.5; -0.4 -1.2; 0.6 -1.2], 'inyectar', [15 0.96 1.2], ...
+            't_final', 300, 'a_bordo', ab, 'trk_a_bordo', 1);
+        L0 = qd2_sim_lazo_cerrado(op);
+        z0 = squeeze(L0.pos(3,:,:));
+        apil = L0.estado == 5 & L0.dh < 0.15 & abs(L0.dz) > 0.5 & min(z0, [], 2)' > 0.2;
+        ka = find(apil, 1);
+        tc.assertNotEmpty(ka);
+        tA = L0.t(ka) + 0.5;
+        eid = L0.explorer_id(end);
+        dr = eid;
+        if quien == 2, dr = 3 - eid; end
+        h = 3 - dr;
+        op.trk_off = [dr tA tA + 20];
+        L = qd2_sim_lazo_cerrado(op);
+        M = verificar_trk_lazo(tc, L, dr, tA, p);
+        tc.verifyLessThan(M.dh0, 0.15);                                 % estaban apilados
+        tc.verifyGreaterThanOrEqual(M.dh_cruce, p.d_min_h);
+        z = squeeze(L.pos(3,:,:));
+        k0 = find(L.t >= tA, 1);
+        f1 = find(L.falla_fase == 1);
+        if quien == 1
+            z_sano = p.z_R;
+        else
+            z_sano = p.z_E;
+        end
+        tc.verifyEqual([min(z(f1,h)) max(z(f1,h))], z_sano*[1 1], 'AbsTol', 0.06);   % se aparta a SU altura
+        if quien == 1
+            % el de arriba: takeoff hasta que el de abajo salió (>= d_min_h)
+            kt = k0 - 1 + find(L.takeoff(dr, k0:end) < 0.5, 1);
+            tc.verifyGreaterThanOrEqual(L.dh(kt), p.d_min_h);
+        else
+            tc.verifyLessThanOrEqual(M.t_drop, p.t_perdida_aterrizar_s + 0.02 + 1e-9);
+        end
+        if ab == 1
+            % la FSM 7 a bordo (falla 9) y la pérdida sostenida (falla 2)
+            % llegan casi juntas (mismo umbral de 0.2 s; tierra ve la
+            % pérdida antes que el dron): cuenta la primera
+            tc.verifyTrue(ismember(max(L.falla(dr,:)), [2 9]));
+            ka9 = find(ismember(L.alerta, [2 9]) & L.t >= tA, 1);
+            tc.verifyLessThanOrEqual(L.t(ka9) - tA, p.t_perdida_trk + 0.05);
+        else
+            tc.verifyEqual(max(L.falla(dr,:)), 2);
+        end
+        fprintf(['[trk MPC apilado] a_bordo=%d pierde %s (dh %.3f m, dz %.2f m): alertas %s, takeoff = 0 a los %.2f s, dh al cruzar su altura %.3f m, ' ...
+            'sano encima ya separado dh mín %.3f m, aterriza a %.3f m del perdido; DONE %.1f s después\n'], ...
+            ab, ternario(quien == 1, 'E', 'R'), M.dh0, M.dz0, mat2str(unique(L.alerta(k0:end))), M.t_drop, M.dh_cruce, ...
+            M.dh_encima, M.dh_final, L.t(end) - tA);
+    end
+end
+end
+
+function test_trk_piso_no_despega(tc)
+% Un dron en el piso sin rastreo nunca despega: (a) solo, pérdida durante la
+% rampa de despegue (takeoff dado, z = 0) -> despegue cancelado, DONE, z
+% máx 0; (b) dual, el dron 2 se pierde en la rampa -> los dos cancelan;
+% (c) solo, sin rastreo antes de START -> START no arma; (d) tras aterrizar
+% por pérdida, el rastreo vuelve y un START nuevo no hace nada.
+p = params_solo(1);
+K0 = sim_trk(p, struct('t_final', 60));
+t3 = K0.t(find(K0.estado == 3, 1));
+tl = t3 + p.t_arm_a_despegue + 0.5;                   % takeoff dado, aún en el piso
+K = sim_trk(p, struct('t_final', 60, 'trk_off', [1 tl tl + 5]));
+tc.verifyEqual(K.estado(find(K.t >= tl - 0.02, 1)), 3);
+tc.verifyEqual(K.estado(end), 8);
+tc.verifyEqual(max(K.pos(3,:,1)), 0);
+k0 = find(K.t >= tl, 1);
+tc.verifyEqual(sum(diff(K.takeoff(1, k0:end)) > 0.5), 0);
+tc.verifyEqual(max(K.takeoff(1, find(K.t >= tl + p.t_perdida_aterrizar_s + 0.02, 1):end)), 0);
+tc.verifyEqual(max(K.falla(1,:)), 2);
+ta = K.t(find(K.estado == 8, 1)) - tl;
+% (b) dual: el dron 2 en la rampa
+pd = qd2_params();
+Kd0 = sim_trk(pd, struct('t_final', 60, 'homes', [-1.0 0.0; 1.0 -0.3]));
+t3 = Kd0.t(find(Kd0.estado == 3, 1));
+tl = t3 + pd.t_arm_a_despegue + 0.5;
+Kd = sim_trk(pd, struct('t_final', 60, 'homes', [-1.0 0.0; 1.0 -0.3], 'trk_off', [2 tl tl + 5]));
+tc.verifyEqual(Kd.estado(end), 8);
+tc.verifyEqual(max(Kd.pos(3,:,1)), 0);
+tc.verifyEqual(max(Kd.pos(3,:,2)), 0);
+tc.verifyEqual(max(max(Kd.takeoff(:, find(Kd.t >= tl + pd.t_perdida_aterrizar_s + 0.02, 1):end))), 0);
+% (c) solo: sin rastreo desde antes de START (START a los 3 s, rastreo a los 10 s)
+Kc = sim_trk(p, struct('t_final', 30, 'trk_off', [1 0 10]));
+v = Kc.t < 10;
+tc.verifyEqual(max(max(Kc.arm(:, v))), 0);
+tc.verifyEqual(max(Kc.pos(3, v, 1)), 0);
+% (d) aterriza por pérdida en MISSION, el rastreo vuelve, START otra vez
+t5 = K0.t(find(K0.estado == 5, 1));
+Kx = sim_trk(p, struct('t_final', 150, 'trk_off', [1 t5 + 3 t5 + 10], 'cmds', [3 1; t5 + 60 1]));
+kd = find(Kx.estado == 8, 1);
+tc.verifyNotEmpty(kd);
+tc.verifyLessThan(Kx.t(kd), t5 + 60);
+tc.verifyTrue(all(Kx.estado(kd:end) == 8));
+tc.verifyEqual(max(max(Kx.takeoff(:, kd:end))), 0);
+tc.verifyEqual(sum(diff(Kx.takeoff(1,:)) > 0.5), 1);
+fprintf(['[trk piso] solo: pérdida en la rampa (z = 0) -> cancelado, DONE %.1f s después, z máx 0; dual: dron 2 perdido en la rampa -> los dos cancelan, z máx [%g %g]; ' ...
+    'sin rastreo antes de START -> arm máx 0; tras aterrizar por pérdida y volver el rastreo, START a los 60 s -> sigue en DONE, takeoff 0\n'], ...
+    ta, max(Kd.pos(3,:,1)), max(Kd.pos(3,:,2)));
+end
+
+function test_trk_config(tc)
+% mision.t_perdida_aterrizar_s: válido en [t_perdida_trk, 2.0]; si no, el
+% valor por defecto (0.2 s = t_perdida_trk) con aviso; ausente/null/[] sin aviso.
+p0 = qd2_params();
+tc.verifyEqual(p0.t_perdida_aterrizar_s, 0.2);
+casos = {
+    '{}',                                   0.2, false
+    '{"t_perdida_aterrizar_s": null}',      0.2, false
+    '{"t_perdida_aterrizar_s": []}',        0.2, false
+    '{"t_perdida_aterrizar_s": 0.5}',       0.5, false
+    '{"t_perdida_aterrizar_s": 0.3}',       0.3, false
+    '{"t_perdida_aterrizar_s": 0.2}',       0.2, false
+    '{"t_perdida_aterrizar_s": 2}',         2.0, false
+    '{"t_perdida_aterrizar_s": 0.1}',       0.2, true
+    '{"t_perdida_aterrizar_s": 0}',         0.2, true
+    '{"t_perdida_aterrizar_s": -1}',        0.2, true
+    '{"t_perdida_aterrizar_s": 2.5}',       0.2, true
+    '{"t_perdida_aterrizar_s": "0.5"}',     0.2, true
+    '{"t_perdida_aterrizar_s": true}',      0.2, true
+    '{"t_perdida_aterrizar_s": [0.3, 0.4]}', 0.2, true
+    '{"t_perdida_aterrizar_s": {"v": 1}}',  0.2, true};
+for k = 1:size(casos, 1)
+    [p, aviso] = qd2_params_from_config(jsondecode(['{"mision": ' casos{k,1} '}']));
+    tc.verifyEqual(p.t_perdida_aterrizar_s, casos{k,2}, sprintf('caso %d: %s', k, casos{k,1}));
+    tc.verifyEqual(~isempty(aviso), casos{k,3}, sprintf('caso %d (aviso "%s")', k, aviso));
+    tc.verifyEqual(p.modo_mision, 0);
+end
+for v = {NaN, Inf, -Inf}
+    [p, aviso] = qd2_params_from_config(struct('mision', struct('t_perdida_aterrizar_s', v{1})));
+    tc.verifyEqual(p.t_perdida_aterrizar_s, 0.2);
+    tc.verifyNotEmpty(aviso);
+end
+% los dos avisos juntos (modo inválido y tiempo inválido)
+[p, aviso] = qd2_params_from_config(jsondecode('{"mision": {"modo": "solo", "t_perdida_aterrizar_s": 9}}'));
+tc.verifyEqual([p.modo_mision p.t_perdida_aterrizar_s], [0 0.2]);
+tc.verifyTrue(contains(aviso, 'mision.modo') && contains(aviso, 't_perdida_aterrizar_s'));
+% estacion.json y estacion_dual.json del repo
+raiz = fileparts(fileparts(fileparts(mfilename('fullpath'))));
+for nombre = {'estacion.json', 'estacion_dual.json'}
+    c = jsondecode(fileread(fullfile(raiz, 'config', nombre{1})));
+    tc.verifyEqual(c.mision.t_perdida_aterrizar_s, 0.2, nombre{1});
+    [p, aviso] = qd2_params_from_config(fullfile(raiz, 'config', nombre{1}));
+    tc.verifyEqual(p.t_perdida_aterrizar_s, 0.2);
+    tc.verifyEmpty(aviso);
+end
+% en el paso: un valor no finito en P (sin pasar por la config) se comporta
+% como t_perdida_trk (aterriza a los 0.2 s), nunca "nunca aterriza"
+ps = params_solo(1);
+K0 = sim_trk(ps, struct('t_final', 120));
+tl = K0.t(find(K0.estado == 5, 1)) + 5;
+ps.t_perdida_aterrizar_s = NaN;
+K = sim_trk(ps, struct('t_final', 120, 'trk_off', [1 tl tl + 15]));
+k0 = find(K.t >= tl, 1);
+kt = k0 - 1 + find(K.takeoff(1, k0:end) < 0.5, 1);
+tc.verifyLessThanOrEqual(K.t(kt) - tl, ps.t_perdida_trk + 0.02 + 1e-9);
+tc.verifyEqual(K.estado(end), 8);
+fprintf('[trk config] %d casos de mision.t_perdida_aterrizar_s + NaN/Inf; estacion.json y estacion_dual.json = 0.2 s; P con NaN -> aterriza a los %.2f s\n', ...
+    size(casos, 1), K.t(kt) - tl);
+end
+
+function test_trk_dual_identico_base(tc)
+% Sin pérdida sostenida (dual PID, dual MPC con falla a bordo, pérdidas
+% breves de 0.15 s < t_perdida_trk, y pérdidas de 0.26 s en PID y MPC con
+% t_perdida_aterrizar_s = 100 para comparar el camino PAUSED/RESUME) la
+% librería da EXACTAMENTE lo mismo que la de antes de este cambio (commit
+% b65603f, sacada con git).
+raiz = fileparts(fileparts(fileparts(mfilename('fullpath'))));
+pp = qd2_params();                    % (de la librería nueva; la base ignora los campos nuevos)
+pp.t_perdida_aterrizar_s = 100;
+base = 'b65603f';
+[st, tipo] = system(sprintf('git -C "%s" cat-file -t %s', raiz, base));
+tc.assumeTrue(st == 0 && strcmp(strtrim(tipo), 'commit'), 'sin git o sin el commit base');
+[~, lista] = system(sprintf('git -C "%s" ls-tree --name-only %s simulink_qdrone2/lib/', raiz, base));
+lista = strtrim(strsplit(strtrim(lista), newline));
+lista = lista(endsWith(lista, '.m'));
+tc.assertNotEmpty(lista);
+d = tempname;
+mkdir(d);
+nombres = cell(1, numel(lista));
+for k = 1:numel(lista)
+    [~, nombres{k}] = fileparts(lista{k});
+    st = system(sprintf('git -C "%s" show %s:%s > "%s"', raiz, base, lista{k}, fullfile(d, [nombres{k} '.m'])));
+    tc.assertEqual(st, 0);
+end
+limpiar = onCleanup(@() restaurar_lib(d, nombres)); %#ok<NASGU>
+ops = {struct('version', 1, 'objetivos', [0 1.2; 0.5 0.5; -0.4 -1.2], 'duplicados', [0.1 1.25], 'inyectar', [20 -0.8 -1.2], 't_final', 400), ...
+       struct('version', 2, 'objetivos', [0.5 0.5; -0.4 -1.2; 0.6 -1.2], 'inyectar', [15 0.96 1.2], 't_final', 300, 'falla_apilado', 1), ...
+       struct('version', 1, 'objetivos', [0 1.2; 0.5 0.5], 'trk_off', [2 40 40.26], 'cmds', [3 1; 42 5], 't_final', 400, 'p', pp), ...
+       struct('version', 2, 'objetivos', [0 1.2; 0.5 0.5], 'trk_off', [1 40 40.26], 'cmds', [3 1; 42 5], 't_final', 400, 'p', pp), ...
+       struct('version', 1, 'objetivos', [0 1.2; 0.5 0.5], 'trk_off', [2 40 40.15; 1 50 50.15], 't_final', 400), ...
+       struct('version', 2, 'objetivos', [0 1.2; 0.5 0.5], 'trk_off', [1 40 40.15; 2 50 50.15], 't_final', 400)};
+campos = {'estado', 'sp', 'sp_mision', 'arm', 'takeoff', 'pos', 'alerta', 'guard', 'y64', 'falla', 'falla_fase', 'escape', 'fsm'};
+Ln = cell(size(ops));
+for j = 1:numel(ops)
+    Ln{j} = qd2_sim_lazo_cerrado(ops{j});
+end
+addpath(d, '-begin');
+clear(nombres{:});
+tc.assertTrue(startsWith(which('qd2_mission_step'), d));
+for j = 1:numel(ops)
+    Lb = qd2_sim_lazo_cerrado(ops{j});
+    for c = campos
+        tc.verifyTrue(isequal(Ln{j}.(c{1}), Lb.(c{1})), sprintf('escenario %d: %s distinto', j, c{1}));
+    end
+    tc.verifyEqual(Ln{j}.estado(end), 8);
+    fprintf('[trk idéntico a %s] escenario %d (v%d): %d pasos, DONE t=%.2f, %d campos iguales bit a bit\n', ...
+        base, j, ops{j}.version, numel(Lb.t), Lb.t(end), numel(campos));
+end
+end
+
+function test_trk_codegen_dual(tc)
+% El modelo de tierra PID REAL (copia SIL de qd2_probar_tierra) compilado con
+% la librería nueva: OptiTrack pierde al dron 2 a los 40 s para siempre. El
+% dron 2 baja takeoff y nunca lo vuelve a recibir; misión 9 -> 7 -> 8,
+% alerta 2 en y(55); los dos en el suelo.
+% (estacion.json alterno en modo DUAL: el del repo puede estar en solo explorador)
+raiz = fileparts(fileparts(fileparts(mfilename('fullpath'))));
+c = jsondecode(fileread(fullfile(raiz, 'config', 'estacion.json')));
+c.mision.modo = 'dual';
+if isfield(c.mision, 'dron_solo'), c.mision = rmfield(c.mision, 'dron_solo'); end
+f = [tempname '.json'];
+escribir(f, jsonencode(c));
+limpiar = onCleanup(@() borrar({f})); %#ok<NASGU>
+addpath(fullfile(fileparts(fileparts(mfilename('fullpath'))), 'pid'));
+p = tc.TestData.p;
+R = qd2_probar_tierra('PID', 120, false, 0, struct('trk2_off', [40 1e6], 'config_json', f));
+k0 = find(R.t >= 40, 1);
+tc.assertTrue(ismember(R.tel(k0, 2), [4 5 6]), sprintf('a los 40 s la misión está en %d (se esperaba en el aire)', R.tel(k0, 2)));
+kt = k0 - 1 + find(R.trig2(k0:end, 2) < 0.5, 1);
+tc.verifyNotEmpty(kt);
+tc.verifyLessThanOrEqual(R.t(kt) - 40, p.t_perdida_aterrizar_s + 0.05);
+tc.verifyEqual(max(R.trig2(kt:end, 2)), 0);
+tc.verifyEqual(R.n_despegues, [1 1]);
+tc.verifyTrue(all(ismember([9 7 8], R.estados)));
+tc.verifyTrue(any(R.alertas == 2));
+tc.verifyTrue(isfinite(R.t_done));
+tc.verifyFalse(R.choque);
+tc.verifyLessThan(max(abs(R.pos(end, [3 6]))), 0.01);
+fprintf('[trk codegen] QD2_MissionCtrl_Dual_PID (copia SIL): dron 2 sin rastreo desde t=40 -> takeoff 0 a los %.2f s, estados %s, alertas %s, DONE t=%.1f, despegues [%d %d], dh mín en el aire %.3f m\n', ...
+    R.t(kt) - 40, mat2str(R.estados), mat2str(R.alertas), R.t_done, R.n_despegues(1), R.n_despegues(2), R.dh_min_aire);
+end
+
+function test_trk_perdida_corta_a_bordo(tc)
+% Revisión: con el stack a bordo emulado (trk_a_bordo = 1: isTracking = 0
+% sostenido 0.2 s -> estado 7, irreversible), una pérdida de 0.22-0.30 s o
+% una intermitente (20 ventanas de 0.28 s separadas por UN cuadro válido) ya
+% tira al dron. Con t_perdida_aterrizar_s = t_perdida_trk la misión lo trata
+% como pérdida sostenida: el perdido termina con takeoff 0 y nunca lo vuelve
+% a recibir, en dual el sano hace la reacción (se aparta, regresa, aterriza),
+% RESUME (a los 45 s) no revive la misión y todo termina en DONE en el suelo.
+% (Con la librería anterior a la revisión, t_perdida_aterrizar_s = 0.3 s,
+% estos casos quedaban en PAUSED con takeoff 1 o volvían a MISSION.)
+p = tc.TestData.p;
+ps = params_solo(1);
+tl = 40;
+w = zeros(20, 3);
+for j = 0:19
+    w(j+1,:) = [0 tl + j*0.30, tl + j*0.30 + 0.28];
+end
+od = struct('version', 1, 'objetivos', [0 1.2; 0.5 0.5], 't_final', 160, 'trk_a_bordo', 1, 'cmds', [3 1; 45 5]);
+os = struct('version', 1, 'objetivos', [0 1.2], 'p', ps, 'home1', [1.25 0], 'home2', [1.45 -1.45], ...
+    't_final', 160, 'trk_a_bordo', 1, 'cmds', [3 1; 45 5]);
+L0 = qd2_sim_lazo_cerrado(setfield(od, 't_final', 20)); %#ok<SFLD>
+eid = L0.explorer_id(end);
+rid = 3 - eid;
+casos = {'dual pierde E 0.22 s', od, eid, [tl tl + 0.22]; ...
+         'dual pierde E 0.26 s', od, eid, [tl tl + 0.26]; ...
+         'dual pierde R 0.26 s', od, rid, [tl tl + 0.26]; ...
+         'dual pierde E intermitente', od, eid, w(:, 2:3); ...
+         'solo 0.22 s', os, 1, [tl tl + 0.22]; ...
+         'solo 0.30 s', os, 1, [tl tl + 0.30]; ...
+         'solo intermitente', os, 1, w(:, 2:3)};
+for c = 1:size(casos, 1)
+    nom = casos{c,1};
+    op = casos{c,2};
+    dr = casos{c,3};
+    v = casos{c,4};
+    op.trk_off = [dr*ones(size(v,1), 1) v];
+    dual = ~isfield(op, 'p');
+    L = qd2_sim_lazo_cerrado(op);
+    k0 = find(L.t >= tl, 1);
+    tc.assertTrue(ismember(L.estado(k0 - 1), [5 6]), [nom ': no estaba en el aire']);
+    tc.verifyEqual(L.t_trk7(dr) - tl, 0.2, 'AbsTol', 0.021, nom);          % a bordo: estado 7
+    kt = k0 - 1 + find(L.takeoff(dr, k0:end) < 0.5, 1);
+    tc.assertNotEmpty(kt, [nom ': nunca bajó takeoff']);
+    tc.verifyLessThanOrEqual(L.t(kt) - tl, p.t_perdida_trk + 0.02 + 1e-9, nom);
+    tc.verifyEqual(max(L.takeoff(dr, kt:end)), 0, nom);
+    tc.verifyEqual(sum(sum(diff(L.takeoff(:, k0:end), 1, 2) > 0.5)), 0, nom);
+    tc.verifyFalse(any(L.estado(k0:end) == 10), nom);                      % sin PAUSED
+    tc.verifyFalse(any(L.estado(kt:end) == 5), nom);                       % RESUME no revive
+    tc.verifyEqual(max(L.falla(dr,:)), 2, nom);
+    tc.verifyEqual(L.estado(end), 8, nom);
+    tc.verifyLessThan(max(abs(squeeze(L.pos(3,end,:)))), 0.06, nom);
+    if dual
+        tc.verifyEqual(max(L.falla(3 - dr,:)), 0, nom);
+        % (si ya estaba a >= radio, la fase 1 termina en el mismo paso)
+        tc.verifyTrue(any(L.falla_fase(k0:end) >= 1), [nom ': el sano no hizo la reacción']);
+        tc.verifyTrue(any(L.estado(k0:end) == 9), nom);
+        tc.verifyGreaterThanOrEqual(L.dh(end), p.d_min_h, nom);
+    end
+    est = L.estado(k0:end);
+    fprintf('[trk corta a bordo] %s: a bordo 7 a los %.2f s, takeoff = 0 a los %.2f s, estados %s, DONE t=%.1f\n', ...
+        nom, L.t_trk7(dr) - tl, L.t(kt) - tl, mat2str(est([true diff(est) ~= 0])), L.t(find(L.estado == 8, 1)));
+end
+end
+
+function test_trk_sano_perdido_encima(tc)
+% Revisión: MPC apilados, falla 10 (protocolo) del de ARRIBA (E) y, en la
+% fase 1 de la reacción (R aún debajo, saliendo), R (el sano) pierde el
+% rastreo de forma sostenida. R baja takeoff ya; E NO baja mientras R siga
+% en el aire debajo de él: conserva takeoff y consigna hasta ver a R en el
+% suelo o vencer t_falla_sep_max. (Con la versión previa E bajaba a los
+% ~0.3 s, a través de R: d3 mín 0.617 m.)
+p = tc.TestData.p;
+op = struct('version', 2, 'objetivos', [0.5 0.5; -0.4 -1.2; 0.6 -1.2], 'inyectar', [15 0.96 1.2], ...
+    't_final', 200, 'a_bordo', 1, 'trk_a_bordo', 1);
+L0 = qd2_sim_lazo_cerrado(op);
+z0 = squeeze(L0.pos(3,:,:));
+apil = L0.estado == 5 & L0.dh < 0.15 & abs(L0.dz) > 0.5 & min(z0, [], 2)' > 0.2;
+ka = find(apil, 1);
+tc.assertNotEmpty(ka);
+tA = L0.t(ka) + 0.5;
+eid = L0.explorer_id(end);
+rid = 3 - eid;
+op1 = op;
+op1.proto_mal = [eid tA 400];
+L1 = qd2_sim_lazo_cerrado(op1);
+kf = find(L1.falla_fase >= 1, 1);
+tc.assertNotEmpty(kf);
+tf = L1.t(kf);
+for dly = [0.02 0.1 0.2]
+    op2 = op1;
+    op2.trk_off = [rid tf + dly tf + 60];
+    L = qd2_sim_lazo_cerrado(op2);
+    nom = sprintf('R pierde %.2f s tras la fase 1', dly);
+    k0 = find(L.t >= tf, 1);
+    z = squeeze(L.pos(3,:,:));
+    kt = k0 - 1 + find(L.takeoff(eid, k0:end) < 0.5, 1);
+    tc.assertNotEmpty(kt, nom);
+    % E baja solo con R en el suelo o al vencer t_falla_sep_max desde la pérdida
+    t_det = tf + dly + p.t_perdida_trk;
+    tc.verifyTrue(z(kt, rid) <= p.z_aterrizado + 0.02 || L.t(kt) >= t_det + p.t_falla_sep_max - 0.05, ...
+        sprintf('%s: E bajó takeoff a los %.2f s con R a z = %.2f m', nom, L.t(kt) - tf, z(kt, rid)));
+    % mientras E conserva takeoff, su consigna es la de la falla (no baja)
+    vt = kf:kt-1;
+    tc.verifyEqual(max(abs(L.sp_mision(3, vt, eid) - L.sp_mision(3, kf, eid))), 0, 'AbsTol', 1e-9, nom);
+    % separación 3D con los dos en el aire: R, a ciegas en el estado 7 con
+    % el empuje de escape, puede subir hasta la altura de E (eso no lo
+    % controla tierra); lo que sí se exige es no empeorar respecto a la
+    % librería sin la pérdida sostenida (0.808 / 0.938 / 0.995 m; con la
+    % versión previa de este cambio, 0.617 / 0.777 / 0.986 m)
+    d3 = sqrt(L.dh(k0:end).^2 + L.dz(k0:end).^2);
+    ambos = z(k0:end, 1)' > 0.05 & z(k0:end, 2)' > 0.05;
+    tc.verifyGreaterThanOrEqual(min([inf d3(ambos)]), 0.8, nom);
+    tc.verifyEqual(max(L.takeoff(eid, kt:end)), 0, nom);
+    tc.verifyEqual(L.estado(end), 8, nom);
+    tc.verifyLessThan(max(abs(z(end,:))), 0.06, nom);
+    fprintf('[trk sano perdido encima] %s: takeoff E = 0 a los %.2f s de la falla (z R %.2f m), d3 mín con los dos en el aire %.3f m, DONE t=%.1f\n', ...
+        nom, L.t(kt) - tf, z(kt, rid), min([inf d3(ambos)]), L.t(find(L.estado == 8, 1)));
+end
+end
+
+% ---------------- utilidades de la pérdida de rastreo -------------------
+function restaurar_lib(d, nombres)
+rmpath(d);
+clear(nombres{:});
+if exist(d, 'dir'), rmdir(d, 's'); end
+end
+
+function r = ternario(c, a, b)
+if c, r = a; else, r = b; end
+end
+
+function M = verificar_trk(tc, K, dr, tl, p, nom)
+% Verificaciones comunes (simulación cinemática sim_trk) de una pérdida
+% sostenida del dron dr desde tl (el rastreo vuelve 15 s después).
+dt = K.t(2) - K.t(1);
+k0 = find(K.t >= tl, 1);
+h = 3 - dr;
+dual = p.modo_mision < 0.5;
+kt = k0 - 1 + find(K.takeoff(dr, k0:end) < 0.5, 1);
+tc.assertNotEmpty(kt, [nom ': nunca bajó takeoff']);
+M.t_drop = max(K.t(kt) - tl, 0);
+% ¿estaba encima del sano y cerca al detectarse? (entonces espera a que salga)
+kd = find(K.t >= tl + p.t_perdida_aterrizar_s, 1);
+r_sep = p.d_min_h + p.guard_margen + 0.05 + p.d_deriva_sin_rastreo;
+M.encima = dual && K.pos(3,kd,dr) > K.pos(3,kd,h) && norm(K.pos(1:2,kd,dr) - K.pos(1:2,kd,h)) < r_sep;
+if M.encima
+    tc.verifyLessThanOrEqual(M.t_drop, p.t_perdida_aterrizar_s + p.t_falla_sep_max + dt + 1e-9, nom);
+else
+    tc.verifyLessThanOrEqual(M.t_drop, p.t_perdida_aterrizar_s + dt + 1e-9, nom);
+end
+% nunca más takeoff (el rastreo vuelve a los 15 s), para ninguno de los dos
+tc.verifyEqual(max(K.takeoff(dr, kt:end)), 0, nom);
+M.resubidas = sum(sum(diff(K.takeoff(:, k0:end), 1, 2) > 0.5));
+tc.verifyEqual(M.resubidas, 0, nom);
+tc.verifyEqual(K.estado(end), 8, nom);
+tc.verifyEqual(K.arm(:, end), [0; 0], nom);
+tc.verifyEqual(max(K.falla(dr,:)), 2, nom);
+tc.verifyEqual(K.alerta(end), 2, nom);
+tc.verifyLessThan(max(abs(squeeze(K.pos(3,end,:)))), 0.05, nom);
+M.t_done = K.t(find(K.estado == 8, 1)) - tl;
+est = K.estado(k0:end);
+M.estados = est([true diff(est) ~= 0]);
+if dual
+    tc.verifyEqual(max(K.falla(h,:)), 0, nom);
+    % el sano aterriza lejos del perdido (que derivó)
+    tc.verifyGreaterThanOrEqual(norm(K.pos(1:2,end,1) - K.pos(1:2,end,2)), p.d_min_h, nom);
+    % con los dos en el aire tras la pérdida: separación horizontal (el
+    % perdido deriva 0.15 m/s sin pose)
+    z = squeeze(K.pos(3,:,:));
+    v = k0:numel(K.t);
+    v = v(z(v,1)' > 0.1 & z(v,2)' > 0.1);
+    if ~isempty(v)
+        tc.verifyGreaterThanOrEqual(min(K.dh(v)), p.d_min_h - 0.05, nom);
+    end
+end
+end
+
+function M = verificar_trk_lazo(tc, L, dr, tl, p)
+% Verificaciones comunes (lazo cerrado, trk_a_bordo = 1) de una pérdida
+% sostenida del dron dr desde tl (el rastreo vuelve 20 s después).
+h = 3 - dr;
+k0 = find(L.t >= tl, 1);
+M.dh0 = L.dh(k0);
+M.dz0 = abs(L.dz(k0));
+tc.verifyEqual(L.t_trk7(dr) - tl, 0.2, 'AbsTol', 0.021);           % a bordo: estado 7
+kt = k0 - 1 + find(L.takeoff(dr, k0:end) < 0.5, 1);
+M.t_drop = L.t(kt) - tl;
+tc.verifyLessThanOrEqual(M.t_drop, p.t_perdida_aterrizar_s + p.t_falla_sep_max + 0.02);
+tc.verifyEqual(max(L.takeoff(dr, kt:end)), 0);
+tc.verifyEqual(sum(sum(diff(L.takeoff(:, k0:end), 1, 2) > 0.5)), 0);
+tc.verifyEqual(L.estado(end), 8);
+tc.verifyTrue(any(L.alerta(k0:end) == 2));
+tc.verifyEqual(max(L.falla(h,:)), 0);
+tc.verifyGreaterThan(max(L.falla(dr,:)), 0);
+tc.verifyLessThan(max(abs(squeeze(L.pos(3,end,:)))), 0.06);
+tc.verifyTrue(all(isfinite(L.sp(:))));
+est = L.estado(k0:end);
+M.estados = est([true diff(est) ~= 0]);
+z = squeeze(L.pos(3,:,:));
+v = k0:numel(L.t);
+v = v(z(v,1)' > 0.1 & z(v,2)' > 0.1);
+M.dh_min = min([inf L.dh(v)]);
+% ya separados (>= d_min_h), el sano nunca vuelve a quedar a < d_min_h del
+% perdido mientras los dos están en el aire, ni encima de él
+ks = k0 - 1 + find(L.dh(k0:end) >= p.d_min_h, 1);
+tc.verifyNotEmpty(ks);
+v2 = v(v >= ks);
+tc.verifyGreaterThanOrEqual(min([inf L.dh(v2)]), p.d_min_h - 0.05);
+enc = ks:numel(L.t);
+enc = enc(z(enc,h)' > z(enc,dr)' + 0.1 & z(enc,dr)' > 0.05);
+M.dh_encima = min([inf L.dh(enc)]);
+tc.verifyGreaterThanOrEqual(M.dh_encima, p.d_min_h - 0.05);
+c = k0:numel(L.t);
+c = c(abs(z(c,dr) - z(c,h))' < 0.4 & z(c,dr)' > 0.05 & z(c,h)' > 0.05);
+M.dh_cruce = min([inf L.dh(c)]);
+M.deriva = norm(L.pos(1:2,end,dr) - L.pos(1:2,k0,dr));
+M.dh_final = L.dh(end);
+tc.verifyGreaterThanOrEqual(M.dh_final, p.d_min_h);
+end
+
+function K = sim_trk(p, op)
+% Drones cinemáticos con misión (+ guard en la versión PID): siguen la
+% consigna a 0.5 m/s (1.5 m/s mientras se apartan, tel.escape); suben 3 s
+% después de takeoff = 1 y bajan en su sitio con takeoff = 0. Un dron sin
+% rastreo sigue obedeciendo (caso [SUPUESTO] de un stack que no se va a 7)
+% pero deriva op.deriva m/s en +y mientras está en el aire.
+% op: homes, cmds [t cmd], t_final, version, trk_off [dron t1 t2], hb_off [t1 t2], deriva.
+d = struct('homes', [1.25 0; 1.45 -1.45], 'cmds', [3 1], 't_final', 120, 'version', 1, ...
+    'trk_off', zeros(0,3), 'hb_off', [-1 -1], 'deriva', 0.15);
+f = fieldnames(d);
+for i = 1:numel(f)
+    if ~isfield(op, f{i}), op.(f{i}) = d.(f{i}); end
+end
+s = qd2_mission_init(p);
+gs = qd2_guard_init();
+P = [op.homes zeros(2,1)];
+dt = 0.02; n = round(op.t_final/dt);
+t_to = [-1 -1]; seq = 0; cmd = 0; hecho = false(size(op.cmds,1),1); hb = 0;
+K.t = (1:n)*dt; K.estado = zeros(1,n); K.alerta = zeros(1,n); K.dh = zeros(1,n);
+K.arm = zeros(2,n); K.takeoff = zeros(2,n); K.pos = zeros(3,n,2); K.falla = zeros(2,n);
+K.falla_fase = zeros(1,n); K.explorer_id = zeros(1,n);
+for k = 1:n
+    t = k*dt;
+    for c = 1:size(op.cmds,1)
+        if ~hecho(c) && t >= op.cmds(c,1), hecho(c) = true; seq = seq + 1; cmd = op.cmds(c,2); end
+    end
+    if ~(t >= op.hb_off(1) && t < op.hb_off(2)), hb = k; end
+    py = zeros(32,1); py(1) = hb; py(2) = cmd; py(3) = seq;
+    in.t = t; in.pose1 = [P(1,:) 0]'; in.pose2 = [P(2,:) 0]';
+    in.tracked1 = 1; in.tracked2 = 1;
+    perdido = [false false];
+    for j = 1:size(op.trk_off,1)
+        if t >= op.trk_off(j,2) && t < op.trk_off(j,3)
+            perdido(op.trk_off(j,1)) = true;
+            if op.trk_off(j,1) == 1
+                in.tracked1 = 0; in.pose1 = nan(4,1);
+            else
+                in.tracked2 = 0; in.pose2 = nan(4,1);
+            end
+        end
+    end
+    in.py = py; in.version = op.version;
+    [s, spE, spR, tel] = qd2_mission_step(s, in, p);
+    if op.version == 1
+        if s.explorer_id == 2, pE = in.pose2; pR = in.pose1; else, pE = in.pose1; pR = in.pose2; end
+        [spE, spR, ~, gs] = qd2_separation_guard(pE(1:3), pR(1:3), spE, spR, p, gs, tel.ctx_guard);
+    end
+    if s.explorer_id == 2, sp = [spR; spE]; else, sp = [spE; spR]; end
+    for i = 1:2
+        if tel.takeoff(i) > 0.5
+            if t_to(i) < 0, t_to(i) = t; end
+        else
+            t_to(i) = -1;
+        end
+        objetivo = sp(i,:);
+        if t_to(i) < 0 || t - t_to(i) < 3
+            objetivo(3) = 0;
+            if t_to(i) >= 0, objetivo(1:2) = P(i,1:2); end
+        end
+        vmax = 0.5;
+        if tel.escape(i) > 0.5, vmax = 1.5; end
+        dv = objetivo(1:3) - P(i,:);
+        if norm(dv) > vmax*dt, dv = vmax*dt*dv/norm(dv); end
+        P(i,:) = P(i,:) + dv;
+        if perdido(i) && P(i,3) > 0.05
+            P(i,2) = P(i,2) + op.deriva*dt;           % sin pose: deriva
+        end
+        P(i,3) = max(P(i,3), 0);
+    end
+    K.estado(k) = tel.mission_state; K.alerta(k) = tel.alerta;
+    K.arm(:,k) = tel.arm(:); K.takeoff(:,k) = tel.takeoff(:);
+    K.pos(:,k,1) = P(1,:)'; K.pos(:,k,2) = P(2,:)';
+    K.falla(:,k) = tel.falla(:); K.falla_fase(k) = tel.falla_fase;
+    K.explorer_id(k) = tel.explorer_id;
+    K.dh(k) = norm(P(1,1:2) - P(2,1:2));
 end
 end

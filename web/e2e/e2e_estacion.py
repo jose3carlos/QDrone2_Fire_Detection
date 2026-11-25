@@ -7,8 +7,9 @@ headless (misión en curso, objetivo visitado, alerta, DONE) y al final revisa c
 
 Actitud del explorador (y(61:63)): cuenta la telemetría con y(63) = 1, la inclinación máxima que muestra la
 UI (``actitud_explorador``), los frames geolocalizados con / sin actitud, las detecciones descartadas por
-inclinación y el error de geolocalización contra la VERDAD de la cámara sintética (``web.mock_anomalias`` o
-``mock_world.default_anomalies``): por observación (cada detección que entra al cluster) y por objetivo
+inclinación y el error de geolocalización contra la VERDAD de la cámara sintética (``mock_world.anomalias_mock``:
+``web.mock_anomalias`` o las anomalías por defecto, sobre los tubos reales ``pista.tubos`` si la config los trae):
+por observación (cada detección que entra al cluster) y por objetivo
 publicado. ``--sin-actitud`` corre lo mismo con ``vision.usar_actitud = false`` (para comparar) y
 ``--actitud-esperada si|no`` exige y(63) = 1 en MISSION o y(63) = 0 siempre (modelo viejo).
 
@@ -123,11 +124,11 @@ RADIO = float(cfg.get("vision", {}).get("radio_cluster_m", 0.25) or 0.25)
 # verdad de la cámara sintética: lo mismo que dibuja la estación (server.Station._start_source)
 sys.path.insert(0, WEB)
 from app.config import mision_modo  # noqa: E402
-from app.mock_world import default_anomalies  # noqa: E402
+from app.mock_world import anomalias_mock  # noqa: E402
 MODO = mision_modo(cfg)
 SOLO = MODO["dron_solo"] if MODO["modo"] == "solo_explorador" else 0    # dron solo (0 = dual)
 USADOS = ("1", "2") if not SOLO else (str(SOLO),)
-VERDAD = web.get("mock_anomalias") or default_anomalies(cfg["pista"]["vertices"])
+VERDAD = anomalias_mock(cfg)    # sobre pista.tubos (tubos reales) si los hay; el dron vuela pista.vertices
 
 
 def err_verdad(cls, x, y):

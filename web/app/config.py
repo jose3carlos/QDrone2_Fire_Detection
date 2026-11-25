@@ -143,6 +143,40 @@ def mision_modo(cfg):
     return dict(dual, aviso=f"mision.dron_solo inválido ('{_txt(d)}'): se usa dual")
 
 
+# Pérdida de rastreo sostenida en el aire -> ese dron aterriza (qd2_params.m / qd2_params_from_config.m).
+T_PERDIDA_TRK = 0.2              # s, = p.t_perdida_trk (umbral de la FSM a bordo del Equipo2 y de PAUSED)
+T_PERDIDA_ATERRIZAR_DEF = 0.2    # s, = p.t_perdida_aterrizar_s por defecto
+T_PERDIDA_ATERRIZAR_MAX = 2.0    # s, = T_MAX de qd2_params_from_config (sin pose el dron cae en ~1-2 s)
+
+
+def mision_t_perdida_aterrizar(cfg):
+    """``{"valor": s, "aviso": str|None}`` de ``cfg['mision']['t_perdida_aterrizar_s']`` con las mismas reglas que
+    ``t_aterrizar`` de ``qd2_params_from_config.m`` (sobre lo que da ``jsondecode``):
+
+    * ausente, null o [] -> 0.2 s sin aviso;
+    * número real finito (no bool) en [0.2, 2.0] -> ese valor (``[0.3]`` también: jsondecode lo vuelve escalar);
+    * cualquier otra cosa (fuera de rango, texto, true, lista de 2, objeto) -> 0.2 s con aviso.
+
+    Con el binario PID del Equipo2 debe quedar en 0.2 s; un valor mayor deja PAUSED entre 0.2 s y ese valor."""
+    m = cfg.get("mision") if isinstance(cfg, dict) else None
+    m = m if isinstance(m, dict) else {}
+    dflt = {"valor": T_PERDIDA_ATERRIZAR_DEF, "aviso": None}
+    if "t_perdida_aterrizar_s" not in m:
+        return dflt
+    raw = m["t_perdida_aterrizar_s"]
+    x = raw
+    if x is None or (isinstance(x, list) and not x):
+        return dflt                                   # null o [] = no definido
+    if isinstance(x, list) and len(x) == 1 and not isinstance(x[0], (list, dict, str)) and x[0] is not None:
+        x = x[0]                                      # jsondecode('[0.3]') = 0.3 (escalar)
+    if (not isinstance(x, bool) and isinstance(x, (int, float)) and math.isfinite(float(x))
+            and T_PERDIDA_TRK <= float(x) <= T_PERDIDA_ATERRIZAR_MAX):
+        return {"valor": float(x), "aviso": None}
+    return dict(dflt, aviso=(f"mision.t_perdida_aterrizar_s inválido ('{_txt(raw)}'; válido "
+                             f"{T_PERDIDA_TRK:.1f} a {T_PERDIDA_ATERRIZAR_MAX:.1f} s): se usa "
+                             f"{T_PERDIDA_ATERRIZAR_DEF:.2f} s"))
+
+
 def _txt(v):
     """Valor de la config como se escribió en el JSON (para los avisos)."""
     if isinstance(v, _Num):

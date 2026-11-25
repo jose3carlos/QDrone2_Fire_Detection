@@ -91,7 +91,9 @@ s.pausa_por_trk = 0;
 
 % Seguridad
 s.alerta     = 0;                % 0 nada, 1 homes demasiado cerca (START rechazado),
-                                 % 2 pausa por pérdida de rastreo, 3 timeout de despegue,
+                                 % 2 pérdida de rastreo (en el aire aterriza ese dron a los
+                                 % p.t_perdida_aterrizar_s; PAUSED solo si ese valor es
+                                 % mayor que p.t_perdida_trk), 3 timeout de despegue,
                                  % 4 timeout de aterrizaje, 9 falla a bordo de un dron,
                                  % 10 protocolo MPC incorrecto (5-8 son del operador)
 s.home_ok    = 0;                % 1 si los homes cumplen la separación mínima
@@ -100,7 +102,8 @@ s.t_land_paso = 0;               % instante de entrada al paso actual de LANDING
 
 % Falla a bordo (versión MPC; ver qd2_mission_step y qd2_enlace_mpc)
 s.falla      = [0 0];            % por DRON: 0 nada, 9 FSM a bordo 7/8/9 (o enlace perdido en vuelo),
-                                 % 10 protocolo MPC incorrecto
+                                 % 10 protocolo MPC incorrecto, 2 pérdida de rastreo sostenida en
+                                 % el aire (> p.t_perdida_aterrizar_s): aterriza, nunca más takeoff
 s.falla_fase = 0;                % reacción: 0 ninguna, 1 apartarse, 2 regresar,
                                  % 3 aterriza el sano, 4 espera al dron en falla en el suelo
 s.falla_sano = 0;                % dron sano (1 o 2)
@@ -111,6 +114,9 @@ s.falla_land_xy = [0 0];         % donde aterriza el dron sano
 s.falla_via  = [0 0];
 s.falla_usa_via = 0;
 s.falla_land = 0;                % 1 = LAND_ALL pedido durante la reacción
+s.falla_trk  = 0;                % 1 = el dron de la reacción "falló" por pérdida de rastreo
+                                 % sostenida (falla = 2): su pose es la última vista, así que el
+                                 % sano se aparta con el margen extra p.d_deriva_sin_rastreo
 s.t_falla_fase  = 0;
 s.t_falla_llego = -1;
 s.t_falla_suelo = -1;

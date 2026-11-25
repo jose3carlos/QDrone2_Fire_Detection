@@ -14,7 +14,8 @@ Lo que emula (versión simplificada; el supervisor "de verdad" vive en Simulink 
 * comandos con las MISMAS reglas que ``simulink_qdrone2/lib/qd2_mission_step.m``: se aplican
   cuando ``cmd_seq`` cambia (cualquier valor, también 0) y hay heartbeat; el primer contacto
   absorbe el ``cmd_seq`` (no re-ejecuta un comando viejo); START solo en ASSIGN_ROLES; PAUSE solo
-  en MISSION / RETURN_HOME; RESUME solo en PAUSED; ABORT y LAND_ALL en el aire; en TAKEOFF sin
+  en MISSION / RETURN_HOME; RESUME solo en PAUSED (y con rastreo); ABORT y LAND_ALL en el aire (durante la
+  reacción a una pérdida de rastreo solo LAND_ALL); en TAKEOFF sin
   ningún dron en el aire cancelan el despegue (sin takeoff aún: desarma y vuelve a ASSIGN_ROLES;
   con takeoff ya dado: bajan en su sitio hasta DONE). Takeoff se da 2 s después de armar;
 * separation guard (PID) con las reglas de ``qd2_separation_guard.m`` (simplificadas): el dron
@@ -41,6 +42,25 @@ Lo que emula (versión simplificada; el supervisor "de verdad" vive en Simulink 
   trama), ``role`` = 0, ``comm_ok`` = 0 y nunca se mueve ni recibe arm/takeoff. Sin respondedor ni separation
   guard: los objetivos se registran y se quedan "pendientes" (y(53) = cuántos); al terminar la N + 2 s de gracia
   -> RETURN_HOME -> (``auto_land`` o LAND_ALL) -> LANDING (E en su sitio) -> DONE. En dual nada cambia.
+* pérdida de rastreo (``perder_rastreo(dron, t1, t2)``: OptiTrack no ve a ese dron para t1 <= t < t2; la trama
+  lleva tracked = 0 y pose NaN, y la misión solo usa la ÚLTIMA pose vista). Misma lógica que
+  ``qd2_mission_step`` (bloques "Pérdida de rastreo sostenida: aterrizar" y "Pérdida de rastreo", con
+  ``iniciar_falla`` / ``paso_falla`` / ``planear_aterrizaje`` / ``paso_aterrizaje`` / ``qd2_ruta_desvio``
+  portados línea a línea), con el umbral ``mision.t_perdida_aterrizar_s`` leído y validado igual que
+  MATLAB (``config.mision_t_perdida_aterrizar``: 0.2 a 2.0 s, 0.2 por defecto):
+
+  - en el aire, más de ``t_perdida_aterrizar_s`` sin rastreo -> ese dron queda EN FALLA 2 (alerta 2) y se le baja
+    takeoff en ese mismo paso (aterriza en su sitio, sin PAUSED con el valor por defecto); nunca vuelve a recibir
+    takeoff aunque el rastreo regrese o llegue RESUME / START; un timeout de su aterrizaje no pone la alerta 4;
+  - solo explorador: MISSION/... -> LANDING -> DONE (7 -> 8); dual: el otro se aparta a SU altura a >= 1.60 m
+    (d_min_h + guard_margen + 0.05 + 0.5 de deriva) de la última pose vista del perdido, regresa a su home (o se
+    queda si su home está cerca del perdido) y aterriza: ABORT -> LANDING -> DONE (9 -> 7 -> 8); si el perdido
+    está ENCIMA del otro y cerca, su takeoff se baja cuando el otro ya salió de debajo;
+  - rampa de despegue sin nadie en el aire: despegue cancelado (nadie despega); TAKEOFF antes de dar takeoff:
+    WAIT_TRACKING desarmado; LANDING: sigue aterrizando;
+  - con ``t_perdida_aterrizar_s`` > 0.2: entre 0.2 s y ese valor PAUSED (alerta 2, RESUME solo con rastreo).
+  Diferencias con MATLAB (el mock es simplificado): sin LANDING "R primero" del aterrizaje normal (un LAND_ALL
+  normal baja a los dos en su sitio), así que una pérdida en ese LANDING solo marca la falla.
 
 También se puede correr solo, para que otros (p. ej. el simulador MATLAB o pruebas) tengan
 un servidor :18700 de referencia:   ``python -m app.mock_sim --puerto 18700``
@@ -57,13 +77,21 @@ import time
 import numpy as np
 
 from . import protocol as P
-from .config import mision_modo
+from .config import T_PERDIDA_TRK, mision_modo, mision_t_perdida_aterrizar
 
 # Estados de la FSM a bordo (aprox. a los del DroneStack del Equipo2)
 FSM_IDLE, FSM_ARM, FSM_TO_THROTTLE, FSM_TO_HEIGHT, FSM_FLIGHT, FSM_AUTOLAND = 1, 2, 3, 4, 5, 6
 D_HOME_MIN_MPC = 0.8   # = p.d_home_min_mpc de qd2_params.m
 T_ARM_A_DESPEGUE = 2.0  # s, = p.t_arm_a_despegue (takeoff se da este tiempo después de armar)
 Z_DESPEGADO = 0.15     # m, = p.z_despegado (un dron más alto que esto está en el aire)
+# pérdida de rastreo y reacción (= qd2_params.m)
+D_DERIVA_SIN_RASTREO = 0.5  # m, p.d_deriva_sin_rastreo (margen alrededor de la última pose del perdido)
+Z_ATERRIZADO = 0.08    # m, p.z_aterrizado
+T_ATERRIZADO = 1.0     # s, p.t_aterrizado
+T_ASENTAR = 1.0        # s, p.t_asentar
+T_LAND_MAX = 30.0      # s, p.t_land_max
+T_FALLA_SEP_MAX = 8.0  # s, p.t_falla_sep_max
+XY_MARGEN = 0.15       # m, p.xy_margen (consignas recortadas a limites_xy -/+ margen)
 
 
 def flight_state_tierra(fsm, aterrizo):
@@ -292,6 +320,40 @@ class MockMission:
         self.home_ok = True
         self._rot_obj = 0            # rotación de y(56:60)
         self.takeoff_dado = False    # en TAKEOFF: ya se dio takeoff (T_ARM_A_DESPEGUE después de armar)
+        # ---- pérdida de rastreo (qd2_mission_step): umbral, rastreo visto y falla por dron
+        tp = mision_t_perdida_aterrizar(cfg)
+        self.t_perdida_aterrizar = tp["valor"]
+        self.aviso_t_perdida = tp["aviso"]
+        self.xy_lo, self.xy_hi = float(lim[0]) + XY_MARGEN, float(lim[1]) - XY_MARGEN
+        self.ventanas_sin_rastreo = []          # (dron, t1, t2): OptiTrack no lo ve para t1 <= t < t2
+        self.t_trk = {1: 0.0, 2: 0.0}           # último instante con rastreo válido (s.t_trk)
+        self.vista = {k: d.p.copy() for k, d in self.drones.items()}   # última pose vista (s.pose_ok)
+        self.tk = {1: 0, 2: 0}                  # takeoff por DRON (como tel.takeoff de qd2_mission_step)
+        self.falla = {1: 0, 2: 0}               # por DRON: 2 = pérdida de rastreo sostenida (s.falla)
+        self.pausa_por_trk = False
+        self.falla_fase = 0                     # reacción: 1 apartarse, 2 regresar, 3 aterriza el sano, 4 espera
+        self.falla_sano = 0
+        self.falla_land = False
+        self.falla_trk = 0
+        self.falla_sep = np.zeros(2)
+        self.falla_hold = np.zeros(3)
+        self.falla_z = 0.0
+        self.falla_land_xy = np.zeros(2)
+        self.falla_via = np.zeros(2)
+        self.falla_usa_via = False
+        self.t_falla_fase = 0.0
+        self.t_falla_llego = -1.0
+        self.t_falla_suelo = -1.0
+        # LANDING portado de paso_aterrizaje (solo en los caminos de pérdida de rastreo)
+        self.land_matlab = False
+        self.land_paso = 0
+        self.land_xy = np.zeros((2, 2))         # fila 0 = E, fila 1 = R (en solo: el ausente)
+        self.land_via_E = np.zeros(2)
+        self.land_usa_via_E = False
+        self.land_r_baja = False
+        self.t_suelo = [-1.0, -1.0]             # [E R]
+        self.t_land_paso = 0.0
+        self.t_suelo_v = {1: -1.0, 2: -1.0}     # LANDING simplificado: desde cuándo se VE cada dron en el suelo
 
     # ------------------------------------------------------------------ entradas
     def apply_command_message(self, msg):
@@ -333,6 +395,16 @@ class MockMission:
     def command(self, cmd):
         if cmd == P.CMD_NONE:
             return
+        if self.falla_fase > 0:
+            # reacción a una falla en curso (qd2_mission_step): solo LAND_ALL (el sano aterriza en cuanto está
+            # apartado); START, ABORT, PAUSE y RESUME se confirman pero no se ejecutan
+            if cmd == P.CMD_LAND_ALL:
+                self.falla_land = True
+                self.events.append((round(self.t, 2), "comando LAND_ALL durante la reacción a la falla"))
+            else:
+                self.events.append((round(self.t, 2), f"comando {P.COMMAND_NAMES.get(cmd, cmd)} ignorado "
+                                    "(reacción a una falla en curso)"))
+            return
         s = self.state
         # en el aire: estados de vuelo, o TAKEOFF solo si ya se dio takeoff y algún dron pasó z_despegado
         despegado = any(d.p[2] > Z_DESPEGADO for d in self.drones.values())
@@ -352,8 +424,12 @@ class MockMission:
         elif cmd == P.CMD_PAUSE and s in (P.MISSION, P.RETURN_HOME):
             self._pause()
             self.pausa_por_hb = False
-        elif cmd == P.CMD_RESUME and s == P.PAUSED:
+        elif cmd == P.CMD_RESUME and s == P.PAUSED and not self._perdido():
+            # RESUME (solo con el rastreo de vuelta)
             self.pausa_por_hb = False
+            self.pausa_por_trk = False
+            if self.alerta == 2:
+                self.alerta = 0
             self._goto(self.prev_state)
         elif cmd == P.CMD_ABORT and aire:
             self._goto(P.ABORT)
@@ -372,6 +448,9 @@ class MockMission:
             self.wps = self.wps[::-1].copy()
         self.wp_idx, self.explorer_done = 0, False
         self.takeoff_dado = False
+        self.alerta = 0
+        self.falla = {1: 0, 2: 0}                # como START en qd2_mission_step (s.falla = [0 0])
+        self.land_matlab = False
         self.current, self.mark_t, self.r_idle = 0, 0.0, None
         self.hold, self.wait_pt, self.via = {}, {}, {}
 
@@ -406,12 +485,16 @@ class MockMission:
     def step(self, dt):
         self.t += dt
         self.state_t += dt
+        self._actualizar_rastreo()
         dE = self.drones.get(self.E)
         dR = self.drones.get(self.R)
-        s = self.state
         self.guard = False
+        self._perdida_rastreo()          # bloques de pérdida de rastreo de qd2_mission_step (antes de la FSM)
+        s = self.state
 
-        if s == P.INIT and self.t > 0.2:
+        if self.falla_fase > 0:
+            self._paso_falla()           # reacción: estado 9 mientras el sano se aparta y regresa, 7, luego 8
+        elif s == P.INIT and self.t > 0.2:
             self._goto(P.WAIT_TRACKING)
         elif s == P.WAIT_TRACKING and self.solo:
             # solo: basta el dron solo rastreado 1 s; sin chequeo de distancia entre homes (nunca alerta 1)
@@ -477,6 +560,10 @@ class MockMission:
             at_home = all(hdist(d.p, d.home) < self.tol_xy for d in (dE, dR))
             if at_home and s == P.RETURN_HOME and self.auto_land and self.state_t > 2.0:
                 self._goto(P.LANDING)
+        elif s == P.LANDING and self.land_matlab:
+            self._paso_aterrizaje()      # caminos de pérdida de rastreo: paso_aterrizaje de MATLAB
+            if self.land_paso == 3:
+                self._goto(P.DONE)
         elif s == P.LANDING:
             for d in self.drones.values():
                 if d.flying:
@@ -486,9 +573,12 @@ class MockMission:
                         d.flying, d.fsm = False, FSM_IDLE
                         d.aterrizo = True
                         d.sp[2] = 0.0
-            if not any(d.flying for d in self.drones.values()):
+            # un dron sin rastreo (falla 2) no se ve en el suelo: se espera a verlo o p.t_land_max (sin alerta 4)
+            sin_ver = any(self.falla[k] == 2 and not self._visto_en_suelo(k) for k in self.drones)
+            if not any(d.flying for d in self.drones.values()) and not (sin_ver and self.state_t < T_LAND_MAX):
                 self._goto(P.DONE)
 
+        self._takeoff_por_estado()
         for d in self.drones.values():
             d.step(dt)
         if dE is not None and dR is not None and dE.flying and dR.flying and dE.p[2] > 0.3 and dR.p[2] > 0.3:
@@ -707,6 +797,472 @@ class MockMission:
         return max(cands, key=lambda c: min(_min_dist(c, danger), _path_min(pB, c, groups[0]) if hdist(c, pB) > 1e-6
                                             else _min_dist(pB, groups[0])))
 
+    # ------------------------------------------------------------------ pérdida de rastreo (qd2_mission_step)
+    def perder_rastreo(self, dron, t1, t2=math.inf):
+        """OptiTrack deja de ver al dron ``dron`` (1 o 2) para ``t1 <= t < t2`` (s de misión, ``self.t``): la trama
+        lleva tracked = 0 y pose NaN y la misión solo usa la última pose vista. El dron (la planta) sigue su
+        consigna: en el laboratorio el binario PID ya cae a los 0.2 s (FSM a bordo 7), aquí baja con takeoff 0."""
+        if int(dron) not in (1, 2):
+            raise ValueError("dron debe ser 1 o 2")
+        self.ventanas_sin_rastreo.append((int(dron), float(t1), float(t2)))
+        self.events.append((round(self.t, 2), f"rastreo del dron {int(dron)} perdido de {float(t1):.2f} s a "
+                            f"{float(t2):.2f} s"))
+
+    def _actualizar_rastreo(self):
+        """Como el inicio de qd2_mission_step: rastreo válido -> pose vista y t_trk; en 0-2 t_trk siempre."""
+        t = self.t
+        for k, d in self.drones.items():
+            if self.solo and k == self.da:
+                d.tracked = 0
+            else:
+                d.tracked = 0 if any(dr == k and t1 <= t < t2 for dr, t1, t2 in self.ventanas_sin_rastreo) else 1
+            if d.tracked:
+                self.vista[k] = d.p.copy()
+            if d.tracked or self.state <= P.ASSIGN_ROLES:
+                self.t_trk[k] = t
+            if self.vista[k][2] <= Z_ATERRIZADO:
+                if self.t_suelo_v[k] < 0:
+                    self.t_suelo_v[k] = t
+            else:
+                self.t_suelo_v[k] = -1.0
+
+    def _visto_en_suelo(self, k):
+        return self.t_suelo_v[k] >= 0 and self.t - self.t_suelo_v[k] >= T_ATERRIZADO
+
+    def _ar(self):
+        """Disparos por DRON en los estados de vuelo (``ar`` de qd2_mission_step): en solo, solo el dron ds."""
+        return {k: (k == self.ds) if self.solo else True for k in self.drones}
+
+    def _dron_R(self):
+        """Dron del rol R de qd2_mission_step: en solo explorador es el ausente."""
+        return self.da if self.solo else self.R
+
+    def _perdido(self):
+        """Algún dron (en solo: el dron ds) sin rastreo válido desde hace > t_perdida_trk."""
+        if self.solo:
+            return self.t - self.t_trk[self.ds] > T_PERDIDA_TRK
+        return any(self.t - self.t_trk[k] > T_PERDIDA_TRK for k in (1, 2))
+
+    def _hay_despegado(self):
+        zE = self.vista[self.E][2] if self.E else 0.0
+        if self.solo:
+            return zE > Z_DESPEGADO
+        R = self._dron_R()
+        zR = self.vista[R][2] if R else 0.0
+        return max(zE, zR) > Z_DESPEGADO
+
+    def _perdida_rastreo(self):
+        """Bloques "Pérdida de rastreo sostenida: aterrizar" y "Pérdida de rastreo" de qd2_mission_step."""
+        t = self.t
+        Dm = self.d_min_h + self.guard_margin
+        sin_trk = {k: t - self.t_trk[k] > T_PERDIDA_TRK for k in (1, 2)}
+        t_at = max(self.t_perdida_aterrizar, T_PERDIDA_TRK)
+        perd_at = {k: 2 if ((not self.solo or k == self.ds) and t - self.t_trk[k] > t_at and self.falla[k] == 0)
+                   else 0 for k in (1, 2)}
+        if any(perd_at.values()):
+            est = self.state
+            if self.falla_fase > 0:
+                # reacción en curso: si el que se pierde es el SANO, aterriza ya en su sitio; al dron en falla se
+                # le baja takeoff salvo que esté ENCIMA del sano y cerca (espera en paso_falla)
+                h = self.falla_sano
+                if h in (1, 2) and perd_at[h]:
+                    self._marcar_falla(perd_at)
+                    if self.falla_fase < 3:
+                        f = 3 - h
+                        self.tk[h] = 0
+                        r_sep = Dm + 0.05 + D_DERIVA_SIN_RASTREO
+                        Ph, Pf = self.vista[h], self.vista[f]
+                        encima = Pf[2] > Ph[2] and hdist(Pf, Ph) < r_sep
+                        if not encima:
+                            self.tk[f] = 0
+                        self.falla_land_xy = Ph[:2].copy()
+                        self.falla_usa_via = False
+                        self.falla_fase = 3
+                        self.t_falla_fase = t
+                        self.t_falla_suelo = -1.0
+                        self._goto(P.LANDING)
+            else:
+                despegado = self._hay_despegado()
+                # en el aire (PAUSED durante la rampa de despegue sin nadie despegado NO cuenta)
+                en_aire = (est in (P.HOVER_READY, P.MISSION, P.RETURN_HOME, P.ABORT)
+                           or (est == P.PAUSED and (self.prev_state != P.TAKEOFF or despegado))
+                           or (est == P.TAKEOFF and self.takeoff_dado and despegado))
+                if est in (P.TAKEOFF, P.PAUSED) and self.takeoff_dado and not en_aire:
+                    # rampa de despegue sin nadie en el aire: nadie despega
+                    self._cancelar_despegue_rastreo()
+                    self._marcar_falla(perd_at)
+                    self.pausa_por_trk = self.pausa_por_hb = False
+                elif en_aire or (est == P.LANDING and self.land_matlab and self.land_paso == 1
+                                 and not self.land_r_baja):
+                    # en vuelo (también desde PAUSED): el perdido aterriza; en dual el sano se aparta y aterriza
+                    self.pausa_por_trk = self.pausa_por_hb = False
+                    self._iniciar_falla(perd_at, sin_trk)
+                elif est == P.LANDING:
+                    self._marcar_falla(perd_at)     # sigue aterrizando; takeoff 0 al perdido
+        # PAUSED por rastreo (con el valor por defecto el bloque de arriba actúa antes y no ocurre)
+        if self._perdido() and self.falla_fase == 0:
+            est = self.state
+            if est == P.TAKEOFF and not self.takeoff_dado:
+                for d in self.drones.values():
+                    d.flying, d.fsm = False, FSM_IDLE
+                    d.sp = np.array([d.p[0], d.p[1], 0.0])
+                self.tk = {1: 0, 2: 0}
+                self.track_t = 0.0
+                self.events.append((round(self.t, 2), "pérdida de rastreo antes de dar takeoff: se desarma"))
+                self._goto(P.WAIT_TRACKING)
+            elif est in (P.TAKEOFF, P.HOVER_READY, P.MISSION, P.RETURN_HOME, P.ABORT):
+                self.prev_state = est
+                self._pausar_vista()
+                self.pausa_por_hb = False
+                self.pausa_por_trk = True
+                self.alerta = 2
+                self.events.append((round(self.t, 2), "pérdida de rastreo: PAUSED (alerta 2)"))
+                self._goto(P.PAUSED)
+
+    def _pausar_vista(self):
+        """``pausar`` de qd2_mission_step: hover en la última pose VISTA, a la altura de su consigna."""
+        ar = self._ar()
+        for k, d in self.drones.items():
+            if not ar[k]:
+                continue
+            z = d.sp[2] if d.sp[2] > 0 else (self.z_E if k == self.E else self.z_R)
+            d.sp = np.array([self.vista[k][0], self.vista[k][1], z])
+
+    def _marcar_falla(self, nueva):
+        """``marcar_falla``: recuerda la falla por dron; alerta 9 > 10 > 2."""
+        for k in (1, 2):
+            if nueva[k] > self.falla[k]:
+                self.falla[k] = nueva[k]
+                if nueva[k] == 2:
+                    self.events.append((round(self.t, 2), f"dron {k}: pérdida de rastreo sostenida -> aterriza "
+                                        "(alerta 2, nunca más takeoff)"))
+        vals = set(self.falla.values())
+        self.alerta = 9 if 9 in vals else (10 if 10 in vals else 2)
+
+    def _cancelar_despegue_rastreo(self):
+        """``cancelar_despegue`` con takeoff ya dado: takeoff 0 a los dos en su sitio (LANDING paso 4)."""
+        self.takeoff_dado = False
+        self.tk = {1: 0, 2: 0}
+        E, R = self.E, self._dron_R()
+        self.land_matlab = True
+        self.land_paso = 4
+        self.t_suelo = [-1.0, -1.0]
+        self.t_land_paso = self.t
+        self.land_xy = np.array([self.vista[E][:2], self.vista[R][:2]], dtype=float)
+        self.land_via_E = self.vista[E][:2].copy()
+        self.land_usa_via_E = False
+        self._goto(P.LANDING)
+
+    def _iniciar_falla(self, nueva, sin_trk):
+        """``iniciar_falla``: solo explorador (o los dos en falla) -> aterrizaje; dual -> reacción (fase 1)."""
+        self._marcar_falla(nueva)
+        t = self.t
+        if self.solo or (self.falla[1] and self.falla[2]):
+            self._planear_aterrizaje()
+            self._goto(P.LANDING)
+            return
+        f = 1 if self.falla[1] else 2
+        h = 3 - f
+        self.falla_sano = h
+        self.falla_fase = 1
+        self.falla_land = False
+        self.t_falla_fase = t
+        self.t_falla_llego = -1.0
+        self.t_falla_suelo = -1.0
+        zf = float(self.drones[f].sp[2])
+        if zf <= 0:
+            zf = float(self.vista[f][2])
+        self.falla_hold = np.array([self.vista[f][0], self.vista[f][1], zf])
+        self.falla_z = self.z_E if h == self.E else self.z_R
+        hh = self.drones[h].home
+        self.falla_trk = int(self.falla[f] == 2 or sin_trk[f])
+        r_sep = self.d_min_h + self.guard_margin + 0.05 + self.falla_trk * D_DERIVA_SIN_RASTREO
+        self.falla_sep = self._punto_separacion(self.vista[h], self.vista[f], hh, r_sep)
+        if self.falla_trk:
+            # sin pose no sostiene el hover: takeoff 0 YA, salvo que esté ENCIMA del sano y cerca
+            encima = self.vista[f][2] > self.vista[h][2] and hdist(self.vista[f], self.vista[h]) < r_sep
+            if not encima:
+                self.tk[f] = 0
+        self.events.append((round(t, 2), f"reacción: el dron {h} se aparta del dron {f}"))
+        self._goto(P.ABORT)
+
+    def _punto_separacion(self, ph, pf, hh, r):
+        """``punto_separacion``: punto a >= r (horizontal) de pf, lo más cerca de ph, dentro de la arena."""
+        lo, hi = self.xy_lo, self.xy_hi
+        ph = np.array(ph[:2], dtype=float)
+        pf = np.array(pf[:2], dtype=float)
+        hh = np.array(hh[:2], dtype=float)
+        c_ok = np.clip(ph, lo, hi)
+        if hdist(c_ok, pf) >= r:
+            return c_ok
+        mejor = math.inf
+        d = hdist(ph, pf)
+        for k in range(33):
+            if k == 0:
+                if d < 1e-3:
+                    continue
+                u = (ph - pf) / d                 # dirección radial: alejarse en recta
+            else:
+                ang = 2 * math.pi * (k - 1) / 32
+                u = np.array([math.cos(ang), math.sin(ang)])
+            c = np.clip(pf + r * u, lo, hi)
+            if hdist(c, pf) >= r - 1e-6:
+                costo = hdist(c, ph) + 0.05 * hdist(c, hh)
+                if costo < mejor:
+                    mejor, c_ok = costo, c
+        if not math.isfinite(mejor):
+            esquinas = [np.array(e, dtype=float) for e in ((lo, lo), (lo, hi), (hi, lo), (hi, hi))]
+            c_ok = max(esquinas, key=lambda e: hdist(e, pf))
+        return c_ok
+
+    def _ruta_desvio(self, A, B, O, r):
+        """``qd2_ruta_desvio``: (via, n_via, ok) para ir de A a B a >= r del obstáculo puntual O."""
+        a, b, o = (np.array(v[:2], dtype=float) for v in (A, B, O))
+        via, n_via, ok = b.copy(), 0, True
+        dA, dB = hdist(a, o), hdist(b, o)
+        if _seg_dist(o, a, b) >= min(r, dA, dB) - 1e-9:
+            return via, n_via, ok
+        mejor, ok = math.inf, False
+        for rr in (r + 0.10, r + 0.30, r + 0.50):
+            for k in range(24):
+                ang = 2 * math.pi * k / 24
+                c = np.clip(o + rr * np.array([math.cos(ang), math.sin(ang)]), self.xy_lo, self.xy_hi)
+                if hdist(c, o) < r - 1e-9:
+                    continue
+                if (_seg_dist(o, a, c) >= min(r, dA) - 1e-9 and _seg_dist(o, c, b) >= min(r, dB) - 1e-9):
+                    L = hdist(c, a) + hdist(b, c)
+                    if L < mejor:
+                        mejor, via, ok = L, c, True
+        return via, (1 if ok else 0), ok
+
+    def _paso_falla(self):
+        """``paso_falla``: 1 apartarse, 2 regresar (o quedarse), 3 aterriza el sano, 4 espera al otro -> DONE."""
+        t = self.t
+        h = self.falla_sano
+        f = 3 - h
+        ph, pf = self.vista[h], self.vista[f]
+        r = self.d_min_h + self.guard_margin + 0.05 + self.falla_trk * D_DERIVA_SIN_RASTREO
+        sp = {f: np.array(self.falla_hold, dtype=float), h: None}
+        espera_f = self.falla_fase >= 3 and self.tk[f]
+        if espera_f and (self.falla_fase >= 4 or ph[2] <= Z_ATERRIZADO or t - self.t_falla_fase >= T_FALLA_SEP_MAX):
+            self.tk[f] = 0
+            espera_f = False
+        if (self.falla_fase >= 2 and not espera_f) or (self.falla_trk and not self.tk[f]):
+            sp[f][2] = 0.0                       # (sin rastreo: ya aterriza en su sitio)
+        hh = self.drones[h].home
+        separado = hdist(ph, pf) >= self.d_min_h
+        if self.falla_fase == 1:
+            if hdist(self.falla_sep, pf) < r - 0.05:
+                self.falla_sep = self._punto_separacion(ph, pf, hh, r)
+            sp[h] = np.array([self.falla_sep[0], self.falla_sep[1], self.falla_z])
+            llego = hdist(ph, self.falla_sep) <= 1.5 * self.tol_xy
+            if (separado and llego) or t - self.t_falla_fase >= T_FALLA_SEP_MAX:
+                self.tk[f] = 0
+                sp[f][2] = 0.0
+                if self.falla_land and separado:
+                    land = ph[:2]
+                elif hdist(hh, pf) >= r:
+                    land = hh
+                else:
+                    land = ph[:2]
+                self.falla_land_xy = np.array(land[:2], dtype=float)
+                via, nv, ok = self._ruta_desvio(ph, self.falla_land_xy, pf, r)
+                self.falla_via = np.array(via, dtype=float)
+                self.falla_usa_via = bool(nv > 0 and ok)
+                self.falla_fase = 2
+                self.t_falla_fase = t
+                self.t_falla_llego = -1.0
+                if self.falla_land and separado:
+                    self.falla_usa_via = False
+                    self.falla_fase = 3
+                    self._goto(P.LANDING)
+        if self.falla_fase == 2:
+            if self.falla_land and separado:
+                self.falla_land_xy = ph[:2].copy()
+                self.falla_usa_via = False
+                self.falla_fase = 3
+                self.t_falla_fase = t
+                self._goto(P.LANDING)
+            else:
+                if self.falla_usa_via:
+                    sp[h] = np.array([self.falla_via[0], self.falla_via[1], self.falla_z])
+                    if hdist(ph, self.falla_via) <= 1.5 * self.tol_xy:
+                        self.falla_usa_via = False
+                else:
+                    sp[h] = np.array([self.falla_land_xy[0], self.falla_land_xy[1], self.falla_z])
+                en_punto = not self.falla_usa_via and hdist(ph, self.falla_land_xy) <= self.tol_xy
+                if en_punto:
+                    if self.t_falla_llego < 0:
+                        self.t_falla_llego = t
+                else:
+                    self.t_falla_llego = -1.0
+                if (en_punto and t - self.t_falla_llego >= T_ASENTAR) or t - self.t_falla_fase >= 2 * T_LAND_MAX:
+                    self.falla_fase = 3
+                    self.t_falla_fase = t
+                    self._goto(P.LANDING)
+        if self.falla_fase == 3:
+            self.tk[h] = 0                       # autoland del sano
+            sp[h] = np.array([self.falla_land_xy[0], self.falla_land_xy[1], 0.0])
+            if ph[2] <= Z_ATERRIZADO:
+                if self.t_falla_suelo < 0:
+                    self.t_falla_suelo = t
+            else:
+                self.t_falla_suelo = -1.0
+            if ((self.t_falla_suelo >= 0 and t - self.t_falla_suelo >= T_ATERRIZADO)
+                    or t - self.t_falla_fase >= T_LAND_MAX):
+                self.falla_fase = 4
+                self.t_falla_fase = t
+                self.t_falla_suelo = -1.0
+        elif self.falla_fase == 4:
+            sp[h] = np.array([self.falla_land_xy[0], self.falla_land_xy[1], 0.0])
+            if pf[2] <= Z_ATERRIZADO:
+                if self.t_falla_suelo < 0:
+                    self.t_falla_suelo = t
+            else:
+                self.t_falla_suelo = -1.0
+            if ((self.t_falla_suelo >= 0 and t - self.t_falla_suelo >= T_ATERRIZADO)
+                    or t - self.t_falla_fase >= T_LAND_MAX):
+                self.tk = {1: 0, 2: 0}
+                self.falla_fase = 0
+                self._goto(P.DONE)
+        if self.falla_fase in (1, 2):
+            nuevo = P.LANDING if self.falla_land else P.ABORT   # LAND_ALL aceptado: la UI lo ve como LANDING
+            if nuevo != self.state:
+                self.events.append((round(t, 2), f"{P.MISSION_STATES[self.state]} -> {P.MISSION_STATES[nuevo]}"))
+                self.state = nuevo
+        for k in (h, f):
+            if sp[k] is not None:
+                xy = np.clip(sp[k][:2], self.xy_lo, self.xy_hi)
+                self.drones[k].sp = np.array([xy[0], xy[1], sp[k][2]])
+
+    def _planear_aterrizaje(self):
+        """``planear_aterrizaje``: R en su sitio; E en su sitio si queda a >= Dm + 0.05 del punto de R."""
+        t = self.t
+        E, R = self.E, self._dron_R()
+        pE, pR = self.vista[E], self.vista[R]
+        hE = self.drones[E].home
+        r = self.d_min_h + self.guard_margin + 0.05
+        self.land_matlab = True
+        self.land_paso = 1
+        self.t_land_paso = t
+        self.t_suelo = [-1.0, -1.0]
+        self.land_r_baja = False
+        if self.solo:
+            self.land_r_baja = True
+            self.land_xy = np.array([pE[:2], pR[:2]], dtype=float)
+            self.land_via_E = pE[:2].copy()
+            self.land_usa_via_E = False
+            return
+        xyR = np.array(pR[:2], dtype=float)
+        if hdist(pE, xyR) >= r:
+            xyE = np.array(pE[:2], dtype=float)
+        elif hdist(hE, xyR) >= r:
+            xyE = np.array(hE[:2], dtype=float)
+        else:
+            xyE = np.array(pE[:2], dtype=float)
+            mejor = math.inf
+            for k in range(16):
+                ang = 2 * math.pi * k / 16
+                c = np.clip(xyR + (r + 0.1) * np.array([math.cos(ang), math.sin(ang)]), self.xy_lo, self.xy_hi)
+                if hdist(c, xyR) >= r and hdist(c, pE) < mejor:
+                    mejor, xyE = hdist(c, pE), c
+        self.land_xy = np.array([xyE, xyR], dtype=float)
+        via, nv, ok = self._ruta_desvio(pE, xyE, xyR, r)
+        self.land_via_E = np.array(via, dtype=float)
+        self.land_usa_via_E = bool(nv > 0 and ok)
+
+    def _paso_aterrizaje(self):
+        """``paso_aterrizaje``: 1 baja R (E a su punto a su altura), 2 baja E, 3 listo, 4 los dos a la vez.
+        Un dron en falla nunca recibe takeoff; un dron sin rastreo (falla 2) no pone la alerta 4."""
+        t = self.t
+        E, R = self.E, self._dron_R()
+        pE, pR = self.vista[E], self.vista[R]
+        xyE, xyR = self.land_xy[0], self.land_xy[1]
+        for i, pp in ((0, pE), (1, pR)):
+            if pp[2] <= Z_ATERRIZADO:
+                if self.t_suelo[i] < 0:
+                    self.t_suelo[i] = t
+            else:
+                self.t_suelo[i] = -1.0
+        r_en_suelo = self.solo or (self.t_suelo[1] >= 0 and t - self.t_suelo[1] >= T_ATERRIZADO)
+        e_en_suelo = self.t_suelo[0] >= 0 and t - self.t_suelo[0] >= T_ATERRIZADO
+        vencido = t - self.t_land_paso >= T_LAND_MAX
+        spR = np.array([xyR[0], xyR[1], 0.0])
+        fE, fR = self.falla[E] > 0, self.falla[R] > 0
+        trkE, trkR = self.falla[E] == 2, self.falla[R] == 2
+        if self.land_paso == 4:
+            self.tk[E] = self.tk[R] = 0
+            spE = np.array([xyE[0], xyE[1], 0.0])
+            if (r_en_suelo and e_en_suelo) or vencido:
+                if (not r_en_suelo and not trkR) or (not e_en_suelo and not trkE):
+                    self.alerta = 4
+                self.land_paso = 3
+        else:
+            if self.land_usa_via_E:
+                spE = np.array([self.land_via_E[0], self.land_via_E[1], self.z_E])
+                if hdist(pE, self.land_via_E) <= 1.5 * self.tol_xy:
+                    self.land_usa_via_E = False
+            else:
+                spE = np.array([xyE[0], xyE[1], self.z_E])
+            if self.land_paso == 1 and not self.land_r_baja:
+                if hdist(pE, xyR) >= self.d_min_h or fR or fE:
+                    self.land_r_baja = True
+            if self.land_paso == 1 and not self.land_r_baja:
+                self.tk[R] = 1                   # R espera a su altura (E todavía cerca en horizontal)
+                spR = np.array([xyR[0], xyR[1], self.z_R])
+            else:
+                self.tk[R] = 0
+            e_en_punto = (not self.land_usa_via_E and hdist(pE, xyE) <= self.tol_xy) or fE
+            if self.land_paso == 1:
+                if fE:
+                    self.tk[E] = 0               # E en falla: nunca takeoff (baja en su sitio)
+                    spE = np.array([pE[0], pE[1], 0.0])
+                else:
+                    self.tk[E] = 1
+                if ((r_en_suelo or vencido) and e_en_punto) or t - self.t_land_paso >= 2 * T_LAND_MAX:
+                    if (not r_en_suelo and not trkR) or not e_en_punto:
+                        self.alerta = 4
+                    self.land_paso = 2
+                    self.t_land_paso = t
+                    self.land_usa_via_E = False
+            if self.land_paso == 2:
+                self.tk[E] = 0
+                spE = np.array([xyE[0], xyE[1], 0.0])
+                if e_en_suelo or t - self.t_land_paso >= T_LAND_MAX:
+                    if not e_en_suelo and not trkE:
+                        self.alerta = 4
+                    self.land_paso = 3
+        self.drones[E].sp = spE
+        if not self.solo:
+            self.drones[R].sp = spR
+
+    def _takeoff_por_estado(self):
+        """takeoff por dron fuera de los caminos portados (como ``s.takeoff = ar`` en 4/5/6/9/10) y la planta:
+        un dron con takeoff 0 en esos caminos baja en su sitio (autoland a bordo)."""
+        if self.falla_fase == 0 and not self.land_matlab:
+            st = self.state
+            v = self.takeoff_dado if st == P.TAKEOFF else st in (P.HOVER_READY, P.MISSION, P.RETURN_HOME,
+                                                                    P.ABORT, P.PAUSED)
+            ar = self._ar()
+            for k in self.drones:
+                self.tk[k] = int(bool(v) and ar[k] and not self.falla[k])
+        if self.state == P.DONE:
+            self.tk = {1: 0, 2: 0}
+        if self.solo:
+            self.tk[self.da] = 0
+        for k, d in self.drones.items():
+            if not (self.falla_fase or self.land_matlab or self.falla[k]):
+                continue
+            if self.tk[k]:
+                if d.flying:
+                    d.fsm = FSM_FLIGHT
+            else:
+                d.sp = np.array([d.sp[0], d.sp[1], 0.0])
+                if d.flying:
+                    d.fsm = FSM_AUTOLAND
+                    if d.p[2] < 0.05:
+                        d.flying, d.fsm, d.aterrizo = False, FSM_IDLE, True
+
     # ------------------------------------------------------------------ objetivos internos
     def add_internal_target(self, cls, x, y):
         """Objetivo que "detecta Simulink" sin que la estación lo publique (como el simulador 3D con su
@@ -770,6 +1326,9 @@ class MockMission:
                 "vx": d.v[0], "vy": d.v[1], "vz": d.v[2], "battery_V": d.battery,
                 "home_x": d.home[0], "home_y": d.home[1], "role": d.role, "comm_ok": 1,
             }
+            if not d.tracked:
+                # OptiTrack no lo ve: pose NaN en la trama (como Motive/QUARC con el rigid body perdido)
+                tel["drones"][k].update(x=None, y=None, z=None, yaw=None)
         if self.solo:
             tel["dron_solo"] = self.ds                     # y(64)
             # dron ausente: sin rastreo (pose NaN en la trama), sin rol, sin enlace, sin consigna
@@ -840,6 +1399,13 @@ class MockServer:
         """Lo que la tarjeta "Pruebas con el mock" de la UI debe reflejar (alerta forzada actual)."""
         with self._lock:
             return {"alerta_forzada": self.mission.alerta_forzada}
+
+    def perder_rastreo(self, dron, duracion_s=math.inf, desde_s=0.0):
+        """OptiTrack deja de ver al dron ``dron`` desde ``desde_s`` s a partir de ahora durante ``duracion_s`` s
+        (``MockMission.perder_rastreo`` con el tiempo de la misión actual)."""
+        with self._lock:
+            t1 = self.mission.t + float(desde_s)
+            self.mission.perder_rastreo(dron, t1, t1 + float(duracion_s))
 
     def objetivo_interno(self, cls, x, y):
         """Objetivo que 'detecta Simulink' (sale en y(56:60) aunque la estación no lo haya publicado)."""
@@ -930,6 +1496,8 @@ def main(argv=None):
                     help="fuerza y(55) = este código de alerta (para probar la UI)")
     ap.add_argument("--objetivo-interno", nargs=3, type=float, action="append", default=[],
                     metavar=("X", "Y", "CLS"), help="objetivo que 'detecta Simulink' (sale en y(56:60)); se repite")
+    ap.add_argument("--rastreo", nargs=3, type=float, action="append", default=[], metavar=("DRON", "T1", "T2"),
+                    help="OptiTrack no ve al DRON (1 o 2) de T1 a T2 s de misión (tracked = 0, pose NaN); se repite")
     a = ap.parse_args(argv)
     cfg = Config()
     srv = MockServer(cfg.data, a.host, a.puerto, speed=a.velocidad, cfg_fn=cfg.reload_if_changed).start()
@@ -937,6 +1505,8 @@ def main(argv=None):
         srv.mission.alerta_forzada = a.alerta
         for x, y, c in a.objetivo_interno:
             srv.mission.add_internal_target(int(c), x, y)
+        for dron, t1, t2 in a.rastreo:
+            srv.mission.perder_rastreo(int(dron), t1, t2)
     print(f"Mock de Simulink escuchando en tcpip://{a.host}:{srv.port}  (Ctrl+C para salir)")
     try:
         while True:

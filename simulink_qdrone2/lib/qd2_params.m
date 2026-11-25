@@ -64,8 +64,30 @@ p.n_dir_evasion = 24;       % direcciones candidatas para la evasión del guard
 p.guard_look_wp = 8;        % waypoints de anticipación de la ruta de E (8 x 0.25 = 2 m)
 % Seguridad (agregado tras la revisión)
 p.z_despegado   = 0.15;     % m, un dron con z mayor que esto se considera en el aire
-p.t_perdida_trk = 0.2;      % s, sin rastreo válido (tracked=1 y pose finita) en el aire -> PAUSED
-                            %    (mismo umbral que la FSM a bordo)
+p.t_perdida_trk = 0.2;      % s, sin rastreo válido (tracked=1 y pose finita) en el aire: inicio
+                            %    de la ventana de PAUSED, que solo existe si t_perdida_aterrizar_s
+                            %    > este valor; a los t_perdida_aterrizar_s ese dron aterriza (con
+                            %    el valor por defecto 0.2 aterriza directo, sin PAUSED). También
+                            %    marca "sin rastreo" para el margen de deriva de la reacción a
+                            %    una falla. Mismo umbral que la FSM a bordo.
+p.t_perdida_aterrizar_s = 0.2; % s, sin rastreo válido EN EL AIRE de forma sostenida -> ese dron
+                            %    ATERRIZA (takeoff = 0, nunca se le vuelve a dar) en vez de
+                            %    quedarse en PAUSED; en dual el otro se aparta, regresa y aterriza
+                            %    (reacción de falla a bordo). config: mision.t_perdida_aterrizar_s,
+                            %    válido en [t_perdida_trk, 2.0] (qd2_params_from_config).
+                            %    0.2 s = t_perdida_trk = umbral de la FSM a bordo del Equipo2
+                            %    (isTracking = 0 sostenido 0.2 s -> estado 7, rampa de bajada sin
+                            %    control de posición, IRREVERSIBLE). Tierra le reenvía al dron su
+                            %    isTracking, así que tierra ve la pérdida ANTES que el dron (no hay
+                            %    margen de latencia que agregar): una pérdida que tierra mide > 0.2 s
+                            %    ya tiró al dron. Con un valor mayor, una pérdida entre 0.2 s y este
+                            %    valor deja la misión en PAUSED (RESUME posible) con un dron que ya
+                            %    cae: subirlo SOLO con un binario que sostenga el hover sin rastreo.
+                            %    Pérdidas <= 0.2 s (glitch) no hacen nada. Sin pose el dron deriva y
+                            %    cae en ~1-2 s (vuelos 2-4 del 24-nov: ~0.5 m).
+p.d_deriva_sin_rastreo = 0.5;  % m, margen horizontal extra alrededor de la ÚLTIMA pose de un dron
+                            %    sin rastreo (deriva observada sin pose, vuelos 2-4 del 24-nov): el
+                            %    sano se aparta a >= d_min_h + guard_margen + 0.05 + este margen
 p.t_takeoff_max = 30.0;     % s, desde takeoff=1 sin llegar a la altura -> ABORT (o cancelar si nadie despegó)
 p.t_land_max    = 30.0;     % s, por paso de LANDING sin detectar el suelo -> siguiente paso
 p.d_home_min_mpc = 0.8;     % m, distancia mínima entre homes para aceptar START en la versión MPC
