@@ -185,6 +185,7 @@ Un solo dron recorre la pista con la misión completa (despegue, N a `z_E`, dete
 - [ ] **Prueba en seco:** switches abajo → START: "START recibido" y el dron **no** despega. LAND ALL / ABORT → vuelve a ASSIGN_ROLES.
 - [ ] **Vuelo:** Arm y Takeoff arriba → START: TAKEOFF → HOVER_READY (2 s) → MISSION (recorre todos los waypoints) → RETURN_HOME ("en home") → **LAND ALL** → DONE. En la telemetría el dron 2 siempre con arm/takeoff = 0.
 - [ ] Al final: `quarc_run -q` del dron 1 con el dron en el piso → Stop de tierra si no se paró solo.
+- [ ] **Después de cada vuelo:** la pestaña Anomalías dice `Registro de vuelo: …/vuelo_HHMMSS_simulink.jsonl · N líneas` (sin ERROR). Correr `python web\herramientas\ajustar_tubos.py --ultimos 1 --svg tubos.svg` y revisar las tomas "LEJOS" y el desplazamiento propuesto; si se confirma, `--aplicar` (solo cambia `pista.tubos`; la ruta no) y subir `web/datos/vuelos` (y la config si cambió) a git para la otra sesión.
 
 **SEGUIR si:** el recorrido completo sin pausas ni alertas, las detecciones salen "detectada" y aterriza en su sitio. **NO SEGUIR si:** la UI muestra modo dual o "pista distinta", el dron 2 recibe arm, o hay pérdida de rastreo/enlace. Emergencias iguales: Takeoff/Land abajo = LAND ALL ordenado; E-Stop corta motores.
 
@@ -239,6 +240,7 @@ Un solo dron recorre la pista con la misión completa (despegue, N a `z_E`, dete
 
 - [ ] Detener los dos drones ("Detener" en Conexiones) **con los dos en el piso**. Después, Stop de tierra.
 - [ ] Copiar a la USB: `C:\QD2\config\estacion.json` como `estacion_lab_<fecha>.json`, la carpeta `saved_data`, Eventos y `web\datos\objetivos_estacion.json`. Fotos reales con `paquete.py exportar`.
+- [ ] `git add web/datos/vuelos` + commit + push: los registros de vuelo del día (los lee `ajustar_tubos.py` en la laptop).
 - [ ] En la laptop **no** se sobrescribe `config\estacion.json` a ciegas: se compara con el del laboratorio.
 - [ ] Anotar lo que falló y en qué etapa: ____________________________________________
 

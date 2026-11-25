@@ -36,6 +36,7 @@ WEB_DEFAULTS = {
     "camara_latencia_s": 0.12,   # retraso estimado del video para sincronizar con la pose
     "z_min_deteccion": 0.4,      # no se geolocaliza con el explorador por debajo de esta altura
     "cmd_timeout_s": 1.5,        # un comando sin ack de Simulink en este tiempo caduca (no se ejecuta tarde)
+    "registro_vuelos": "auto",   # registro por vuelo en web/datos/vuelos: auto (solo fuente simulink) | true | false
     "puerto_quarc_target": 17000,
     "puerto_ext_mode": 17001,
 }

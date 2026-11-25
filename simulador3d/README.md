@@ -17,7 +17,8 @@ Simulador en tiempo real escrito en MATLAB puro. Reemplaza al simulador 2D del c
 - El **dron 1 es azul** y el **dron 2 es naranja**. La etiqueta de cada uno muestra su rol: EXPLORADOR o RESPONDEDOR.
 
 **Escena.**
-- Arena de 3 × 3 m con retícula cada 0.25 m.
+- **Marco de la arena** (`sim3d_marco.m`, la misma regla que `web/app/static/marco.js` de la UI): el piso es la caja que contiene los tubos reales, la ruta de vuelo, los homes y `mision.limites_xy`, más 0.25 m por lado, redondeada hacia afuera a múltiplos de 0.5 m. Con la pista de hoy (tubos hasta y = −1.52) queda de 4 × 4 m (±2). Sin datos, ±1.5 como antes.
+- Retícula alineada a los múltiplos (el origen OptiTrack cae en una línea): fina cada 0.25 m, marcada cada 0.5 m y más marcada cada 1 m. Borde del piso gris; `mision.limites_xy` (el límite de vuelo de Simulink) en punteado ámbar. Los límites de los ejes, los postes de las cámaras, las vistas general y cenital y el mini mapa siguen al marco.
 - Ejes OptiTrack: +x adelante (rojo), +y izquierda (verde), +z arriba.
 - Los **tubos reales** y la **ruta de vuelo** por separado, como la UI (`escena3d.js` y el mapa 2D):
   - `pista.vertices` es la ruta de vuelo que compila Simulink (recortada a la zona donde OptiTrack rastrea). Se dibuja como línea celeste punteada en el piso.
@@ -206,7 +207,7 @@ cd simulador3d
 res = probar_sim3d();        % ~4 min; guarda PNG en capturas/ (probar_sim3d(false): sin capturas)
 ```
 
-Son 26 pruebas. `probar_sim3d(false)` corre 25, porque se salta "misma corrida con y sin figura"; en esta laptop tarda ~43 s. Las pruebas que no son del modo solo usan la config real con `mision.modo = "dual"` y la N de 4 vértices fija, sin `pista.tubos` ni `tramos_sin_tubo` (el tubo es la N entera), así que no dependen del modo ni de la pista del día. Las del modo solo usan la ruta y los tubos de `config/estacion.json`. Cubren:
+Son 27 pruebas. `probar_sim3d(false)` corre 26, porque se salta "misma corrida con y sin figura"; en esta laptop tarda ~43 s. Las pruebas que no son del modo solo usan la config real con `mision.modo = "dual"` y la N de 4 vértices fija, sin `pista.tubos` ni `tramos_sin_tubo` (el tubo es la N entera), así que no dependen del modo ni de la pista del día. Las del modo solo usan la ruta y los tubos de `config/estacion.json`. Cubren:
 - **Malla:** medidas del manual, motores y aros concéntricos.
 - **Contra la estación:** cámara y clusters contra `geo.py`, y escenario `'web'` contra `mock_world.py`, con la N y con la pista real (anomalías sobre `pista.tubos`, `anomalias_mock`).
 - **Tubos contra la estación:** `tubos_pista`, `tramos_sin_tubo` y `dist_tubos` con 16 pistas (con y sin `pista.tubos`, huecos, valores inválidos), los umbrales `dist_max_tubo_toma_m`/`dist_max_tubo_fuego_m` (8 variantes) y la decisión "lejos del tubo" de `VisionService.filtrar` (60 casos), todos sin diferencias.
@@ -219,6 +220,7 @@ Son 26 pruebas. `probar_sim3d(false)` corre 25, porque se salta "misma corrida c
 - **Pérdida de rastreo en el aire** (prueba 22, ver "Pérdida de rastreo"): solo explorador con `trk_a_bordo` en `true` y en `false`, una pérdida de 0.15 s que no hace nada, y dual PID.
 - **Dron 2 volando:** con el dron 1 rastreado en el piso debajo de la N, el guard nunca se activa y la misión llega a DONE.
 - **Detector y telemetría:** el detector solo en MISSION/PAUSED; la telemetría y(61:63) (actitud del explorador) y su ausencia con `actitud_en_tel = false`, que también deja el detector interno nivelado.
+- **Marco de la arena** (prueba 24): con la pista real los tubos (también los de y = −1.52) quedan dentro del piso con ≥ 0.25 m de margen, el marco es múltiplo de 0.5 m, casos fijos (sin datos = ±1.5, borde exacto, home fuera de `limites_xy`) y la figura usa ese marco en el piso y los ejes.
 - **Resto:** la misma corrida con y sin figura, el heartbeat de Python a x16, el primer paquete con START, tiempo real y costo de cuadro.
 
 En una terminal, con el simulador corriendo y `usar_tcp = true`:
@@ -272,6 +274,7 @@ Los casos con actitud se generan después de los demás con el mismo generador a
 | `sim3d_malla_qdrone2.m` | Malla procedural del QDrone 2 |
 | `sim3d_mallas_objetos.m` | STL de fuegos y válvula (reducidos, con caché en `tempdir`) |
 | `sim3d_escena.m` | Figura 3D, HUD, mini mapa, botones y teclas |
+| `sim3d_marco.m` | Marco de la arena (piso y retícula), misma regla que `web/app/static/marco.js` |
 | `sim3d_camara.m` | Geometría de la cámara (igual a `web/app/geo.py`) |
 | `sim3d_detector.m` | Detector simulado y clusters de la estación |
 | `sim3d_estacion.m` | Estación interna, mezcla con Python y traducción de `cmd_seq`/ack |

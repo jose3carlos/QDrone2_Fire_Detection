@@ -53,27 +53,47 @@ ax = axes('Parent', G.fig, 'Position', [0.0 0.065 0.70 0.935], 'Color', col.fond
     'DataAspectRatio', [1 1 1], 'Clipping', 'off', 'FontSize', 8);
 hold(ax, 'on');
 axis(ax, 'off');
-xlim(ax, [-2.1 2.1]); ylim(ax, [-2.1 2.1]); zlim(ax, [-0.01 2.6]);
+% tubos reales y ruta de vuelo (se dibujan abajo; aquí definen el marco de la arena)
+V = esc.V;
+tubos = {V};
+if isfield(esc, 'tubos'), tubos = esc.tubos; end
+homes = [];
+if isfield(esc, 'home'), homes = esc.home; end
+lx = p.xy_lim;
+% marco de la arena (sim3d_marco = web/app/static/marco.js): tubos + ruta + homes + limites_xy,
+% margen 0.25 m y redondeado hacia afuera a múltiplos de 0.5 m
+mc = sim3d_marco(tubos, V, homes, lx);
+G.marco = mc;
+ext = mc + [-0.5 0.5 -0.5 0.5];          % piso de fuera
+xlim(ax, ext(1:2)); ylim(ax, ext(3:4)); zlim(ax, [-0.01 2.6]);
 G.ax = ax;
 
-% piso fuera de la arena y tapete 3x3
-patch(ax, [-2.1 2.1 2.1 -2.1], [-2.1 -2.1 2.1 2.1], -0.002*[1 1 1 1], col.piso, 'EdgeColor', 'none', ...
+% piso fuera de la arena y tapete del marco
+patch(ax, ext([1 2 2 1]), ext([3 3 4 4]), -0.002*[1 1 1 1], col.piso, 'EdgeColor', 'none', ...
     'FaceLighting', 'none');
-lx = p.xy_lim;
-patch(ax, lx([1 2 2 1]), lx([1 1 2 2]), [0 0 0 0], col.tapete, 'EdgeColor', 'none', 'FaceLighting', 'none');
-% retícula cada 0.25 m (más marcada cada 0.5 m)
-g = lx(1):0.25:lx(2);
-XL = []; YL = []; XM = []; YM = [];
-for v = g
-    if abs(mod(v + 1e-9, 0.5)) < 1e-6
-        XM = [XM v v NaN lx(1) lx(2) NaN]; YM = [YM lx(1) lx(2) NaN v v NaN]; %#ok<AGROW>
-    else
-        XL = [XL v v NaN lx(1) lx(2) NaN]; YL = [YL lx(1) lx(2) NaN v v NaN]; %#ok<AGROW>
-    end
+patch(ax, mc([1 2 2 1]), mc([3 3 4 4]), [0 0 0 0], col.tapete, 'EdgeColor', 'none', 'FaceLighting', 'none');
+% retícula alineada a los múltiplos: fina cada 0.25 m, marcada cada 0.5 m y más cada 1 m (sin las
+% líneas del borde: las dibuja el contorno)
+XY = {[], [], []};
+for v = mc(1) + 0.25:0.25:mc(2) - 0.125
+    n = nivel_linea(v);
+    XY{n} = [XY{n}; v v NaN mc(3) mc(4) NaN]; %#ok<AGROW>
 end
-line(ax, XL, YL, 0.001*ones(size(XL)), 'Color', col.reja*0.85, 'LineWidth', 0.5);
-line(ax, XM, YM, 0.001*ones(size(XM)), 'Color', col.reja, 'LineWidth', 0.8);
-line(ax, lx([1 2 2 1 1]), lx([1 1 2 2 1]), 0.002*ones(1,5), 'Color', [0.98 0.78 0.20], 'LineWidth', 2.5);
+for v = mc(3) + 0.25:0.25:mc(4) - 0.125
+    n = nivel_linea(v);
+    XY{n} = [XY{n}; mc(1) mc(2) NaN v v NaN]; %#ok<AGROW>
+end
+anchos = [0.5 0.8 1.0];
+tonos = [0.80 1.0 1.25];
+for n = 1:3
+    if isempty(XY{n}), continue; end
+    xs = reshape(XY{n}(:, 1:3).', 1, []); ys = reshape(XY{n}(:, 4:6).', 1, []);
+    line(ax, xs, ys, 0.001*ones(size(xs)), 'Color', min(col.reja*tonos(n), 1), 'LineWidth', anchos(n));
+end
+% borde del piso (tenue) y límite de vuelo mision.limites_xy (punteado ámbar)
+line(ax, mc([1 2 2 1 1]), mc([3 3 4 4 3]), 0.002*ones(1,5), 'Color', col.tenue, 'LineWidth', 1.2);
+line(ax, lx([1 2 2 1 1]), lx([1 1 2 2 1]), 0.003*ones(1,5), 'Color', [0.98 0.78 0.20], 'LineWidth', 1.8, ...
+    'LineStyle', '--');
 % marco OptiTrack (RSF): +x adelante, +y izquierda, +z arriba
 Lf = 0.45;
 flecha(ax, [0 0 0.003], [Lf 0 0], [0.95 0.25 0.25]);
@@ -82,10 +102,10 @@ flecha(ax, [0 0 0.003], [0 0 Lf], [0.35 0.55 1.00]);
 text(ax, Lf + 0.06, 0, 0.02, '+x adelante', 'Color', [0.95 0.45 0.45], 'FontSize', 8, 'FontWeight', 'bold');
 text(ax, 0, Lf + 0.06, 0.02, '+y izquierda', 'Color', [0.45 0.95 0.55], 'FontSize', 8, 'FontWeight', 'bold');
 text(ax, 0, 0, Lf + 0.05, '+z', 'Color', [0.55 0.70 1.00], 'FontSize', 8, 'FontWeight', 'bold');
-text(ax, lx(2) + 0.08, lx(1), 0.01, sprintf('arena %gx%g m', diff(lx), diff(lx)), ...
-    'Color', col.tenue, 'FontSize', 8);
-% cámaras OptiTrack (decorativas) en postes
-for q = [1.95 -1.95; 1.95 1.95; 2.05 0].'
+text(ax, mc(2) + 0.08, mc(3), 0.01, sprintf('piso %gx%g m · límite de vuelo %gx%g m', diff(mc(1:2)), ...
+    diff(mc(3:4)), diff(lx), diff(lx)), 'Color', col.tenue, 'FontSize', 8);
+% cámaras OptiTrack (decorativas) en postes, fuera del piso del marco
+for q = [mc(2) + 0.30, mc(3) - 0.30; mc(2) + 0.30, mc(4) + 0.30; mc(2) + 0.40, mean(mc(3:4))].'
     line(ax, [q(1) q(1)], [q(2) q(2)], [0 2.35], 'Color', [0.30 0.31 0.34], 'LineWidth', 2);
     [Vc, Fc] = caja([q(1) q(2) 2.40], [0.10 0.10 0.07]);
     patch(ax, 'Vertices', Vc, 'Faces', Fc, 'FaceColor', [0.08 0.08 0.09], 'EdgeColor', 'none');
@@ -97,9 +117,6 @@ end
 % Como la UI (escena3d.js): cilindros en los tubos REALES (esc.tubos = pista.tubos o la ruta
 % partida en pista.tramos_sin_tubo) y la ruta de vuelo (pista.vertices, la de Simulink) aparte,
 % como línea celeste punteada en el piso.
-V = esc.V;
-tubos = {V};
-if isfield(esc, 'tubos'), tubos = esc.tubos; end
 r_tubo = 0.0267/2;
 [xs, ys, zs] = sphere(12);
 for i = 1:numel(tubos)
@@ -239,10 +256,17 @@ G.hud_txt = text(hx, 0, 0.865, '', 'Color', col.texto, 'FontSize', 8.5, 'FontNam
 G.hud_obj = text(hx, 0, 0.50, '', 'Color', col.texto, 'FontSize', 8.5, 'FontName', fuente, ...
     'VerticalAlignment', 'top', 'Interpreter', 'none');
 % mini mapa cenital (+x arriba, +y a la izquierda)
+% mismo marco que el piso: ticks cada 1 m y retícula menor cada 0.5 m
 mx = axes('Parent', G.fig, 'Position', [0.745 0.07 0.215 0.27], 'Color', col.tapete, ...
-    'XColor', col.tenue, 'YColor', col.tenue, 'FontSize', 7, 'XDir', 'reverse', 'Box', 'on');
+    'XColor', col.tenue, 'YColor', col.tenue, 'FontSize', 7, 'XDir', 'reverse', 'Box', 'on', ...
+    'XGrid', 'on', 'YGrid', 'on', 'XMinorGrid', 'on', 'YMinorGrid', 'on', 'GridColor', col.reja*1.4, ...
+    'GridAlpha', 0.35, 'MinorGridColor', col.reja, 'MinorGridAlpha', 0.35, 'MinorGridLineStyle', '-', ...
+    'Layer', 'bottom');
 hold(mx, 'on'); axis(mx, 'equal');
-xlim(mx, lx + [-0.1 0.1]); ylim(mx, lx + [-0.1 0.1]);
+xlim(mx, mc(3:4)); ylim(mx, mc(1:2));
+mx.XTick = ceil(mc(3)):1:floor(mc(4)); mx.YTick = ceil(mc(1)):1:floor(mc(2));
+mx.XAxis.MinorTickValues = mc(3):0.5:mc(4); mx.YAxis.MinorTickValues = mc(1):0.5:mc(2);
+plot(mx, lx([1 1 2 2 1]), lx([1 2 2 1 1]), '--', 'Color', [0.98 0.78 0.20], 'LineWidth', 1);
 xlabel(mx, 'y (m)  [+y izquierda]'); ylabel(mx, 'x (m)  [+x adelante]');
 for i = 1:numel(tubos)        % tubos reales (blanco) y ruta de vuelo (celeste punteada), como el mapa 2D de la UI
     plot(mx, tubos{i}(:,2), tubos{i}(:,1), '-', 'Color', [0.95 0.95 0.95], 'LineWidth', 2);
@@ -546,16 +570,21 @@ end
 function G = poner_vista(G, modo, x)
 ax = G.ax;
 setappdata(G.fig, 'vista', modo);
+% vistas 1 y 2 encuadran el marco de la arena (centro y tamaño); con el piso de 3x3 m, como antes
+mc = [-1.5 1.5 -1.5 1.5];
+if isfield(G, 'marco'), mc = G.marco; end
+c = [mean(mc(1:2)) mean(mc(3:4)) 0];
+k = max(1, (max(diff(mc(1:2)), diff(mc(3:4))) + 0.5)/3.5);
 switch modo
     case 1
         % operador parado detrás de la arena (lado -x): +x hacia el fondo, +y a la izquierda
-        campos(ax, [-5.2 -1.9 3.6]);
-        camtarget(ax, [0.25 0.05 0.25]);
+        campos(ax, c + k*[-5.2 -1.9 3.6]);
+        camtarget(ax, c + [0.25*k 0.05*k 0.25]);
         camup(ax, [0 0 1]);
         camva(ax, 34);
     case 2
-        campos(ax, [0 0 9.5]);
-        camtarget(ax, [0 0 0]);
+        campos(ax, c + [0 0 9.5*k]);
+        camtarget(ax, c);
         camup(ax, [1 0 0]);              % +x hacia arriba de la pantalla, +y a la izquierda
         camva(ax, 21);
     case 3
@@ -653,6 +682,17 @@ function setc(cache, clave, h, varargin)
 if ~isKey(cache, clave) || ~isequal(cache(clave), varargin)
     set(h, varargin{:});
     cache(clave) = varargin; %#ok<NASGU>  (containers.Map es un handle)
+end
+end
+
+function n = nivel_linea(v)
+% 1 = fina (0.25 m), 2 = marcada (0.5 m), 3 = más marcada (1 m); como nivelLinea de marco.js
+if abs(v - round(v)) < 1e-6
+    n = 3;
+elseif abs(2*v - round(2*v)) < 1e-6
+    n = 2;
+else
+    n = 1;
 end
 end
 

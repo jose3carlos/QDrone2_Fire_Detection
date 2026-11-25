@@ -22,6 +22,11 @@ Filtros físicos (independientes del modelo; ``vision.tam_max_m``, ``tam_min_m``
 proyectan al suelo los puntos medios de los 4 lados de la caja y se descarta lo que mide más que una
 pieza real (caras, personas) y las tomas lejos de la tubería ``pista.vertices``. Las descartadas no
 llegan al Clusterer, pero quedan en ``last["dets"]`` con ``descartada`` = motivo para la UI.
+
+Registro de vuelo (``obs_fn``, lo pone la estación: ``registro_vuelo.RegistroVuelos``): con el gate activo, cada
+frame entrega las observaciones con conf >= ``confianza_min`` y punto en el piso (aceptadas y descartadas, con su
+motivo y el tubo más cercano de ``geo.tubo_cercano``) y cuántas quedaron bajo el umbral. Un error ahí nunca tumba
+la visión (queda en ``status()["registro_error"]``).
 """
 from __future__ import annotations
 
@@ -37,7 +42,8 @@ import unicodedata
 
 from . import protocol as P
 from .config import actitud_vision, filtros_vision
-from .geo import CameraModel, Clusterer, corregir_actitud, dist_polilinea, dist_tubos, inclinacion, tubos_pista
+from .geo import (CameraModel, Clusterer, corregir_actitud, dist_polilinea, dist_tubos, inclinacion, tubo_cercano,
+                  tubos_pista)
 
 try:
     import cv2
@@ -213,6 +219,8 @@ class VisionService(threading.Thread):
         self.actitud = actitud_vision(cfg_fn())
         self.error = ""
         self.cam_info = {}
+        self.obs_fn = None           # f(stamp, lineas, n_bajo_umbral): registro de vuelo (None = sin registro)
+        self.registro_error = ""
 
     # -------------------------------------------------------------- modelo de cámara
     def detector_classes(self):
@@ -297,8 +305,11 @@ class VisionService(threading.Thread):
         cam = self.camera_model(frame.shape[1], frame.shape[0])
         dets = []
         gate = self.gate_fn() and pose is not None
+        reg, n_bajo = [], 0          # para el registro de vuelo: (det, punto en el piso) y cuántas bajo el umbral
         for cls, conf, x1, y1, x2, y2 in raw:
             cls, conf = int(cls), float(conf)
+            if conf < conf_min:
+                n_bajo += 1
             d = {"cls": cls, "conf": round(conf, 3), "box": [int(x1), int(y1), int(x2), int(y2)], "xy": None,
                  "descartada": None, "tam_m": None, "dist_tubo_m": None,
                  "inclinacion_deg": round(math.degrees(att["incl"]), 1) if att and att["ok"] else None}
@@ -308,6 +319,8 @@ class VisionService(threading.Thread):
                 g = cam.pixel_to_ground((x1 + x2) / 2.0, (y1 + y2) / 2.0, *pose, z_plane=Z_PLANE)
                 d["xy"] = [round(g[0], 3), round(g[1], 3)] if g is not None else None
                 d["descartada"] = MOTIVO_INCLINACION
+                if g is not None:
+                    reg.append((d, g))
                 if gate:
                     with self.lock:
                         self.descartadas[MOTIVO_INCLINACION] += 1
@@ -315,6 +328,7 @@ class VisionService(threading.Thread):
                 g = cam.pixel_to_ground((x1 + x2) / 2.0, (y1 + y2) / 2.0, *pose, z_plane=Z_PLANE)
                 if g is not None:
                     d["xy"] = [round(g[0], 3), round(g[1], 3)]
+                    reg.append((d, g))
                     motivo, tam, dist = self.filtrar(cam, pose, cls, (x1, y1, x2, y2), g, filtros, vertices, tubos=tubos)
                     d["tam_m"] = round(tam, 3) if tam is not None else None
                     d["dist_tubo_m"] = round(dist, 3) if dist is not None else None
@@ -337,8 +351,35 @@ class VisionService(threading.Thread):
         with self.lock:
             self.last = {"frame_id": self.n_frames, "stamp": stamp, "dets": dets, "ms": round(ms, 1),
                          "pose": [round(float(v), 3) for v in pose[:4]] if pose else None, "actitud": actitud}
+        if gate and self.obs_fn is not None and (reg or n_bajo):
+            self._registrar(stamp, pose, att, reg, n_bajo, tubos)
         self.publish()
         return dets
+
+    def _registrar(self, stamp, pose, att, reg, n_bajo, tubos):
+        """Entrega al registro de vuelo las observaciones de este frame (nunca lanza: la visión sigue)."""
+        try:
+            ok = bool(att and att["ok"])
+            base = {"pose": [round(float(v), 3) for v in pose[:3]] + [round(float(pose[3]), 4)],
+                    "roll_deg": round(math.degrees(att["roll"]), 2) if ok else None,
+                    "pitch_deg": round(math.degrees(att["pitch"]), 2) if ok else None}
+            lineas = []
+            for d, g in reg:
+                tc = tubo_cercano(g[0], g[1], tubos)
+                dist = d["dist_tubo_m"] if d["dist_tubo_m"] is not None else (round(tc["dist"], 3) if tc else None)
+                tubo = None
+                if tc is not None:
+                    tubo = {"pieza": tc["pieza"], "tramo": tc["tramo"],
+                            "punto": [round(tc["punto"][0], 3), round(tc["punto"][1], 3)],
+                            "desplazamiento_m": round(tc["desplazamiento"], 3), "u": round(tc["u"], 3)}
+                lineas.append({"frame": self.n_frames, "stamp": round(float(stamp), 3), "cls": d["cls"],
+                               "conf": d["conf"], "xy": d["xy"], "motivo": d["descartada"], "dist_tubo_m": dist,
+                               "tubo": tubo, "tam_m": d["tam_m"], **base, "inclinacion_deg": d["inclinacion_deg"],
+                               "box": d["box"]})
+            self.obs_fn(stamp, lineas, n_bajo)
+            self.registro_error = ""
+        except Exception as exc:
+            self.registro_error = f"{type(exc).__name__}: {exc}"
 
     def publish(self):
         with self.lock:
@@ -411,6 +452,7 @@ class VisionService(threading.Thread):
                 "frames": self.n_frames, "observaciones": self.n_obs, "objetivos": n_t, "candidatos": n_p,
                 "ultimo": last, "activo": bool(self.gate_fn()),
                 "camara_modelo": self.cam_info, "descartadas": desc, "filtros": dict(self.filtros),
+                "registro_error": self.registro_error,
                 "actitud": self.actitud_status(last.get("actitud"))}
 
     def actitud_status(self, ult):

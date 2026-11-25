@@ -1,11 +1,17 @@
 // Mapa 2D cenital (canvas). x hacia la derecha, y hacia arriba (marco OptiTrack RSF).
+import { marcoDeEstado, limitesXY, multiplos, nivelLinea, RETICULA_FINA } from './marco.js';
+
 const COL = { e: '#22d3ee', r: '#fb923c', none: '#8b97a6', detectada: '#facc15', asignada: '#60a5fa', visitada: '#4ade80' };
+const RETICULA = ['#161c24', '#222a34', '#2e3744'];   // líneas de 0.25 / 0.5 / 1 m (nivelLinea)
+const LIMITE = 'rgba(210,153,34,.85)';                 // límite de vuelo (mision.limites_xy), punteado ámbar
 
 export class Mapa2D {
   constructor(canvas) {
     this.c = canvas;
     this.g = canvas.getContext('2d');
-    this.half = 1.65;            // medio ancho visible (m)
+    this.marco = { x0: -1.5, x1: 1.5, y0: -1.5, y1: 1.5 };   // marco de la arena (marco.js)
+    this.lim = null;             // mision.limites_xy
+    this._encuadre();
     this.trails = { 1: [], 2: [] };
     this.draft = null;           // vértices en edición (pestaña Pista)
     this.hover = null;
@@ -25,19 +31,27 @@ export class Mapa2D {
     if (this.c.width !== size) { this.c.width = size; this.c.height = size; this.draw(); }
   }
 
+  // canvas cuadrado centrado en el marco: half = medio lado mayor + ~12 % (o 0.15 m) para las etiquetas de metros
+  _encuadre() {
+    const m = this.marco, L = Math.max(m.x1 - m.x0, m.y1 - m.y0) / 2;
+    this.cx = (m.x0 + m.x1) / 2; this.cy = (m.y0 + m.y1) / 2;
+    this.half = Math.max(L * 1.12, L + 0.15);    // medio ancho visible (m)
+  }
+
   get s() { return this.c.width / (2 * this.half); }
-  px(x, y) { return [this.c.width / 2 + x * this.s, this.c.height / 2 - y * this.s]; }
+  px(x, y) { return [this.c.width / 2 + (x - this.cx) * this.s, this.c.height / 2 - (y - this.cy) * this.s]; }
   toWorld(ev) {
     const r = this.c.getBoundingClientRect();
     const k = this.c.width / r.width;
     const u = (ev.clientX - r.left) * k, v = (ev.clientY - r.top) * k;
-    return [(u - this.c.width / 2) / this.s, -(v - this.c.height / 2) / this.s];
+    return [this.cx + (u - this.c.width / 2) / this.s, this.cy - (v - this.c.height / 2) / this.s];
   }
 
   clearTrails() { this.trails = { 1: [], 2: [] }; }
 
   update(s) {
     this.state = s;
+    this.marco = marcoDeEstado(s); this.lim = limitesXY(s); this._encuadre();
     const tel = s.tel;
     if (tel) for (const id of [1, 2]) {
       const d = tel.drones[id];
@@ -53,20 +67,7 @@ export class Mapa2D {
     const lw = W / 560;
     g.clearRect(0, 0, W, W);
     g.fillStyle = '#0a0d12'; g.fillRect(0, 0, W, W);
-    // arena y retícula
-    g.strokeStyle = '#222a34'; g.lineWidth = lw;
-    for (let k = -1.5; k <= 1.5001; k += 0.5) {
-      let [a, b] = this.px(k, -1.5), [c, d] = this.px(k, 1.5);
-      g.beginPath(); g.moveTo(a, b); g.lineTo(c, d); g.stroke();
-      [a, b] = this.px(-1.5, k); [c, d] = this.px(1.5, k);
-      g.beginPath(); g.moveTo(a, b); g.lineTo(c, d); g.stroke();
-    }
-    g.strokeStyle = '#8b97a6'; g.lineWidth = 1.5 * lw;
-    const [x0, y0] = this.px(-1.5, 1.5);
-    g.strokeRect(x0, y0, 3 * s, 3 * s);
-    g.fillStyle = '#8b97a6'; g.font = `${11 * lw}px Segoe UI, sans-serif`;
-    g.fillText('x', ...this.px(1.52, 0.02)); g.fillText('y', ...this.px(0.02, 1.53));
-    for (const k of [-1, 0, 1]) { const [u, v] = this.px(k, -1.5); g.fillText(k.toFixed(0), u - 3 * lw, v + 13 * lw); }
+    this._arena(lw);
     // ejes en el origen
     this._arrow(0, 0, 0.3, 0, '#ef4444', lw); this._arrow(0, 0, 0, 0.3, '#22c55e', lw);
     if (!S) return;
@@ -164,11 +165,52 @@ export class Mapa2D {
       }
       this._drone(d, col, id, lw, role(id));
     }
-    // cursor
+    // cursor (arriba a la derecha: abajo y a la izquierda van las etiquetas de metros)
     if (this.hover) {
       g.fillStyle = '#cbd5e1'; g.font = `${11 * lw}px ui-monospace, Consolas, monospace`;
-      g.fillText(`(${this.hover[0].toFixed(2)}, ${this.hover[1].toFixed(2)})`, 8 * lw, W - 8 * lw);
+      g.textAlign = 'right';
+      g.fillText(`(${this.hover[0].toFixed(2)}, ${this.hover[1].toFixed(2)})`, W - 8 * lw, 15 * lw);
+      g.textAlign = 'start';
     }
+  }
+
+  // piso del marco, retícula (0.25 / 0.5 / 1 m) alineada a los múltiplos, borde, límite de vuelo y metros
+  _arena(lw) {
+    const g = this.g, m = this.marco;
+    const [a0, b0] = this.px(m.x0, m.y1), [a1, b1] = this.px(m.x1, m.y0);
+    g.fillStyle = '#0d1117'; g.fillRect(a0, b0, a1 - a0, b1 - b0);
+    const xs = multiplos(m.x0, m.x1, RETICULA_FINA), ys = multiplos(m.y0, m.y1, RETICULA_FINA);
+    const borde = (v, a, b) => Math.abs(v - a) < 1e-6 || Math.abs(v - b) < 1e-6;
+    g.lineWidth = lw;
+    for (const nivel of [0, 1, 2]) {           // de la más tenue a la más marcada (las marcadas quedan encima)
+      g.strokeStyle = RETICULA[nivel]; g.beginPath();
+      for (const x of xs) if (!borde(x, m.x0, m.x1) && nivelLinea(x) === nivel) {
+        const [u] = this.px(x, 0); g.moveTo(u, b0); g.lineTo(u, b1);
+      }
+      for (const y of ys) if (!borde(y, m.y0, m.y1) && nivelLinea(y) === nivel) {
+        const [, v] = this.px(0, y); g.moveTo(a0, v); g.lineTo(a1, v);
+      }
+      g.stroke();
+    }
+    g.strokeStyle = '#8b97a6'; g.lineWidth = 1.5 * lw;
+    g.strokeRect(a0, b0, a1 - a0, b1 - b0);
+    if (this.lim) {
+      const [l0, l1] = this.lim, [u0, v0] = this.px(l0, l1), [u1, v1] = this.px(l1, l0);
+      g.strokeStyle = LIMITE; g.lineWidth = 1.3 * lw; g.setLineDash([7 * lw, 5 * lw]);
+      g.strokeRect(u0, v0, u1 - u0, v1 - v0); g.setLineDash([]);
+    }
+    // metros: x abajo, y a la izquierda (cada 0.5 m; cada 1 m si el marco pasa de 5 m)
+    const paso = Math.max(m.x1 - m.x0, m.y1 - m.y0) > 5 ? 1 : 0.5;
+    const txt = (v) => (Math.abs(v) < 1e-9 ? '0' : String(+v.toFixed(2)));
+    g.fillStyle = '#8b97a6'; g.font = `${10 * lw}px Segoe UI, sans-serif`;
+    g.textAlign = 'center'; g.textBaseline = 'top';
+    for (const x of multiplos(m.x0, m.x1, paso)) g.fillText(txt(x), this.px(x, 0)[0], b1 + 5 * lw);
+    g.textAlign = 'right'; g.textBaseline = 'middle';
+    for (const y of multiplos(m.y0, m.y1, paso)) g.fillText(txt(y), a0 - 5 * lw, this.px(0, y)[1]);
+    g.font = `bold ${11 * lw}px Segoe UI, sans-serif`;
+    g.textAlign = 'right'; g.textBaseline = 'top'; g.fillText('x (m)', a1, b1 + 17 * lw);
+    g.textAlign = 'center'; g.textBaseline = 'bottom'; g.fillText('y (m)', a0 - 14 * lw, b0 - 6 * lw);
+    g.textAlign = 'start'; g.textBaseline = 'alphabetic';
   }
 
   _arrow(x, y, dx, dy, col, lw) {

@@ -3,6 +3,7 @@
 // (x, y, z)_RSF -> (x, z, -y)_three (rotación propia, conserva la orientación).
 import * as THREE from 'three';
 import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
+import { marcoDeEstado, limitesXY, multiplos, nivelLinea, RETICULA_FINA } from './marco.js';
 
 const COL = { e: 0x22d3ee, r: 0xfb923c, none: 0x8b97a6, det: 0xfacc15, asig: 0x60a5fa, vis: 0x4ade80 };
 const STATE_COL = { detectada: COL.det, asignada: COL.asig, visitada: COL.vis };
@@ -139,6 +140,7 @@ export class Escena3D {
     this.controls.target.set(0, 0.5, 0);
     this.controls.enableDamping = true;
     this.view = 'persp';
+    this.marco = { x0: -1.5, x1: 1.5, y0: -1.5, y1: 1.5 };   // marco de la arena (marco.js)
     this.setView('persp');
 
     this.scene.add(new THREE.HemisphereLight(0xdde8ff, 0x202020, 1.1));
@@ -146,6 +148,9 @@ export class Escena3D {
     sun.position.set(-2, 5, 3); this.scene.add(sun);
 
     this._arena();
+    this.arena = new THREE.Group(); this.scene.add(this.arena);
+    this.arenaKey = '';
+    this._setArena(this.marco, null);
     this.pipe = new THREE.Group(); this.scene.add(this.pipe);
     this.pipeKey = '';
     this.drones = {};
@@ -175,17 +180,51 @@ export class Escena3D {
     this.renderer.setAnimationLoop(() => this._frame());
   }
 
+  // fijo: ejes RSF en el origen (el piso, la retícula y los bordes los arma _setArena con el marco)
   _arena() {
-    const floor = new THREE.Mesh(new THREE.PlaneGeometry(3, 3), new THREE.MeshStandardMaterial({ color: 0x1b1f26, roughness: 0.95 }));
-    floor.rotation.x = -Math.PI / 2; this.scene.add(floor);
-    const outer = new THREE.Mesh(new THREE.PlaneGeometry(9, 9), new THREE.MeshStandardMaterial({ color: 0x0f1318, roughness: 1 }));
-    outer.rotation.x = -Math.PI / 2; outer.position.y = -0.002; this.scene.add(outer);
-    const grid = new THREE.GridHelper(3, 6, 0x3a4350, 0x2a313b); grid.position.y = 0.001; this.scene.add(grid);
-    const b = [[-1.5, -1.5], [1.5, -1.5], [1.5, 1.5], [-1.5, 1.5], [-1.5, -1.5]].map(([x, y]) => w2t(x, y, 0.003));
-    this.scene.add(new THREE.Line(new THREE.BufferGeometry().setFromPoints(b), new THREE.LineBasicMaterial({ color: 0x8b97a6 })));
     // ejes RSF en el origen: x rojo, y verde, z azul
     const ax = (to, c) => this.scene.add(new THREE.ArrowHelper(to, w2t(0, 0, 0.005), 0.35, c, 0.07, 0.04));
     ax(w2t(1, 0, 0).normalize(), 0xef4444); ax(w2t(0, 1, 0).normalize(), 0x22c55e); ax(w2t(0, 0, 1).normalize(), 0x3b82f6);
+  }
+
+  // Piso + retícula + borde del marco de la arena (marco.js) y límite de vuelo (mision.limites_xy,
+  // punteado ámbar). Se rehace solo si cambia el marco o el límite; libera geometrías y materiales viejos.
+  _setArena(m, lim) {
+    const key = JSON.stringify([m, lim]);
+    if (key === this.arenaKey) return false;
+    this.arenaKey = key;
+    this.arena.traverse((o) => { if (o.geometry) o.geometry.dispose(); if (o.material) o.material.dispose(); });
+    this.arena.clear();
+    const w = m.x1 - m.x0, h = m.y1 - m.y0, c = w2t((m.x0 + m.x1) / 2, (m.y0 + m.y1) / 2, 0);
+    const plano = (a, b, color, rough, y) => {
+      const p = new THREE.Mesh(new THREE.PlaneGeometry(a, b), new THREE.MeshStandardMaterial({ color, roughness: rough }));
+      p.rotation.x = -Math.PI / 2; p.position.set(c.x, y, c.z); this.arena.add(p);
+    };
+    plano(w, h, 0x1b1f26, 0.95, 0);                                       // piso del marco
+    plano(Math.max(w, h) + 6, Math.max(w, h) + 6, 0x0f1318, 1, -0.002);   // piso de fuera
+    // retícula en tres tonos (0.25 / 0.5 / 1 m), sin las líneas del borde (las dibuja el contorno)
+    const segs = [[], [], []];
+    const borde = (v, a, b) => Math.abs(v - a) < 1e-6 || Math.abs(v - b) < 1e-6;
+    for (const x of multiplos(m.x0, m.x1, RETICULA_FINA)) {
+      if (!borde(x, m.x0, m.x1)) segs[nivelLinea(x)].push(w2t(x, m.y0, 0.001), w2t(x, m.y1, 0.001));
+    }
+    for (const y of multiplos(m.y0, m.y1, RETICULA_FINA)) {
+      if (!borde(y, m.y0, m.y1)) segs[nivelLinea(y)].push(w2t(m.x0, y, 0.001), w2t(m.x1, y, 0.001));
+    }
+    [0x21272f, 0x2a313b, 0x3a4350].forEach((color, i) => {
+      if (segs[i].length) {
+        this.arena.add(new THREE.LineSegments(new THREE.BufferGeometry().setFromPoints(segs[i]), new THREE.LineBasicMaterial({ color })));
+      }
+    });
+    const rect = (a0, a1, b0, b1, z) => [[a0, b0], [a1, b0], [a1, b1], [a0, b1], [a0, b0]].map(([x, y]) => w2t(x, y, z));
+    this.arena.add(new THREE.Line(new THREE.BufferGeometry().setFromPoints(rect(m.x0, m.x1, m.y0, m.y1, 0.003)),
+      new THREE.LineBasicMaterial({ color: 0x8b97a6 })));
+    if (lim) {
+      const l = new THREE.Line(new THREE.BufferGeometry().setFromPoints(rect(lim[0], lim[1], lim[0], lim[1], 0.0035)),
+        new THREE.LineDashedMaterial({ color: 0xd29922, dashSize: 0.08, gapSize: 0.06, transparent: true, opacity: 0.8 }));
+      l.computeLineDistances(); this.arena.add(l);
+    }
+    return true;
   }
 
   _droneSet(id) {
@@ -224,10 +263,23 @@ export class Escena3D {
     }
   }
 
+  // persp y top encuadran el marco de la arena (centro y tamaño); un poco más alta que la de antes para que el piso llene el panel
   setView(v) {
     this.view = v;
-    if (v === 'persp') { this.camera.position.copy(w2t(-3.3, -2.6, 2.7)); this.controls.target.set(0, 0.4, 0); }
-    if (v === 'top') { this.camera.position.set(0, 5.2, 0.001); this.controls.target.set(0, 0, 0); }
+    const m = this.marco, cx = (m.x0 + m.x1) / 2, cy = (m.y0 + m.y1) / 2;
+    if (v === 'persp') {
+      // panel angosto (aspecto < 0.85): más lejos para que la diagonal del piso quepa a lo ancho
+      const k = Math.max(m.x1 - m.x0, m.y1 - m.y0) / 3 * Math.max(1, 0.85 / this.camera.aspect);
+      this.camera.position.copy(w2t(cx - 2.9 * k, cy - 2.3 * k, 3.1 * k));
+      this.controls.target.copy(w2t(cx, cy, 0.15));
+    }
+    if (v === 'top') {
+      // altura con la que cabe el marco (+15 %) a lo alto (y) y a lo ancho (x) con el FOV y el aspecto de la cámara
+      const t = Math.tan(THREE.MathUtils.degToRad(this.camera.fov / 2));
+      const alto = Math.max((m.y1 - m.y0) / 2 / t, (m.x1 - m.x0) / 2 / (t * this.camera.aspect)) * 1.15;
+      this.camera.position.copy(w2t(cx, cy, alto)).add(new THREE.Vector3(0, 0, 0.001));
+      this.controls.target.copy(w2t(cx, cy, 0));
+    }
     this.controls.update();
   }
 
@@ -291,6 +343,9 @@ export class Escena3D {
   }
 
   update(s) {
+    this.marco = marcoDeEstado(s);
+    // si el marco cambió (pista nueva, homes que llegan), re-encuadra persp/top; 'follow' no se toca
+    if (this._setArena(this.marco, limitesXY(s)) && this.view !== 'follow') this.setView(this.view);
     this._setPipe(s.tubos || [], s.pista || []);
     this._setTruth(s.verdad_mock || []);
     const tel = s.tel;

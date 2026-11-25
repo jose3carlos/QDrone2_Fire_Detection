@@ -49,6 +49,10 @@ function res = probar_sim3d(con_capturas)
 %      otro se aparta, regresa y aterriza: 5 -> 9 -> 7 -> 8).
 %  23. Config sin pista.vertices ni pista.tubos: C.tubos vacío y sin filtro de tubo (como la
 %      estación); la N por defecto solo se dibuja y sirve para colocar objetos.
+%  24. Marco de la arena (sim3d_marco = web/app/static/marco.js): con la pista real los tubos
+%      (también los de y = -1.52) quedan dentro del piso con >= 0.25 m de margen, el marco es
+%      múltiplo de 0.5 m, casos fijos (sin datos = ±1.5, borde exacto, home fuera de
+%      limites_xy) y la figura usa ese marco para el piso y los ejes.
 %   Las pruebas 3-17 y 22 usan la config real con mision.modo = "dual" y la N de 4 vértices
 %   fija sin pista.tubos ni tramos_sin_tubo (el tubo es la N entera), así que no dependen del
 %   modo ni de la pista del día en config/estacion.json.
@@ -366,6 +370,8 @@ res = anotar(res, 'solo explorador dron 2 (dron 1 en el piso bajo la N)', ok, sp
 res = prueba_rastreo(res, base);
 % ---- 23. config sin pista.vertices ni pista.tubos: C.tubos vacío (la estación no filtra)
 res = prueba_sin_pista(res, cfg_real, raiz);
+% ---- 24. marco de la arena (piso y retícula de la figura, como la UI)
+res = prueba_marco(res, cfg_real, raiz);
 % ---- 6. tiempo real sin figura
 close all force; drawnow; pause(1);     % que la limpieza de figuras anteriores no caiga en la medición
 o = base; o.tiempo_real = true; o.t_final = 10; o.parar_en_done = false;
@@ -646,6 +652,33 @@ res = anotar(res, 'config sin pista: sin tubos ni filtro (como la estación)', o
     'toma en (1.4, 1.4) lejos = %d (distancia %s); dibujo y objetos sobre la ruta de %d vértices (%d objetos); ' ...
     'solo pista.tubos: %d tubo, toma a %.2f m -> lejos = %d'], numel(C1.tubos), lejos1, mat2str(d1), ...
     size(C1.ruta, 1), numel(esc1.obj), numel(C2.tubos), d2, lejos2));
+end
+
+function res = prueba_marco(res, cfg_real, raiz)
+% Prueba 24: regla del marco de la arena (misma que marco.js de la UI) con la pista real del
+% laboratorio y casos fijos; la figura (invisible) dibuja el piso y fija los ejes con ese marco.
+C = sim3d_config(raiz, cfg_real);
+M = sim3d_marco(C.tubos, C.ruta, [], C.p.xy_lim);
+P = C.ruta;
+if ~isempty(C.tubos), P = vertcat(C.tubos{:}); end
+holgura = min([P(:,1) - M(1); M(2) - P(:,1); P(:,2) - M(3); M(4) - P(:,2)]);
+mult = all(abs(M/0.5 - round(M/0.5)) < 1e-9);
+casos = {sim3d_marco({}, zeros(0, 2), [], []), [-1.5 1.5 -1.5 1.5]; ...
+    sim3d_marco({[0.47 -0.25; 0.99 -1.41; -1.17 -1.52]}, [], [], []), [-1.5 1.5 -2 0]; ...
+    sim3d_marco({[0 0; 1.75 0]}, [], [], []), [-0.5 2 -0.5 0.5]; ...
+    sim3d_marco({}, [], [2.3 -0.4], [-1.5 1.5]), [-2 3 -2 2]};
+n_casos = sum(cellfun(@isequal, casos(:, 1), casos(:, 2)));
+oo = sim3d_opciones(struct('mostrar', false, 'escenario', 'aleatorio', 'semilla', 3));
+esc = sim3d_escenario(oo, C);
+G = sim3d_escena('crear', [], C, esc, oo, raiz);
+Mg = sim3d_marco(esc.tubos, esc.V, esc.home, C.p.xy_lim);
+fig_ok = isequal(G.marco, Mg) && isequal(xlim(G.ax), Mg(1:2) + [-0.5 0.5]) && isequal(ylim(G.ax), Mg(3:4) + [-0.5 0.5]);
+close(G.fig);
+ok = holgura >= 0.25 - 1e-9 && mult && n_casos == size(casos, 1) && fig_ok;
+res = anotar(res, 'marco de la arena (piso y retícula, como la UI)', ok, sprintf(['pista real: marco %s, ' ...
+    'holgura mínima de los tubos %.2f m (y mín. %.2f); múltiplo de 0.5 = %d; casos fijos %d/%d; figura %s ' ...
+    '(ejes %s)'], mat2str(M), holgura, min(P(:,2)), mult, n_casos, size(casos, 1), mat2str(G.marco), ...
+    ternario(fig_ok, 'ok', 'MAL')));
 end
 
 function pc = propia_clase(R)

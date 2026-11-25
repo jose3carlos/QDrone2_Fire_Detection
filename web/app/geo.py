@@ -319,11 +319,46 @@ def tubos_pista(pista):
 
 def dist_tubos(x, y, tubos):
     """Distancia horizontal (m) de (x, y) al tubo más cercano (lista de polilíneas). None si no hay tubos."""
+    c = tubo_cercano(x, y, tubos)
+    return c["dist"] if c is not None else None
+
+
+def _proy_tramo(x, y, ax, ay, bx, by):
+    """Punto (x, y) contra el tramo a -> b: (distancia, t en [0, 1], t sin recortar, desplazamiento con signo).
+    Es LA cuenta de ``dist_polilinea`` (misma aritmética, mismo resultado bit a bit). Desplazamiento = distancia
+    perpendicular a la RECTA del tramo, positiva a la izquierda del sentido a -> b (0 si el tramo mide 0)."""
+    dx, dy = bx - ax, by - ay
+    L = dx * dx + dy * dy
+    u = 0.0 if L < 1e-12 else ((x - ax) * dx + (y - ay) * dy) / L
+    t = min(1.0, max(0.0, u))
+    d = math.hypot(ax + t * dx - x, ay + t * dy - y)
+    s = 0.0 if L < 1e-12 else (dx * (y - ay) - dy * (x - ax)) / math.sqrt(L)
+    return d, t, u, s
+
+
+def tubo_cercano(x, y, tubos):
+    """Tubo más cercano a (x, y) (``tubos`` = lista de polilíneas, como ``tubos_pista``). None si no hay tubos.
+
+    Devuelve ``{"dist", "pieza", "tramo", "punto", "t", "u", "desplazamiento"}``: distancia (m, la misma que
+    ``dist_tubos``), índice de la pieza y del tramo (base 0; tramo k = punto k -> punto k+1 de esa pieza), punto
+    más cercano sobre el tubo [x, y], posición a lo largo del tramo (``t`` recortada a [0, 1]; ``u`` sin recortar:
+    < 0 o > 1 = más allá de un extremo) y desplazamiento perpendicular con signo respecto a la recta del tramo
+    (m, + = a la izquierda del sentido del tramo). Con empates gana el primero (como ``dist_polilinea``)."""
     best = None
-    for P in tubos or []:
-        d = dist_polilinea(x, y, P)
-        if d is not None and (best is None or d < best):
-            best = d
+    for i, P in enumerate(tubos or []):
+        V = []
+        for v in P or []:
+            try:
+                V.append((float(v[0]), float(v[1])))
+            except (TypeError, ValueError, IndexError):
+                continue
+        if len(V) < 2:
+            continue
+        for k, ((ax, ay), (bx, by)) in enumerate(zip(V[:-1], V[1:])):
+            d, t, u, s = _proy_tramo(x, y, ax, ay, bx, by)
+            if best is None or d < best["dist"]:
+                best = {"dist": d, "pieza": i, "tramo": k, "punto": [ax + t * (bx - ax), ay + t * (by - ay)],
+                        "t": t, "u": u, "desplazamiento": s}
     return best
 
 
@@ -345,10 +380,7 @@ def dist_polilinea(x, y, vertices, sin_tubo=None):
     for k, ((ax, ay), (bx, by)) in enumerate(zip(V[:-1], V[1:]), start=1):
         if k in sin_tubo:
             continue
-        dx, dy = bx - ax, by - ay
-        L = dx * dx + dy * dy
-        t = 0.0 if L < 1e-12 else min(1.0, max(0.0, ((x - ax) * dx + (y - ay) * dy) / L))
-        d = math.hypot(ax + t * dx - x, ay + t * dy - y)
+        d = _proy_tramo(x, y, ax, ay, bx, by)[0]
         best = d if best is None or d < best else best
     return best
 

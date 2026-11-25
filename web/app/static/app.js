@@ -256,6 +256,18 @@ function actitudUsadaTxt(act) {
   return `<tr><td ${tip}>actitud usada</td><td>φ ${f2(act.usada[0], 1)}° · θ ${f2(act.usada[1], 1)}° (con signos/offset)</td></tr>`;
 }
 
+// Una línea discreta con el registro de vuelo (registro_vuelo.py): archivo del vuelo actual y líneas escritas.
+function registroVueloTxt(r) {
+  if (!r) return '';
+  let t = 'Registro de vuelo: ';
+  if (r.archivo) t += `${r.archivo} · ${r.lineas} líneas (${r.obs} obs.)`;
+  else if (r.abierto) t += 'vuelo en curso (el archivo se crea con la primera observación)';
+  else if (!r.habilitado) t += r.modo || 'desactivado';
+  else t += r.ultimo ? `sin vuelo abierto · último: ${r.ultimo} (${r.ultimo_lineas} líneas)` : `sin vuelos todavía → ${r.carpeta}`;
+  if (r.error) t += ` · ERROR de escritura: ${r.error}`;
+  return t;
+}
+
 function renderTargets(s) {
   const list = s.objetivos || [];
   $('tab-count').textContent = list.length;
@@ -265,6 +277,7 @@ function renderTargets(s) {
     <td>${t.id}${t.manual ? '*' : ''}</td><td>${t.clase === 'fuego' ? '🔥 fuego' : '🔧 toma'}</td><td>${f2(t.x)}</td><td>${f2(t.y)}</td>
     <td>${f2(t.conf)}</td><td>${t.n ?? '—'}</td><td><span class="pill ${t.estado}">${t.estado}</span></td>
     <td><span class="origen ${t.origen === 'simulink' ? 'simulink' : ''}"${t.alias_de ? ` title="En Simulink es el objetivo #${t.alias_de}: guardó el id #${t.id} de la estación como alias (mismo lugar)"` : ''}>${ORIGEN[t.origen] || esc(t.origen)}${t.alias_de ? ` (= #${t.alias_de})` : ''}</span></td></tr>`).join('');
+  $('registro-vuelo').textContent = registroVueloTxt(s.registro_vuelo);
   const v = s.vision || {};
   const last = v.ultimo || {};
   const desc = v.descartadas || {};

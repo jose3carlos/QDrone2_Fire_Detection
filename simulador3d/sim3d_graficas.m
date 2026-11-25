@@ -97,7 +97,7 @@ for i = 1:numel(tubos)     % tubos reales (gris) y ruta de vuelo (celeste puntea
 end
 h_ruta = plot(V(:,2), V(:,1), '--', 'Color', [0.22 0.74 0.97], 'LineWidth', 1.2);
 lx = R.p.xy_lim;
-h_arena = plot(lx([1 2 2 1 1]), lx([1 1 2 2 1]), 'k-');
+h_arena = plot(lx([1 2 2 1 1]), lx([1 1 2 2 1]), 'k--');
 h_leg = [h_tubo h_ruta h_arena];
 for i = 1:2
     h_leg(end+1) = plot(squeeze(L.pos(2,:,i)), squeeze(L.pos(1,:,i)), '-', 'Color', cdr(i,:), 'LineWidth', 1.3); %#ok<AGROW>
@@ -117,9 +117,10 @@ if s.n_obj > 0
     end
 end
 xlabel('y (m)  [+y a la izquierda]'); ylabel('x (m)  [+x adelante]');
-xlim(lx + [-0.2 0.2]); ylim(lx + [-0.2 0.2]);
+mc = sim3d_marco(tubos, V, R.esc.home, lx);     % marco de la arena, como sim3d_escena y la UI
+xlim(mc(3:4)); ylim(mc(1:2));
 title(sprintf('Trayectorias · %s · %d objetivos publicados (x), %d objetos reales (rojo)', ver, s.n_obj, numel(R.esc.obj)));
-legend(h_leg, {'tubos', 'ruta de vuelo', 'arena', 'D1', 'home D1', 'D2', 'home D2'}, 'Location', 'southoutside', ...
+legend(h_leg, {'tubos', 'ruta de vuelo', 'límite de vuelo', 'D1', 'home D1', 'D2', 'home D2'}, 'Location', 'southoutside', ...
     'Orientation', 'horizontal');
 
 if guardar

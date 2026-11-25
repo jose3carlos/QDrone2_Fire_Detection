@@ -1,3 +1,5 @@
 # Archivos locales de la estación (subidas de Motive, imágenes de prueba)
-datos/
+# ...salvo el registro de vuelos (web/datos/vuelos): se sube a git para corregir pista.tubos desde otra PC
+datos/*
+!datos/vuelos/
 .venv/

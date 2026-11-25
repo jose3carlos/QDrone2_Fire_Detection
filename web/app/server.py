@@ -9,6 +9,8 @@ Uso (desde la carpeta ``web``):
     python -m app.server --fuente simulink  # se conecta a tcpip://127.0.0.1:18700
     python -m app.server --fuente simulink --host-puente 192.168.2.11
                                             # modelo de tierra en OTRA PC (laptop -> PC del laboratorio)
+    python -m app.server --fuente mock --registro-vuelos si
+                                            # registra también los vuelos del mock (web/datos/vuelos)
 Luego abre http://127.0.0.1:8080
 """
 from __future__ import annotations
@@ -38,11 +40,12 @@ from . import netinfo
 from . import protocol as P
 from .bridge import BridgeClient, PuenteNoListo
 from .cameras import CameraHub, FolderCamera, OpenCVCamera, QDF1Client, SyntheticCamera
-from .config import (DEFAULT_PATH, PROJECT_DIR, WEB_DIR, Config, actitud_vision, es_loopback, mision_modo,
-                     mision_t_perdida_aterrizar, validar_host_puente, validar_ip)
-from .geo import CameraModel, corregir_actitud, tramos_sin_tubo, tubos_pista
+from .config import (DEFAULT_PATH, PROJECT_DIR, WEB_DIR, Config, actitud_vision, es_loopback, filtros_vision,
+                     mision_modo, mision_t_perdida_aterrizar, validar_host_puente, validar_ip)
+from .geo import CameraModel, corregir_actitud, tramos_sin_tubo, tubo_cercano, tubos_pista
 from .mock_sim import MockServer, contar_waypoints
 from .mock_world import anomalias_mock, render_view
+from .registro_vuelo import RegistroVuelos
 from .vision_service import PoseHistory, VisionService, load_detector, pose_para_geo
 
 STATIC = os.path.join(WEB_DIR, "app", "static")
@@ -52,6 +55,7 @@ COMMANDS_UI = ("START", "PAUSE", "RESUME", "ABORT", "LAND_ALL")
 MAX_VERTICES = 16  # = p.max_vertices de simulink_qdrone2/lib/qd2_params.m
 SIM_TTL_S = 5.0    # s sin ver un objetivo en y(56:60) (con telemetría fresca) -> deja de mostrarse
 CHOQUE_ID_M = 0.5  # m: mismo id en la estación y en Simulink pero tan lejos -> choque de ids
+REGISTRO_CLI = {"auto": "auto", "si": True, "no": False}   # --registro-vuelos -> valor de web.registro_vuelos
 
 
 class ModoDistinto(PuenteNoListo):
@@ -61,7 +65,7 @@ class ModoDistinto(PuenteNoListo):
 class Station:
     """Une puente, cámara, visión y configuración. Una instancia por proceso."""
 
-    def __init__(self, config_path=DEFAULT_PATH, fuente=None, mock_speed=1.0, host_puente=None):
+    def __init__(self, config_path=DEFAULT_PATH, fuente=None, mock_speed=1.0, host_puente=None, registro_vuelos=None):
         self.cfg = Config(config_path)  # no se escribe nada al arrancar (defaults en memoria)
         self.fuente = fuente or self.cfg.web("fuente")
         if self.fuente not in FUENTES:
@@ -99,11 +103,21 @@ class Station:
         same = os.path.abspath(config_path) == os.path.abspath(DEFAULT_PATH)
         self._persist_path = os.path.join(DATA_DIR if same else os.path.dirname(os.path.abspath(config_path)),
                                           "objetivos_estacion.json")
+        # Registro de vuelos (registro_vuelo.py): mismo criterio, web/datos/vuelos o junto al estacion.json de prueba.
+        # --registro-vuelos (CLI) pisa web.registro_vuelos; pytest nunca escribe en web/datos.
+        if registro_vuelos is not None and registro_vuelos not in REGISTRO_CLI:
+            raise ValueError(f"--registro-vuelos debe ser uno de {tuple(REGISTRO_CLI)}")
+        self._registro_cli = REGISTRO_CLI.get(registro_vuelos)
+        carpeta = os.path.join(os.path.dirname(self._persist_path), "vuelos")
+        self._registro_bloqueado = bool(os.environ.get("PYTEST_CURRENT_TEST")) and _dentro(carpeta, DATA_DIR)
+        self.registro = RegistroVuelos(carpeta, lambda: self.fuente, lambda: self.registro_modo()[0], log_fn=self.log,
+                                       resumen_fn=self._resumen_vuelo, base_rel=PROJECT_DIR)
         self.camera = CameraHub(self._camera_key, self._camera_factory)
         det, name, err = self._make_detector()
         self.vision = VisionService(self.camera, self.poses, self._vision_gate, self._publish_targets,
                                     lambda: self.cfg.data, det, name, err,
                                     synthetic_fn=lambda: self.camera.key == ("sintetica",))
+        self.vision.obs_fn = self._obs_vuelo
 
     # ------------------------------------------------------------------ ciclo de vida
     def start(self):
@@ -115,6 +129,7 @@ class Station:
     def stop(self):
         self.camera.stop()
         self.vision.stop()
+        self.registro.detener()
         if self.bridge:
             self.bridge.stop()
         if self.mock:
@@ -169,6 +184,7 @@ class Station:
             if self.mock:
                 self.mock.stop()
                 self.mock = None
+            self.registro.cerrar("cambio de fuente")
             self.fuente = fuente
             self.poses.clear()
             self.vision.reset()
@@ -243,6 +259,8 @@ class Station:
         if restarted:
             self._falla_vista = {1: False, 2: False}
             self._perdida_vista = frozenset()
+        if restarted:
+            self.registro.cerrar("Simulink se reinició")
         if restarted and (self.vision.targets()[0] or self.vision.targets()[1]):
             self.vision.reset()
             self._saved_sig = None
@@ -331,6 +349,7 @@ class Station:
         if st != self._last_state:
             self.log(f"Estado de misión: {P.MISSION_STATES_ES.get(st, st)}")
             self._last_state = st
+        self._tick_registro(tel)
 
     def _registrar_fallas(self, tel):
         """MPC: recuerda qué dron reportó una falla a bordo (7/8, o 9 debiendo volar) en esta corrida."""
@@ -566,8 +585,8 @@ class Station:
         """Modelo de la cámara con la resolución configurada (huella en el mapa y cámara sintética)."""
         return CameraModel.from_config(self.cfg.get("camara", default={}), self.cfg.data)
 
-    def explorer_pose(self):
-        tel = self.bridge.telemetry if self.bridge else None
+    def explorer_pose(self, tel=None):
+        tel = tel if tel is not None else (self.bridge.telemetry if self.bridge else None)
         if not tel or tel.get("explorer_id") not in (1, 2):
             return None
         d = tel["drones"][tel["explorer_id"]]
@@ -618,13 +637,95 @@ class Station:
         return render_view(cam, tuple(pose) + tuple(att), pista.get("vertices") or [], self.world, rng=self.rng,
                            tubos=tubos_pista(pista))
 
-    def _vision_gate(self):
-        tel = self.bridge.telemetry if self.bridge else None
-        if not tel or not self.bridge.fresh():
-            return False
-        pose = self.explorer_pose()
+    def _vision_gate(self, tel=None):
+        """La visión geolocaliza y agrupa solo con el explorador en misión (MISSION/PAUSED), rastreado y sobre
+        ``web.z_min_deteccion``. ``tel`` = telemetría recién llegada (el registro de vuelo la evalúa en cada una);
+        sin ``tel``, la última del puente si es fresca."""
+        if tel is None:
+            tel = self.bridge.telemetry if self.bridge else None
+            if not tel or not self.bridge.fresh():
+                return False
+        pose = self.explorer_pose(tel)
         zmin = float(self.cfg.web("z_min_deteccion"))
         return tel.get("mission_state") in (P.MISSION, P.PAUSED) and pose is not None and pose[2] >= zmin
+
+    # ------------------------------------------------------------------ registro de vuelos (registro_vuelo.py)
+    def registro_modo(self):
+        """(habilitado, texto). ``web.registro_vuelos``: "auto" (por defecto: solo la fuente simulink = vuelo real),
+        true (siempre) o false (nunca); ``--registro-vuelos auto|si|no`` lo pisa."""
+        if self._registro_bloqueado:
+            return False, "desactivado (pytest: nunca se escribe en web/datos)"
+        modo = self._registro_cli if self._registro_cli is not None else self.cfg.web("registro_vuelos")
+        if modo is True:
+            return True, "siempre"
+        if modo is False:
+            return False, "desactivado (web.registro_vuelos = false)"
+        if self.fuente == "simulink":
+            return True, "auto (fuente simulink)"
+        return False, f"desactivado con la fuente {self.fuente} (auto; --registro-vuelos si para registrarla)"
+
+    def _tick_registro(self, tel):
+        try:
+            self.registro.tick(self._vision_gate(tel), tel.get("mission_state"), lambda: self._cabecera_vuelo(tel))
+        except Exception as exc:          # el registro nunca debe afectar al puente
+            self.registro.error = f"{type(exc).__name__}: {exc}"
+
+    def _obs_vuelo(self, stamp, lineas, n_bajo):
+        """Observaciones del hilo de visión (gate activo). Si la telemetría que abrió el gate todavía no pasó por
+        ``_tick_registro``, el vuelo se abre aquí."""
+        if not self.registro.abierto():
+            tel = self.bridge.telemetry if self.bridge else None
+            if tel:
+                self._tick_registro(tel)
+        self.registro.observaciones(stamp, lineas, n_bajo)
+
+    def _cabecera_vuelo(self, tel):
+        """Contexto del vuelo para la primera línea del registro."""
+        cfg = self.cfg.data
+        pista = cfg.get("pista") or {}
+        vis = cfg.get("vision") or {}
+        cam = cfg.get("camara") or {}
+        mi = self.modo_info()
+        tubos_cfg = pista.get("tubos")
+        modelo = dict(self.vision.cam_info or {})
+        if not modelo:                    # todavía sin frames: el modelo con la resolución configurada
+            try:
+                m = self._cam_model()
+                modelo = {"origen": m.origen, "fx": round(m.fx, 1), "fy": round(m.fy, 1), "cx": round(m.cx, 1),
+                          "cy": round(m.cy, 1), "w": m.w, "h": m.h, "aviso": m.aviso}
+            except Exception:
+                modelo = {}
+        config = self.cfg.path.replace(os.sep, "/")
+        if _dentro(self.cfg.path, PROJECT_DIR):
+            config = os.path.relpath(self.cfg.path, PROJECT_DIR).replace(os.sep, "/")
+        return {"config": config, "modo_mision": mi["efectivo"], "dron_solo": mi["dron_solo"],
+                "explorador": tel.get("explorer_id"), "version_control": cfg.get("version_control"),
+                "version_modelo": tel.get("version_name"), "detector": self.vision.detector_name,
+                "pista": {"vertices": pista.get("vertices") or [], "tubos": tubos_pista(pista),
+                          "tubos_de": "pista.tubos" if isinstance(tubos_cfg, list) and tubos_cfg else "pista.vertices",
+                          "tramos_sin_tubo": sorted(tramos_sin_tubo(pista))},
+                "limites_xy": (cfg.get("mision") or {}).get("limites_xy"),
+                "filtros": filtros_vision(cfg), "confianza_min": vis.get("confianza_min"),
+                "radio_cluster_m": vis.get("radio_cluster_m"), "min_observaciones": vis.get("min_observaciones"),
+                "actitud": {k: vis.get(k) for k in ("usar_actitud", "actitud_signos", "actitud_offset_deg")},
+                "camara": {"offset_camara_m": cam.get("offset_camara_m"), "rotacion_montaje": cam.get("rotacion_montaje"),
+                           "giro_en_dron": cam.get("giro_en_dron", 0), "resolucion": cam.get("resolucion"),
+                           "modelo": modelo},
+                "z_min_deteccion": self.cfg.web("z_min_deteccion"), "camara_latencia_s": self.cfg.web("camara_latencia_s")}
+
+    def _resumen_vuelo(self):
+        """Objetivos y candidatos de la estación al cerrar el vuelo (con su distancia al tubo actual)."""
+        targets, pending = self.vision.targets()
+        tubos = tubos_pista(self.cfg.data.get("pista"))
+
+        def fila(t, *claves):
+            tc = tubo_cercano(t["x"], t["y"], tubos)
+            out = {k: (round(t[k], 3) if isinstance(t[k], float) else t[k]) for k in claves if k in t}
+            out["dist_tubo_m"] = round(tc["dist"], 3) if tc else None
+            return out
+        return {"objetivos": [fila(t, "id", "cls", "x", "y", "conf", "n", "manual") for t in targets],
+                "candidatos": [fila(c, "cls", "x", "y", "n") for c in pending],
+                "objetivos_sin_id": len(self.vision.blocked())}
 
     # ------------------------------------------------------------------ objetivos (estación + Simulink)
     def _sim_vigentes(self):
@@ -728,6 +829,7 @@ class Station:
             "verdad_mock": self.world if self.fuente == "mock" else [],
             "mock": self.mock.estado_pruebas() if self.mock is not None else None,
             "eventos": list(self.events)[:15], "avisos": self.avisos(), "modo": self.modo_info(),
+            "registro_vuelo": dict(self.registro.estado(), modo=self.registro_modo()[1]),
         }
 
 
@@ -789,6 +891,7 @@ def create_app(station: Station, start=True):
         if station.mock is None:
             raise HTTPException(400, "solo disponible con la fuente mock")
         station.mock.reset()
+        station.registro.cerrar("mock reiniciado")
         station.vision.reset()
         station.poses.clear()
         with station.lock:
@@ -857,6 +960,7 @@ def create_app(station: Station, start=True):
         if int(tel.get("n_targets_known") or 0) > 0:
             raise HTTPException(409, f"Simulink ya tiene {tel['n_targets_known']} objetivos: no se puede reiniciar "
                                      "la lista (reinicia el modelo de Simulink / el mock para empezar de cero)")
+        station.registro.cerrar("objetivos reiniciados")
         station.vision.reset()
         station.log("Lista de objetivos de la estación reiniciada")
         return {"ok": True}
@@ -1076,6 +1180,14 @@ def _clean(o):
     return o
 
 
+def _dentro(ruta, carpeta):
+    """True si ``ruta`` está dentro de ``carpeta`` (o es ella)."""
+    try:
+        return os.path.commonpath([os.path.abspath(ruta), os.path.abspath(carpeta)]) == os.path.abspath(carpeta)
+    except ValueError:            # otra unidad en Windows
+        return False
+
+
 def _modo_txt(m):
     if not m:
         return "?"
@@ -1099,6 +1211,9 @@ def build_parser():
     ap.add_argument("--host-puente", type=_host_puente_arg, default=None,
                     help="IP de la PC donde corre el modelo de tierra (Stream Server :18700), p. ej. 192.168.2.11. "
                          "Solo con --fuente simulink; no se guarda en estacion.json")
+    ap.add_argument("--registro-vuelos", choices=tuple(REGISTRO_CLI), default=None,
+                    help="registro de observaciones por vuelo en web/datos/vuelos: auto (por defecto: solo con la fuente "
+                         "simulink), si o no. Pisa web.registro_vuelos de estacion.json")
     ap.add_argument("--imprimir-puerto", action="store_true", help="solo imprime el puerto web y sale (lo usa el .bat)")
     return ap
 
@@ -1111,7 +1226,8 @@ def main(argv=None):
         return
     import uvicorn
     try:
-        station = Station(a.config, a.fuente, a.velocidad_mock, host_puente=a.host_puente)
+        station = Station(a.config, a.fuente, a.velocidad_mock, host_puente=a.host_puente,
+                          registro_vuelos=a.registro_vuelos)
     except ValueError as exc:
         ap.error(str(exc))
     host = a.host or station.cfg.web("host") or "127.0.0.1"
@@ -1124,6 +1240,7 @@ def main(argv=None):
     m = mision_modo(station.cfg.data)
     print(f"  Modo de misión (estacion.json de esta estación): {_modo_txt(m)}"
           + (f"  AVISO: {m['aviso']}" if m["aviso"] else ""))
+    print(f"  Registro de vuelos: {station.registro_modo()[1]} -> {station.registro.estado()['carpeta']}")
     print(f"\n  Estación QDrone 2 ({station.fuente}) en  http://127.0.0.1:{port}\n")
     uvicorn.run(create_app(station), host=host, port=port, log_level="warning")
 

@@ -143,6 +143,39 @@ ssh nvidia@<IP_DRON> "python3 ~/qdrone2_camera_streamer.py --camara auto"
   - resta G a `rotacion_montaje` (módulo 360), porque `rotacion_montaje` describe la imagen tal como llega.
 - Convención: con 0, la parte de arriba de la imagen mira hacia adelante del dron.
 
+## Registro de vuelos (`web/datos/vuelos`)
+Los tubos del laboratorio se mueven (espacio compartido): una toma real puede quedar a más de
+`vision.dist_max_tubo_toma_m` del tubo configurado y la estación la descarta "lejos del tubo". Para corregir
+`pista.tubos` con datos, cada vuelo deja `web/datos/vuelos/AAAA-MM-DD/vuelo_HHMMSS_<fuente>.jsonl` (JSON Lines,
+`app/registro_vuelo.py`; no se ve en la UI, solo la ruta y las líneas en la pestaña Anomalías):
+- 1.ª línea `cabecera`: fecha, fuente, modo, explorador, ruta, tubos efectivos, tramos sin tubo, filtros, cámara;
+- una línea `obs` por observación con conf ≥ `vision.confianza_min` y punto en el piso: aceptada (`motivo` null) o
+  descartada (tamaño, lejos del tubo, inclinación), con `xy`, `dist_tubo_m`, el tubo más cercano (pieza, tramo,
+  punto y desplazamiento con signo, + = izquierda del sentido del tramo), tamaño, pose y actitud. Las de confianza
+  menor solo se cuentan;
+- última línea `resumen`: conteos por clase y motivo, n bajo umbral, duración y objetivos finales.
+
+El vuelo se abre cuando el gate de la visión se activa (MISSION/PAUSED con el explorador rastreado y sobre
+`web.z_min_deteccion`) y se cierra al salir de MISSION/PAUSED, al reiniciar objetivos o al detener la estación (una
+pausa no lo parte). Sin observaciones solo queda archivo si hubo > 5 s de gate. Por defecto se registra solo con
+`--fuente simulink` (vuelo real); `web.registro_vuelos` (`"auto"`, `true`, `false`) o `--registro-vuelos auto|si|no`
+lo cambian. Con un `estacion.json` de prueba se escribe junto a ese archivo, y pytest nunca escribe en `web/datos`.
+**`web/datos/vuelos` sí va a git** (el resto de `web/datos` no): así la laptop y la PC del laboratorio leen los
+mismos vuelos.
+
+`herramientas/ajustar_tubos.py` propone `pista.tubos` a partir de esos registros: agrupa las tomas aceptadas y
+rechazadas por lejanía (mismo radio y mínimo de observaciones que la estación), mide el desplazamiento de cada
+cluster respecto al tubo/tramo más cercano de la config actual y mueve cada tramo la mediana ponderada (≥ 0.05 m y
+≥ 2 clusters o uno con ≥ 8 observaciones); los vértices compartidos son la intersección de los tramos movidos y un
+cluster más allá de un extremo alarga ese extremo. Nunca toca `pista.vertices` (la ruta de vuelo).
+```bat
+%USERPROFILE%\.venvs\qd2_web\Scripts\python web\herramientas\ajustar_tubos.py                    &rem todos los vuelos: solo reporte
+%USERPROFILE%\.venvs\qd2_web\Scripts\python web\herramientas\ajustar_tubos.py web\datos\vuelos\2026-11-25 --ultimos 2 --svg tubos.svg
+%USERPROFILE%\.venvs\qd2_web\Scripts\python web\herramientas\ajustar_tubos.py --aplicar          &rem reescribe SOLO pista.tubos (+ estacion.json.bak)
+```
+Avisa si los vuelos se registraron con tubos distintos (el cálculo siempre es contra la config actual, con las xy
+registradas). Opciones: `--config`, `--umbral`, `--min-clusters`, `--n-fuerte`, `--max-desp`, `--margen`.
+
 ## Configuración (`config/estacion.json`)
 - Es la única fuente de verdad. Al arrancar **no se escribe nada**: los valores por defecto de `web` viven en memoria. Cuando guardas algo desde la página, el archivo conserva el formato, los números tal como estaban escritos (`0.20` sigue siendo `0.20`) y los finales de línea (CRLF). Así `git diff` solo muestra lo que cambió.
 - Claves que agregó la estación (todas opcionales): `web.*` (fuente, host, detector, `cmd_timeout_s`, latencia de video, puertos QUARC, `permitir_sintetica_en_simulink`), `camara.intrinsecos`, `camara.giro_en_dron` y los filtros `vision.tam_max_m`, `vision.tam_min_m`, `vision.dist_max_tubo_toma_m`, `vision.dist_max_tubo_fuego_m` (ver **Filtros físicos de la estación**; Simulink no los lee).
@@ -169,7 +202,7 @@ Simulink busca los objetivos por id y no vuelve a mover uno ya visitado. Por eso
 cd web
 %USERPROFILE%\.venvs\qd2_web\Scripts\python -m pytest -q tests
 ```
-Son 211 pruebas (209 y 2 saltadas si no están `vision/datos/sintetico_smoke` ni el respaldo `mejor_640x640_*.onnx`, que no van a git); `tests/test_frontera_e2e.py` cubre lo que se corrigió en la prueba punta a punta (fallas por dron con la alerta 9 y aviso de versión del modelo distinta de la config); `tests/test_revision.py` cubre los defectos de la revisión y `tests/test_alertas_objetivos_sim.py` la alerta y(55), los objetivos y(56:60), la etiqueta de fsm según la versión, los ids 1..32, el ack con +0.5 del operador, la retención de objetivos al reconectar, las ráfagas de telemetría, el 9 como fin de vuelo, y(55) no finito, el alias de Simulink y la cancelación del despegue en el mock. Cubren:
+Son 229 pruebas (227 y 2 saltadas si no están `vision/datos/sintetico_smoke` ni el respaldo `mejor_640x640_*.onnx`, que no van a git); `tests/test_frontera_e2e.py` cubre lo que se corrigió en la prueba punta a punta (fallas por dron con la alerta 9 y aviso de versión del modelo distinta de la config); `tests/test_revision.py` cubre los defectos de la revisión y `tests/test_alertas_objetivos_sim.py` la alerta y(55), los objetivos y(56:60), la etiqueta de fsm según la versión, los ids 1..32, el ack con +0.5 del operador, la retención de objetivos al reconectar, las ráfagas de telemetría, el 9 como fin de vuelo, y(55) no finito, el alias de Simulink y la cancelación del despegue en el mock. Cubren:
 - protocolo (índices base 1);
 - comandos:
   - rechazo sin telemetría;
@@ -191,6 +224,10 @@ Son 211 pruebas (209 y 2 saltadas si no están `vision/datos/sintetico_smoke` ni
 - geolocalización: ida y vuelta con yaw/montaje, huella y cadena imagen→suelo con error < 3 cm;
 - actitud del explorador (`tests/test_actitud.py`): convención de ejes, nivelado idéntico al cálculo anterior, ida y vuelta mundo→píxel→suelo < 1 mm con roll/pitch de ±12°, yaw y montajes variados, casos a mano (pitch 5° nariz abajo → 0.135 m hacia atrás), el offset de la cámara girando alrededor del pivote de Motive (0.07 m sobre la pose corregida, `optitrack.bias_z_dronN`), y(61:63) en el protocolo, interpolación en `PoseHistory`, descarte por inclinación, `usar_actitud` = false, modelo viejo (y(63) = 0), signos configurables, actitud del mock y huella de la estación;
 - clusters y persistencia de la configuración;
+- registro de vuelos (`tests/test_registro_vuelo.py`): `geo.tubo_cercano` igual a `dist_tubos`, formato de las
+  líneas, apertura/cierre por gate y estado de la misión, flush, error de disco, habilitación y que pytest no
+  escriba en `web/datos`; `tests/test_ajustar_tubos.py`: tubo 2 desplazado 0.2 m hacia y- → corrimiento correcto
+  (±3 cm) sin mover el tubo 1, alargue de un extremo y `--aplicar` sobre una copia (solo `pista.tubos`, CRLF);
 - API REST y WebSocket;
 - video QDF1 entre el streamer y el cliente;
 - detector FOMO;
@@ -223,6 +260,8 @@ N de 4 vértices y `cfg_path_solo` una en solo (dron 1) con la pista de 7 vérti
 | `app/mock_world.py` | Anomalías simuladas, cámara virtual, detector falso por color |
 | `app/geo.py` | Modelo de cámara, rayo → suelo, huella, clusters |
 | `app/vision_service.py` | Detector enchufable + geolocalización + publicación |
+| `app/registro_vuelo.py` | Registro JSON Lines de las observaciones de cada vuelo (`web/datos/vuelos`) |
+| `herramientas/ajustar_tubos.py` | Propone (y con `--aplicar` escribe) `pista.tubos` a partir de los registros |
 | `app/cameras.py` | Fuentes de video (cliente QDF1, sintética, webcam, carpeta) |
 | `app/netinfo.py` | IPs por interfaz y comandos `quarc_run` |
 | `app/fomo.py` | Detector FOMO original (respaldo) |
