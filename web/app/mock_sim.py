@@ -61,6 +61,16 @@ Lo que emula (versión simplificada; el supervisor "de verdad" vive en Simulink 
   - con ``t_perdida_aterrizar_s`` > 0.2: entre 0.2 s y ese valor PAUSED (alerta 2, RESUME solo con rastreo).
   Diferencias con MATLAB (el mock es simplificado): sin LANDING "R primero" del aterrizaje normal (un LAND_ALL
   normal baja a los dos en su sitio), así que una pérdida en ese LANDING solo marca la falla.
+* dron caído (SOLO dual con ``version_control`` PID; bloque "Dron caído (dual PID)" de ``qd2_mission_step``, umbral
+  ``mision.t_caido_s`` validado igual que MATLAB con ``config.mision_t_caido``: 1.0 s por defecto, 0 = desactivado):
+  ``apagar_dron(dron, t1)`` "apaga" a bordo a ese dron desde t1 (baja en su sitio a z = 0 sin obedecer y nunca vuelve
+  a despegar; OptiTrack lo sigue viendo), como el binario PID que pierde el enlace, entra en error o en AUTOLAND por
+  batería. Un dron con takeoff en un estado de vuelo, que ya estuvo despegado y que se ve en el piso (z < 0.20 m con
+  R a 0.5 m, < 0.25 m con E a 1.5 m) más de t_caido_s -> falla 9 (alerta 9), takeoff 0 y la misma reacción que la
+  pérdida de rastreo (el otro se aparta >= 1.60 m, regresa y aterriza: 9 -> 7 -> 8). Un hueco de rastreo de hasta
+  0.2 s no reinicia la cuenta; en RETURN_HOME no se pasa a LANDING con un dron más de tol_z por debajo de su altura
+  (si se cae ya en su home se detecta igual). En solo explorador y en MPC
+  no existe (en MPC el supervisor real usa la FSM a bordo, que el mock no simula).
 
 También se puede correr solo, para que otros (p. ej. el simulador MATLAB o pruebas) tengan
 un servidor :18700 de referencia:   ``python -m app.mock_sim --puerto 18700``
@@ -77,7 +87,8 @@ import time
 import numpy as np
 
 from . import protocol as P
-from .config import T_PERDIDA_TRK, mision_envolvente, mision_modo, mision_t_perdida_aterrizar
+from .config import (T_PERDIDA_TRK, camara_dron, mision_envolvente, mision_modo, mision_t_caido,
+                     mision_t_perdida_aterrizar)
 
 # Estados de la FSM a bordo (aprox. a los del DroneStack del Equipo2)
 FSM_IDLE, FSM_ARM, FSM_TO_THROTTLE, FSM_TO_HEIGHT, FSM_FLIGHT, FSM_AUTOLAND = 1, 2, 3, 4, 5, 6
@@ -91,11 +102,16 @@ T_ATERRIZADO = 1.0     # s, p.t_aterrizado
 T_ASENTAR = 1.0        # s, p.t_asentar
 T_LAND_MAX = 30.0      # s, p.t_land_max
 T_FALLA_SEP_MAX = 8.0  # s, p.t_falla_sep_max
+# dron caído (dual PID, = qd2_params.m): en el piso = z < max(Z_DESPEGADO, min(Z_CAIDO, z_rol - DZ_CAIDO)); ya estuvo
+# despegado (latch) = z > ese umbral + DZ_CAIDO_ALTO
+Z_CAIDO = 0.25         # m, p.z_caido
+DZ_CAIDO = 0.30        # m, p.dz_caido
+DZ_CAIDO_ALTO = 0.10   # m, p.dz_caido_alto
 XY_MARGEN = 0.15       # m, p.xy_margen (consignas recortadas a limites_xy -/+ margen; = config.XY_MARGEN)
-MARGEN_MOCK = 0.10     # m, recorte de la misión simplificada del mock (objetivo de R, evasión y retícula del guard)
-                       #    en los ejes SIN envolvente: limites_xy -/+ 0.10 (±1.4), no -/+ XY_MARGEN (±1.35) como
-                       #    MATLAB. Divergencia conocida que se deja así: cambiarla mueve la retícula del rodeo del
-                       #    guard (puntos cada 0.25 m desde el borde) y con ella las trayectorias de las pruebas.
+MARGEN_MOCK = XY_MARGEN  # m, recorte de la misión simplificada del mock (objetivo de R, evasión y retícula del guard)
+                         #    en los ejes SIN envolvente: limites_xy -/+ XY_MARGEN (±1.35), igual que qd2_limites_xy
+                         #    en MATLAB (antes 0.10 = ±1.4: R evadía 5 cm más afuera que en el vuelo real)
+HOMES_MOCK = ((0.9, -0.4), (-0.9, 0.4))   # homes por defecto de MockMission: el dron 2 atrás (menor x)
 # Batería simulada (solo telemetría: el mock NO reacciona a ella, igual que la estación; el corte de 14.0 V es a
 # bordo del dron real y aquí no se simula). Parecida a los logs a bordo del dron PID del Equipo2 (20-nov):
 # ~16.4 V en reposo, ~0.9 V de caída al cargar los motores (armado ~75 % de la carga de vuelo) y ~0.008 V/s de
@@ -276,7 +292,7 @@ class Drone:
 class MockMission:
     """FSM de misión + planta. ``step(dt)`` avanza el tiempo; no hay hilos aquí (fácil de probar)."""
 
-    def __init__(self, cfg, homes=((0.9, -0.4), (-0.9, 0.4))):
+    def __init__(self, cfg, homes=HOMES_MOCK):
         self.cfg = cfg
         m = cfg.get("mision", {})
         self.z_E = float(m.get("z_explorador", 1.5))
@@ -292,7 +308,7 @@ class MockMission:
         # Envolvente por eje (mision.limites_x / limites_y, = qd2_limites_xy): env_lo / env_hi = límite EFECTIVO
         # [x, y] de MATLAB (con envolvente: ese valor tal cual; sin ella: limites_xy -/+ XY_MARGEN). La misión
         # simplificada del mock recorta a lim_lo / lim_hi: la envolvente en los ejes que la tienen y
-        # limites_xy -/+ MARGEN_MOCK en los demás (sin envolvente, exactamente lo de antes).
+        # limites_xy -/+ MARGEN_MOCK (= XY_MARGEN) en los demás.
         env = mision_envolvente(cfg)
         self.envolvente = env
         self.aviso_envolvente = env["aviso"]
@@ -390,6 +406,14 @@ class MockMission:
         self.t_suelo = [-1.0, -1.0]             # [E R]
         self.t_land_paso = 0.0
         self.t_suelo_v = {1: -1.0, 2: -1.0}     # LANDING simplificado: desde cuándo se VE cada dron en el suelo
+        # ---- dron caído (dual PID, qd2_mission_step): umbral, latch "ya despegado" y desde cuándo está en el piso
+        tc = mision_t_caido(cfg)
+        self.t_caido = tc["valor"]
+        self.aviso_t_caido = tc["aviso"]
+        self.caido_alto = {1: False, 2: False}  # s.caido_alto
+        self.t_caido_desde = {1: -1.0, 2: -1.0}  # s.t_caido
+        self.apagados = {}                      # dron -> t1: "apagado" a bordo desde t1 (apagar_dron)
+        self._xy_apagado = {}                   # xy donde baja el dron apagado
 
     # ------------------------------------------------------------------ entradas
     def apply_command_message(self, msg):
@@ -498,12 +522,12 @@ class MockMission:
         if not self.takeoff_dado:
             for d in self.drones.values():
                 d.flying, d.fsm = False, FSM_IDLE
-                d.sp = np.array([d.p[0], d.p[1], 0.0])
+                d.sp = self._clamp_sp(np.array([d.p[0], d.p[1], 0.0]))     # recortar_sp (envolvente)
             self._goto(P.ASSIGN_ROLES)
         else:
             self.takeoff_dado = False
             for d in self.drones.values():
-                d.sp = np.array([d.p[0], d.p[1], 0.0])
+                d.sp = self._clamp_sp(np.array([d.p[0], d.p[1], 0.0]))     # recortar_sp (envolvente)
             self._goto(P.LANDING)
 
     def _goto(self, st):
@@ -514,7 +538,7 @@ class MockMission:
     def _pause(self):
         self.prev_state = self.state
         for d in self.drones.values():
-            d.sp = d.p.copy()  # hover donde está
+            d.sp = self._clamp_sp(d.p)  # hover donde está, recortado a la envolvente (recortar_sp)
         self._goto(P.PAUSED)
 
     # ------------------------------------------------------------------ paso
@@ -525,6 +549,7 @@ class MockMission:
         dE = self.drones.get(self.E)
         dR = self.drones.get(self.R)
         self.guard = False
+        self._dron_caido()               # dron caído (dual PID): bloque "Falla a bordo" de qd2_mission_step
         self._perdida_rastreo()          # bloques de pérdida de rastreo de qd2_mission_step (antes de la FSM)
         s = self.state
 
@@ -594,6 +619,11 @@ class MockMission:
             dE.sp, dR.sp = self._clamp_sp(spE), self._clamp_sp(spR)    # recortar_sp (envolvente)
             self.last_sp_E = dE.sp.copy()
             at_home = all(hdist(d.p, d.home) < self.tol_xy for d in (dE, dR))
+            if self.version == 1 and self.t_caido > 0:
+                # dual PID con detección de dron caído (como el caso {6, 9} de qd2_mission_step): no se pasa a
+                # LANDING con un dron más de tol_z por debajo de su altura (se cayó ya en su home: alerta 9)
+                at_home = at_home and (self.vista[self.E][2] >= self.z_E - self.tol_z
+                                       and self.vista[self.R][2] >= self.z_R - self.tol_z)
             if at_home and s == P.RETURN_HOME and self.auto_land and self.state_t > 2.0:
                 self._goto(P.LANDING)
         elif s == P.LANDING and self.land_matlab:
@@ -604,7 +634,9 @@ class MockMission:
             for d in self.drones.values():
                 if d.flying:
                     d.fsm = FSM_AUTOLAND
-                    d.sp = np.array([d.p[0], d.p[1], 0.0])
+                    # en su sitio, recortado a la envolvente (recortar_sp de MATLAB corre en todos los estados; sin
+                    # envolvente no cambia): un R que por sobretiro pasó de x 1.2 baja con la consigna en 1.2
+                    d.sp = self._clamp_sp(np.array([d.p[0], d.p[1], 0.0]))
                     if d.p[2] < 0.05:
                         d.flying, d.fsm = False, FSM_IDLE
                         d.aterrizo = True
@@ -615,6 +647,7 @@ class MockMission:
                 self._goto(P.DONE)
 
         self._takeoff_por_estado()
+        self._aplicar_apagados()
         for d in self.drones.values():
             d.step(dt)
         if dE is not None and dR is not None and dE.flying and dR.flying and dE.p[2] > 0.3 and dR.p[2] > 0.3:
@@ -947,7 +980,7 @@ class MockMission:
             if est == P.TAKEOFF and not self.takeoff_dado:
                 for d in self.drones.values():
                     d.flying, d.fsm = False, FSM_IDLE
-                    d.sp = np.array([d.p[0], d.p[1], 0.0])
+                    d.sp = self._clamp_sp(np.array([d.p[0], d.p[1], 0.0]))     # recortar_sp (envolvente)
                 self.tk = {1: 0, 2: 0}
                 self.track_t = 0.0
                 self.events.append((round(self.t, 2), "pérdida de rastreo antes de dar takeoff: se desarma"))
@@ -961,6 +994,84 @@ class MockMission:
                 self.events.append((round(self.t, 2), "pérdida de rastreo: PAUSED (alerta 2)"))
                 self._goto(P.PAUSED)
 
+    # ------------------------------------------------------------------ dron caído (qd2_mission_step, dual PID)
+    def apagar_dron(self, dron, t1=None):
+        """El dron ``dron`` (1 o 2) se "apaga" a bordo desde ``t1`` (s de misión, ``self.t``; None = ya): baja en su
+        sitio a z = 0 a la velocidad de la planta, sin obedecer a la misión, y nunca vuelve a despegar; OptiTrack lo
+        sigue viendo. Emula al binario PID del Equipo2 que pierde el enlace (FSM 7 a los 0.5 s, motores cortados),
+        entra en error a bordo o en AUTOLAND por batería (14.0 V): tierra no recibe esa FSM y solo lo ve en el piso."""
+        if int(dron) not in (1, 2):
+            raise ValueError("dron debe ser 1 o 2")
+        t1 = self.t if t1 is None else float(t1)
+        k = int(dron)
+        self.apagados[k] = min(t1, self.apagados.get(k, math.inf))
+        self.events.append((round(self.t, 2), f"dron {k} apagado a bordo desde {t1:.2f} s (baja y no vuelve a "
+                            "despegar; tierra PID no lo sabe)"))
+
+    def _aplicar_apagados(self):
+        """Planta de un dron apagado: consigna [x y 0] donde se apagó, sin takeoff (como la referencia de MATLAB)."""
+        for k, t1 in self.apagados.items():
+            if self.t < t1:
+                continue
+            d = self.drones[k]
+            if k not in self._xy_apagado:
+                self._xy_apagado[k] = d.p[:2].copy()
+            xy = self._xy_apagado[k]
+            d.sp = np.array([xy[0], xy[1], 0.0])
+            if d.flying or d.p[2] > 0.01:
+                d.aterrizo = True
+            d.flying = False
+            d.fsm = FSM_AUTOLAND if d.p[2] > 0.01 else FSM_IDLE
+
+    def _dron_caido(self):
+        """Bloque "Dron caído (dual PID)" de qd2_mission_step y su parte del bloque "Falla a bordo": un dron con takeoff
+        en un estado de vuelo, que ya estuvo despegado en este vuelo y que se VE (rastreado) en el piso de forma
+        continua más de ``t_caido`` -> falla 9; en el aire, reacción de ``iniciar_falla`` con el margen de deriva y
+        takeoff 0 ya; en TAKEOFF sin nadie en el aire, despegue cancelado."""
+        t = self.t
+        if self.state <= P.ASSIGN_ROLES:
+            self.caido_alto = {1: False, 2: False}
+            self.t_caido_desde = {1: -1.0, 2: -1.0}
+        if self.version != 1 or self.solo or self.t_caido <= 0:
+            return
+        est = self.state
+        vuelo = self.falla_fase == 0 and est in (P.TAKEOFF, P.HOVER_READY, P.MISSION, P.RETURN_HOME, P.ABORT,
+                                                 P.PAUSED)
+        caido = {1: 0, 2: 0}
+        for k, d in self.drones.items():
+            z_rol = self.z_E if k == self.E else self.z_R
+            z_piso = max(Z_DESPEGADO, min(Z_CAIDO, z_rol - DZ_CAIDO))
+            aplica0 = vuelo and bool(self.tk[k]) and not self.falla[k]
+            aplica = aplica0 and bool(d.tracked)
+            z = self.vista[k][2]
+            if aplica and z > z_piso + DZ_CAIDO_ALTO:
+                self.caido_alto[k] = True
+            if aplica and self.caido_alto[k] and z < z_piso:
+                if self.t_caido_desde[k] < 0:
+                    self.t_caido_desde[k] = t
+                if t - self.t_caido_desde[k] > self.t_caido:
+                    caido[k] = 1
+            elif aplica0 and not d.tracked and t - self.t_trk[k] <= T_PERDIDA_TRK:
+                pass    # hueco corto de rastreo: la cuenta sigue, sin declararlo (como qd2_mission_step)
+            else:
+                self.t_caido_desde[k] = -1.0
+        if not any(caido.values()):
+            return
+        nueva = {k: 9 if caido[k] else 0 for k in (1, 2)}
+        despegado = self._hay_despegado()
+        en_aire = (est in (P.HOVER_READY, P.MISSION, P.RETURN_HOME, P.ABORT, P.PAUSED)
+                   or (est == P.TAKEOFF and self.takeoff_dado and despegado))
+        if est == P.TAKEOFF and not en_aire:
+            # nadie en el aire: se cancela el despegue (takeoff ya dado: los dos bajan en su sitio)
+            self._cancelar_despegue_rastreo()
+            self._marcar_falla(nueva)
+        elif en_aire:
+            # el caído cuenta como "sin rastreo" para la reacción (sin control de posición: margen de deriva y
+            # takeoff 0 ya; está en el piso, nunca encima del sano)
+            sin_trk = {k: (t - self.t_trk[k] > T_PERDIDA_TRK) or bool(caido[k]) for k in (1, 2)}
+            self.pausa_por_trk = self.pausa_por_hb = False
+            self._iniciar_falla(nueva, sin_trk)
+
     def _pausar_vista(self):
         """``pausar`` de qd2_mission_step: hover en la última pose VISTA, a la altura de su consigna."""
         ar = self._ar()
@@ -968,7 +1079,7 @@ class MockMission:
             if not ar[k]:
                 continue
             z = d.sp[2] if d.sp[2] > 0 else (self.z_E if k == self.E else self.z_R)
-            d.sp = np.array([self.vista[k][0], self.vista[k][1], z])
+            d.sp = self._clamp_sp(np.array([self.vista[k][0], self.vista[k][1], z]))   # recortar_sp (envolvente)
 
     def _marcar_falla(self, nueva):
         """``marcar_falla``: recuerda la falla por dron; alerta 9 > 10 > 2."""
@@ -978,6 +1089,9 @@ class MockMission:
                 if nueva[k] == 2:
                     self.events.append((round(self.t, 2), f"dron {k}: pérdida de rastreo sostenida -> aterriza "
                                         "(alerta 2, nunca más takeoff)"))
+                elif nueva[k] == 9:
+                    self.events.append((round(self.t, 2), f"dron {k} en el piso sin que la misión lo pidiera "
+                                        "(alerta 9, nunca más takeoff)"))
         vals = set(self.falla.values())
         self.alerta = 9 if 9 in vals else (10 if 10 in vals else 2)
 
@@ -1274,9 +1388,10 @@ class MockMission:
                     if not e_en_suelo and not trkE:
                         self.alerta = 4
                     self.land_paso = 3
-        self.drones[E].sp = spE
+        # recortar_sp (envolvente): xyE/xyR/el punto de E en falla salen de la pose vista, que puede pasar de ella
+        self.drones[E].sp = self._clamp_sp(spE)
         if not self.solo:
-            self.drones[R].sp = spR
+            self.drones[R].sp = self._clamp_sp(spR)
 
     def _takeoff_por_estado(self):
         """takeoff por dron fuera de los caminos portados (como ``s.takeoff = ar`` en 4/5/6/9/10) y la planta:
@@ -1383,11 +1498,20 @@ class MockMission:
         return tel
 
 
+def homes_mock(cfg):
+    """Homes de la demo (MockServer). En dual el explorador es el de menor x (ASSIGN_ROLES): el dron de la cámara
+    (``camara.dron``) sale atrás, en (-0.9, 0.4), como hay que colocarlo en el laboratorio (si no, START se bloquea
+    con la fuente simulink). Con camara.dron = 2 y en solo explorador, los de siempre (HOMES_MOCK)."""
+    if mision_modo(cfg)["modo"] == "dual" and camara_dron(cfg)["dron"] == 1:
+        return HOMES_MOCK[1], HOMES_MOCK[0]
+    return HOMES_MOCK
+
+
 class MockServer:
     """Stream Server TCP que corre ``MockMission`` en tiempo real (50 Hz) y atiende 1 cliente."""
 
     def __init__(self, cfg, host="127.0.0.1", port=0, rate_hz=50.0, speed=1.0, cfg_fn=None):
-        self.mission = MockMission(cfg)
+        self.mission = MockMission(cfg, homes=homes_mock(cfg))
         self.cfg_fn = cfg_fn       # opcional: devuelve la config actual (reset() la vuelve a leer: modo, pista)
         self.host = host
         self.rate = float(rate_hz)
@@ -1427,7 +1551,7 @@ class MockServer:
                 pass
         with self._lock:
             forzada = self.mission.alerta_forzada
-            self.mission = MockMission(cfg)
+            self.mission = MockMission(cfg, homes=homes_mock(cfg))
             self.mission.alerta_forzada = forzada
             self._drop = True
 
@@ -1449,6 +1573,12 @@ class MockServer:
         with self._lock:
             t1 = self.mission.t + float(desde_s)
             self.mission.perder_rastreo(dron, t1, t1 + float(duracion_s))
+
+    def apagar_dron(self, dron, desde_s=0.0):
+        """El dron ``dron`` se apaga a bordo desde ``desde_s`` s a partir de ahora (``MockMission.apagar_dron``): baja
+        en su sitio y no vuelve a despegar. En dual PID la misión lo detecta en el piso (alerta 9)."""
+        with self._lock:
+            self.mission.apagar_dron(dron, self.mission.t + float(desde_s))
 
     def objetivo_interno(self, cls, x, y):
         """Objetivo que 'detecta Simulink' (sale en y(56:60) aunque la estación no lo haya publicado)."""
@@ -1541,6 +1671,9 @@ def main(argv=None):
                     metavar=("X", "Y", "CLS"), help="objetivo que 'detecta Simulink' (sale en y(56:60)); se repite")
     ap.add_argument("--rastreo", nargs=3, type=float, action="append", default=[], metavar=("DRON", "T1", "T2"),
                     help="OptiTrack no ve al DRON (1 o 2) de T1 a T2 s de misión (tracked = 0, pose NaN); se repite")
+    ap.add_argument("--apagar", nargs=2, type=float, action="append", default=[], metavar=("DRON", "T"),
+                    help="el DRON (1 o 2) se apaga a bordo a los T s de misión: baja en su sitio y no vuelve a despegar "
+                         "(en dual PID la misión lo detecta en el piso: alerta 9); se repite")
     a = ap.parse_args(argv)
     cfg = Config()
     srv = MockServer(cfg.data, a.host, a.puerto, speed=a.velocidad, cfg_fn=cfg.reload_if_changed).start()
@@ -1550,6 +1683,8 @@ def main(argv=None):
             srv.mission.add_internal_target(int(c), x, y)
         for dron, t1, t2 in a.rastreo:
             srv.mission.perder_rastreo(int(dron), t1, t2)
+        for dron, t1 in a.apagar:
+            srv.mission.apagar_dron(int(dron), t1)
     print(f"Mock de Simulink escuchando en tcpip://{a.host}:{srv.port}  (Ctrl+C para salir)")
     try:
         while True:

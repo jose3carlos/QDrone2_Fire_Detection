@@ -1,6 +1,8 @@
 """y(55) alerta, y(56:60) objetivos de Simulink, etiqueta de fsm según la versión, ids 1..32,
 cmd_seq_ack con +0.5 del operador y objetivos retenidos hasta la 1.ª telemetría de cada conexión."""
+import json
 import math
+import os
 import socket
 import threading
 import time
@@ -544,3 +546,202 @@ def test_mock_guarda_alias_como_simulink_y_la_ui_no_duplica(client):
     m.visited.add(1)                                     # visitado: la máscara marca también el alias
     assert wait(lambda: _estado(client)["tel"]["visited_ids"] == [1, 2], 5)
     assert [t["estado"] for t in _estado(client)["objetivos"]] == ["visitada"]
+
+
+# =============================================================================== enlace con tierra, pausa por heartbeat y tabla
+class _PuenteFresco:
+    """Puente falso con telemetría fresca y sin red: lo que leen avisos(), modo_info() y _sync_ids."""
+    host, uri = "127.0.0.1", "tcpip://127.0.0.1:0"
+
+    def __init__(self):
+        self.telemetry, self.stamp, self.n_sesion = None, 0.0, 1
+
+    def fresh(self):
+        return self.telemetry is not None
+
+    def status(self):
+        return {}
+
+    def send_command(self, name):
+        return 1
+
+    def stop(self):
+        pass
+
+
+def _dar(st, tel, stamp=None):
+    st.bridge.telemetry = tel
+    st._on_telemetry(tel, time.time() if stamp is None else stamp)
+
+
+SANOS = {1: {"tracked": 1, "fsm_state": 2, "comm_ok": 1}, 2: {"tracked": 1, "fsm_state": 2, "comm_ok": 1}}
+
+
+def _enlace(st):
+    return [a for a in st.avisos() if "sin enlace con tierra" in a["msg"]]
+
+
+def test_dron_sin_enlace_en_vuelo_avisa_y_queda_en_eventos(cfg_path):
+    """A6: comm_ok = 0 (o Flight State 9 en PID) de un dron que debería volar -> aviso rojo con LAND ALL y UNA línea
+    en Eventos (y caja negra); antes la misión seguía en MISSION con alerta 0 y no salía nada fuera de la tarjeta."""
+    st = _station(cfg_path)
+    st.bridge = _PuenteFresco()
+    _dar(st, _tel(drones=SANOS))
+    assert _enlace(st) == []
+    caido = {1: SANOS[1], 2: {"tracked": 1, "fsm_state": 2, "comm_ok": 0}}
+    for _ in range(5):
+        _dar(st, _tel(drones=caido))
+    av = _enlace(st)
+    assert len(av) == 1 and av[0]["nivel"] == "rojo" and av[0]["msg"].startswith("Dron 2 sin enlace")
+    assert "comm_ok = 0" in av[0]["msg"] and "LAND ALL" in av[0]["msg"] and "binario PID" in av[0]["msg"]
+    assert sum("Dron 2 sin enlace" in e["msg"] for e in st.events) == 1
+    _dar(st, _tel(drones=SANOS))
+    assert _enlace(st) == [] and st.events[0]["msg"] == "Dron 2: enlace con tierra de vuelta"
+    # PID: Flight State de tierra 9 (MS Stop) en vuelo también cuenta
+    _dar(st, _tel(drones={1: {"tracked": 1, "fsm_state": 9, "comm_ok": 1}, 2: SANOS[2]}))
+    av = _enlace(st)
+    assert len(av) == 1 and av[0]["msg"].startswith("Dron 1 sin enlace") and "Flight State 9" in av[0]["msg"]
+    # fuera de los estados de vuelo (LANDING, DONE) no hay aviso; el 9 ahí es el fin normal
+    for estado in (P.LANDING, P.DONE, P.ASSIGN_ROLES):
+        _dar(st, _tel(mission_state=estado, drones=caido))
+        assert _enlace(st) == [], estado
+    # MPC: solo comm_ok (la FSM a bordo ya la cubre la alerta 9)
+    _dar(st, _tel(version=2, drones={1: {"tracked": 1, "fsm_state": 5, "comm_ok": 1},
+                                     2: {"tracked": 1, "fsm_state": 5, "comm_ok": 0}}))
+    av = _enlace(st)
+    assert len(av) == 1 and "alerta 9" in av[0]["msg"]
+
+
+def test_solo_explorador_no_avisa_por_el_dron_que_no_vuela(cfg_path):
+    st = _station(cfg_path)
+    st.bridge = _PuenteFresco()
+    _dar(st, _tel(dron_solo=1, explorer_id=1, responder_id=0,
+                  drones={1: SANOS[1], 2: {"tracked": 0, "fsm_state": 0, "comm_ok": 0}}))
+    assert _enlace(st) == []
+    _dar(st, _tel(dron_solo=1, explorer_id=1, responder_id=0,
+                  drones={1: {"tracked": 1, "fsm_state": 2, "comm_ok": 0}, 2: {"tracked": 0, "comm_ok": 0}}))
+    av = _enlace(st)
+    assert len(av) == 1 and av[0]["msg"].startswith("Dron 1 sin enlace") and "ABORT" not in av[0]["msg"]
+
+
+def _pausa_hb(st):
+    return [a for a in st.avisos() if "heartbeat" in a["msg"]]
+
+
+def test_pausa_tras_reconexion_o_hueco_avisa_heartbeat(cfg_path):
+    """A20: MISSION -> PAUSED justo después de una reconexión del puente o de > 1 s sin telemetría = pausa por
+    heartbeat de Simulink (no viaja en y(1..64)): aviso amarillo y Eventos; antes solo 'Estado de misión: En pausa'."""
+    st = _station(cfg_path)
+    br = st.bridge = _PuenteFresco()
+    t0 = time.time()
+    _dar(st, _tel(t=10.0), t0)
+    # PAUSED sin reconexión ni hueco: no se deduce nada
+    _dar(st, _tel(t=10.02, mission_state=P.PAUSED), t0 + 0.02)
+    assert _pausa_hb(st) == [] and not any("heartbeat" in e["msg"] for e in st.events)
+    _dar(st, _tel(t=10.04), t0 + 0.04)
+    # el puente se reconecta (conexión 2) y Simulink ya está en PAUSED
+    br.n_sesion = 2
+    _dar(st, _tel(t=11.5, mission_state=P.PAUSED), t0 + 0.06)
+    av = _pausa_hb(st)
+    assert len(av) == 1 and av[0]["nivel"] == "amarillo" and "RESUME" in av[0]["msg"] and "reconect" in av[0]["msg"]
+    msgs = [e["msg"] for e in st.events]
+    assert "Puente reconectado (conexión 2)" in msgs and sum(m.startswith("Pausa probablemente") for m in msgs) == 1
+    _dar(st, _tel(t=11.52, mission_state=P.PAUSED), t0 + 0.08)
+    assert sum(e["msg"].startswith("Pausa probablemente") for e in st.events) == 1
+    _dar(st, _tel(t=11.54), t0 + 0.10)                   # RESUME
+    assert _pausa_hb(st) == []
+    # hueco de telemetría > 1 s sin reconexión
+    st._t_reconexion = None
+    _dar(st, _tel(t=13.0, mission_state=P.PAUSED), t0 + 1.7)
+    assert len(_pausa_hb(st)) == 1 and "sin telemetría" in _pausa_hb(st)[0]["msg"]
+    _dar(st, _tel(t=13.02), t0 + 1.72)
+    # un PAUSE de esta estación no es heartbeat aunque haya hueco
+    st.command("PAUSE")
+    _dar(st, _tel(t=15.0, mission_state=P.PAUSED), t0 + 3.5)
+    assert _pausa_hb(st) == []
+    # la alerta 2 (PAUSED por pérdida de rastreo) tampoco
+    _dar(st, _tel(t=15.02), t0 + 3.52)
+    st._t_pause_propio = None
+    _dar(st, _tel(t=17.0, mission_state=P.PAUSED, alerta=2), t0 + 5.0)
+    assert _pausa_hb(st) == []
+
+
+def test_pausa_hb_tras_rafaga_tcp(cfg_path):
+    """A20 con TCP: el Wi-Fi se congela ~2 s sin cerrar la conexión; al volver llega de golpe (misma hora de llegada)
+    todo lo que Simulink mandó: ~1 s de MISSION y luego PAUSED por heartbeat. El hueco solo se ve en el 1.er mensaje
+    (MISSION), pero la PAUSED de la misma ráfaga igual se deduce como heartbeat."""
+    st = _station(cfg_path)
+    st.bridge = _PuenteFresco()
+    t0 = time.time()
+    for k in range(10):
+        _dar(st, _tel(t=10 + 0.02 * k), t0 + 0.02 * k)
+    tr = t0 + 2.2
+    for k in range(50):
+        _dar(st, _tel(t=10.2 + 0.02 * k), tr)
+    assert _pausa_hb(st) == []
+    for k in range(50):
+        _dar(st, _tel(t=11.2 + 0.02 * k, mission_state=P.PAUSED), tr)
+    av = _pausa_hb(st)
+    assert len(av) == 1 and "sin telemetría" in av[0]["msg"]
+    assert sum(e["msg"].startswith("Pausa probablemente") for e in st.events) == 1
+    # sin hueco reciente (más de PAUSA_HB_VENTANA_S después) una PAUSED ya no se atribuye al heartbeat
+    from app.server import PAUSA_HB_VENTANA_S
+    _dar(st, _tel(t=12.3), tr + 0.02)                    # RESUME
+    for k in range(1, 12):
+        _dar(st, _tel(t=12.3 + 0.5 * k), tr + 0.5 * k)   # MISSION sin huecos (cada 0.5 s)
+    _dar(st, _tel(t=18.3, mission_state=P.PAUSED), tr + PAUSA_HB_VENTANA_S + 0.7)
+    assert _pausa_hb(st) == []
+
+
+def test_texto_alerta_3_dice_que_hay_que_dar_land_all():
+    """A21: tras el timeout de despegue con alguien en el aire la misión queda en ABORT (hover en home) sin aterrizar
+    sola; el texto lo dice."""
+    txt = _tel(alerta=3)["alerta_texto"]
+    assert "LAND ALL" in txt and "hover" in txt and "despeg" in txt
+
+
+def test_config_de_config_guarda_en_datos_y_por_modo(tmp_path, cfg_path, monkeypatch):
+    """A9: con <proyecto>/config/estacion_dual.json (lo que pasa INICIAR_DUAL) la tabla, el registro y la caja negra
+    van a web/datos (no a config/), con una tabla propia del modo dual; una copia de prueba sigue junto a su archivo."""
+    import shutil
+    from app import server as server_mod
+    proyecto = tmp_path / "QD2"
+    (proyecto / "config").mkdir(parents=True)
+    datos = proyecto / "web" / "datos"
+    monkeypatch.setattr(server_mod, "DEFAULT_PATH", str(proyecto / "config" / "estacion.json"))
+    monkeypatch.setattr(server_mod, "DATA_DIR", str(datos))
+    for nombre, tabla in (("estacion_dual.json", "objetivos_estacion_dual.json"),
+                          ("estacion.json", "objetivos_estacion.json")):
+        shutil.copy(cfg_path, proyecto / "config" / nombre)
+        st = Station(str(proyecto / "config" / nombre), "simulink", registro_vuelos="no", caja_negra="no")
+        assert st._persist_path == str(datos / tabla)
+        assert st.registro.carpeta == st.caja.carpeta == os.path.abspath(datos / "vuelos")
+    if os.name == "nt":     # --config escrito a mano con otras mayúsculas/minúsculas: es la misma carpeta en Windows
+        for ruta in (str(proyecto / "config" / "estacion_dual.json").lower(),
+                     str(proyecto / "config" / "estacion_dual.json").upper()):
+            st = Station(ruta, "simulink", registro_vuelos="no", caja_negra="no")
+            assert st._persist_path == str(datos / "objetivos_estacion_dual.json"), ruta
+    st = Station(cfg_path, "simulink")                 # copia de prueba (tmp/estacion.json): junto a ella
+    assert st._persist_path == os.path.join(os.path.dirname(cfg_path), "objetivos_estacion.json")
+
+
+def test_cambiar_de_fuente_no_pisa_la_tabla_de_simulink(cfg_path, monkeypatch):
+    """A16: simulink -> sim3d -> simulink recupera la tabla y el siguiente id (antes el reset guardaba la lista vacía
+    de la fuente nueva y, al volver, next_id = 1 podía chocar con un id que Simulink guardó como alias)."""
+    from app import server as server_mod
+    from test_solo_explorador import _BridgeSinRed
+    monkeypatch.setattr(server_mod, "BridgeClient", _BridgeSinRed)
+    st = Station(cfg_path, "simulink")
+    st._start_source()
+    assert [st.vision.add_manual(0, x, y) for x, y in ((0.5, 0.5), (-0.5, -0.5), (0.6, 0.5))] == [1, 2, 3]
+    with open(st._persist_path, encoding="utf-8") as fh:
+        assert json.load(fh)["next_id"] == 4
+    st.set_fuente("sim3d")
+    assert st.vision.targets()[0] == []
+    assert st.vision.add_manual(1, 1.0, 1.0) == 1        # la tabla de sim3d es otra
+    st.set_fuente("simulink")
+    assert [t["id"] for t in st.vision.targets()[0]] == [1, 2, 3]
+    assert st.vision.add_manual(1, 1.0, -1.0) == 4       # no reutiliza el 3 (que Simulink pudo guardar como alias)
+    with open(os.path.join(os.path.dirname(cfg_path), "objetivos_estacion_sim3d.json"), encoding="utf-8") as fh:
+        assert [c["id"] for c in json.load(fh)["clusters"]] == [1]
+    st.bridge.stop()

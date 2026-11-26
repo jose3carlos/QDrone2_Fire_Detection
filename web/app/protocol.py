@@ -51,13 +51,15 @@ ALERTAS = {
     1: ("Homes demasiado cerca: START rechazado. Separa los drones y vuelve a dar START.", "aviso"),
     2: ("Pérdida de rastreo (OptiTrack, más de 0.2 s): ese dron aterriza en su sitio y no vuelve a despegar; "
         "en dual el otro se aparta, regresa a su home y aterriza.", "grave"),
-    3: ("Timeout de despegue: se canceló o se abortó el despegue.", "grave"),
+    3: ("Timeout de despegue: si algún dron despegó, regresan a su home y quedan en hover (ABORT, no aterrizan "
+        "solos): da LAND ALL. Si ninguno despegó, se canceló en tierra.", "grave"),
     4: ("Timeout de aterrizaje: un dron no se vio en el suelo (revisa el pivot del rigid body).", "aviso"),
     5: ("E-STOP del operador: motores cortados en los dos drones.", "grave"),
     6: ("Switch Takeoff/Land abajo (operador): LAND ALL ordenado.", "aviso"),
     7: ("Switch Arm abajo (operador): drones desarmados y LAND ALL.", "grave"),
     8: ("Respaldo del operador: el supervisor no aceptó el LAND ALL (2 s / 90 s); se soltó el takeoff.", "grave"),
-    9: ("Falla a bordo de un dron (FSM a bordo 7 u 8, o 9 / enlace perdido debiendo volar).", "grave"),
+    9: ("Falla a bordo de un dron (MPC: FSM a bordo 7 u 8, o 9 / enlace perdido debiendo volar; PID dual: dron en el "
+        "piso sin que la misión lo pidiera): el otro se aparta, regresa a su home y aterriza.", "grave"),
     10: ("Protocolo MPC incorrecto: un dron no responde con la etiqueta y(8) = 2 o su FSM está fuera de 1..9.",
          "grave"),
 }
@@ -112,6 +114,35 @@ def texto_alerta_rastreo(mission_state, perdidos):
         return (f"Pérdida de rastreo ({quien}): misión en PAUSA (mision.t_perdida_aterrizar_s > 0.2 s); si sigue "
                 "sin rastreo, ese dron aterriza.")
     return None
+
+
+# Alerta 9 con el binario PID (y(3) = 1): su única fuente es la detección de dron caído de qd2_mission_step (solo dual;
+# tierra PID no recibe la FSM a bordo, así que una pérdida de enlace, un error a bordo o el AUTOLAND por batería solo se
+# ven como un dron en el piso). El número del dron no viaja en y(1..64): se deduce de la pose (rastreado y en el piso).
+Z_PISO_CAIDO = 0.25   # m, = p.z_caido (el umbral más alto de tierra: 0.25 con E a 1.5 m, 0.20 con R a 0.5 m)
+
+
+def drones_en_piso(tel):
+    """Drones rastreados con z < ``Z_PISO_CAIDO`` en la trama (en solo explorador, y(64) = 1 o 2, ninguno: ahí la
+    detección de dron caído no existe)."""
+    if not tel or (tel.get("dron_solo") or 0) in (1, 2):
+        return []
+    out = []
+    for d, blk in sorted((tel.get("drones") or {}).items()):
+        blk = blk or {}
+        z = blk.get("z")
+        if blk.get("tracked") and z is not None and z < Z_PISO_CAIDO:
+            out.append(int(d))
+    return out
+
+
+def texto_alerta_caido(caidos):
+    """Texto de la alerta 9 con el binario PID: ``caidos`` = el dron que la estación vio en el piso al aparecer la
+    alerta (ver ``drones_en_piso``); sin uno solo identificado, "un dron"."""
+    ds = sorted(set(int(d) for d in caidos or []))
+    quien = f"Dron {ds[0]}" if len(ds) == 1 else "Un dron"
+    return (f"{quien} en el piso sin que la misión lo pidiera (pérdida de enlace, error a bordo o batería): el otro se "
+            "aparta, regresa y aterriza.")
 
 
 # Estado del dron en o+2 (``fsm_state``). Depende de la versión y(3):

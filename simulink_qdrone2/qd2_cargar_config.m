@@ -132,6 +132,14 @@ else
     cfg.modo_mision = 'dual';
     cfg.dron_solo = 0;
     fprintf('qd2_cargar_config: modo dual (2 drones)\n');
+    if cfg.version_lib == 1
+        % dron caído (qd2_mission_step): solo dual con el binario PID
+        if P.t_caido_s > 0
+            fprintf('qd2_cargar_config: dron caído: en el piso más de %.2f s sin que la misión lo pida -> alerta 9 (mision.t_caido_s)\n', P.t_caido_s);
+        else
+            fprintf('qd2_cargar_config: dron caído DESACTIVADO (mision.t_caido_s = 0)\n');
+        end
+    end
 end
 if ~isempty(aviso)
     warning('qd2_cargar_config:modo', '%s', aviso);

@@ -259,6 +259,11 @@ def _mock_head():
 def test_mock_dual_igual(cfg_path, version):
     """En dual el mock nuevo da EXACTAMENTE la misma telemetría (512 bytes en cada paso) que el de HEAD."""
     head = _mock_head()
+    # el recorte de la misión simplificada en los ejes sin envolvente pasó a propósito de ±1.4 a ±1.35 (MARGEN_MOCK
+    # = XY_MARGEN, como qd2_limites_xy; test_envolvente.py): si HEAD aún tiene el viejo, se compara con el mismo
+    import app.mock_sim as mock_nuevo
+    if hasattr(head, "MARGEN_MOCK"):
+        head.MARGEN_MOCK = mock_nuevo.MARGEN_MOCK
     cfg = dict(_cfg(cfg_path), version_control=version)
     # sin la envolvente por eje (mision.limites_x / limites_y): el mock de HEAD no la conoce (sin las claves el
     # mock nuevo es idéntico; con ellas recorta distinto a propósito, test_envolvente.py)

@@ -143,8 +143,8 @@ def stats(v):
     v = sorted(v)
     return {"n": len(v), "media": round(sum(v) / len(v), 4), "mediana": round(v[len(v) // 2], 4),
             "p95": round(v[min(len(v) - 1, int(0.95 * len(v)))], 4), "max": round(v[-1], 4)}
-p_obj = os.path.join(OUT, "objetivos_estacion.json")
-if os.path.exists(p_obj):
+# tabla de objetivos de corridas anteriores (Station: objetivos_<config>[_<fuente>].json junto a la copia de la config)
+for p_obj in [os.path.join(OUT, f) for f in os.listdir(OUT) if f.startswith("objetivos_") and f.endswith(".json")]:
     os.remove(p_obj)
 
 LOG = open(os.path.join(OUT, f"e2e_{a.fuente}.log"), "w", encoding="utf-8")

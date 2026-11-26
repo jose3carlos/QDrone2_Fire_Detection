@@ -277,9 +277,11 @@ La lista imprimible, con tiempos y criterios de **seguir / no seguir** en cada v
 1. **Copia el proyecto a una ruta corta fuera de OneDrive** (por ejemplo `C:\QD2`). Con rutas largas el build pasa de 260 caracteres y falla (pasó en la regresión del 22-nov). Incluye lo que no está en git: `vision/modelos/mejor.pt`, `mejor.onnx` y `mejor.onnx.json`, y `simulink_qdrone2/binarios_dron/QD2_DroneStack_PID_2021a.rt-linux_qdrone2` (binario original del Equipo2, md5 `00d4d46e…`).
 2. **Revisión automática:** `%USERPROFILE%\.venvs\qd2_web\Scripts\python web\preflight_lab.py` desde la raíz. Solo lee y dice qué falta: modelos de `versiones/`, binarios, ONNX, config, IPs, puertos, Motive abierto y QUARC.
 3. **Prueba de la máquina.** `qd2_e2e_web` **no sirve en R2022a**: carga `sim/QD2_Sim_Dual.slx` y `lib/QD2_Mission_Lib.slx`, que están guardados en R2025a. En R2022a haz la prueba a mano de la sección 4 con la copia de `versiones/R2022a/`: en MATLAB `cd simulink_qdrone2\versiones\R2022a` **antes** de `open_system('QD2_Sim_Dual.slx')`. Así se usa la librería R2022a de esa carpeta (el `PreLoadFcn` del simulador agrega `lib/`, donde está la de R2025a). En R2025a o más nuevo, `qd2_e2e_web({'pid'})` sí sirve.
-4. En `web`: `%USERPROFILE%\.venvs\qd2_web\Scripts\python -m pytest -q tests` (167 passed; 165 passed y 2 skipped si la copia no trae `vision\datos\sintetico_smoke` ni el respaldo `mejor_640x640_*.onnx`). La primera vez, `iniciar_web.bat` necesita internet (Wi-Fi interna) para crear el venv.
+4. En `web`: `%USERPROFILE%\.venvs\qd2_web\Scripts\python -m pytest -q tests`: **0 failed** (387 passed el 26-nov; algunas salen *skipped* si la copia no trae `vision\datos\sintetico_smoke` ni el respaldo `mejor_640x640_*.onnx`; conteo vigente en `web/README.md`). La primera vez, `iniciar_web.bat` necesita internet (Wi-Fi interna) para crear el venv.
 
-**Configuración real (`config/estacion.json`, desde la UI con la fuente `simulink`)**
+**Configuración real (`config/estacion.json` en solo explorador; `config/estacion_dual.json` en dual, con la estación arrancada con `--config config\estacion_dual.json`; desde la UI con la fuente `simulink`)**
+
+Lo que se mide en el día (Motive, bias, pista, cámara, visión) se guarda en la config con la que corre la estación. Para el dual hay que copiarlo a `estacion_dual.json` (checklist, Etapa 8-0): nada sincroniza los dos archivos, y `web\preflight_lab.py --config config\estacion_dual.json` avisa si difieren.
 1. **`camara.fuente = "dron"`.** No debe existir `web.permitir_sintetica_en_simulink`, o debe ser `false`. La barra roja de "CÁMARA SINTÉTICA" **no debe aparecer**.
 2. **Pestaña Misión → versión:** `version_control` = PID o MPC, la del modelo de tierra que vas a correr. Si no coincide, sale el aviso amarillo y los `quarc_run` de Conexiones lanzarían el binario equivocado.
 3. **Conexiones:** la IP de la PC (antena Alfa "Wi-Fi 2", conectada a la red de los drones) y la IP del dron 1 y del dron 2. La Wi-Fi interna queda para internet. Si se pierde internet al conectar la Alfa, sube la métrica de la Alfa (checklist, etapa 2).
@@ -293,29 +295,30 @@ La lista imprimible, con tiempos y criterios de **seguir / no seguir** en cada v
 7. **Anomalías → Visión:** el detector debe decir `vision/detector.py (mejor.pt)` (o el modelo afinado con fotos reales, `vision/README.md` §4). **No** debe salir el aviso rojo "no detecta tomas" ni `fomo (Edge Impulse) — respaldo, solo fuego`; eso significa que falta el `.onnx`.
 
 **Lanzar (en este orden: tierra antes que los drones)**
-1. **Modelo de tierra:** en R2022a abre el de `versiones/R2022a/` (`QD2_MissionCtrl_Dual_PID.slx` o `_MPC.slx`). Haz el **build QUARC completo** (target `quarc_win64`), **Connect** y **Start** (Monitor & Tune). El build no se ha probado en la laptop porque no tiene el target.
-2. **Estación:** `web\iniciar_web.bat --fuente simulink`. Comprueba "Puente 50 Hz", "Modelo PID/MPC" igual a `version_control` y los dos drones rastreados.
-3. **Drones:** abre un `cmd` **en `simulink_qdrone2\binarios_dron`** (`quarc_run` busca el ejecutable en la carpeta actual) y pega los comandos `quarc_run` de **Conexiones**.
+1. **Modelo de tierra:** en R2022a abre el de `versiones/R2022a/`: `QD2_MissionCtrl_Dual_PID.slx` (solo explorador, `estacion.json`), `QD2_MissionCtrl_Dual_PID_2D.slx` (dual PID, `estacion_dual.json`; o `laboratorio\INICIAR_DUAL.bat`) o `_MPC.slx`. Haz el **build QUARC completo** (target `quarc_win64`), **Connect** y **Start** (Monitor & Tune). El build no se ha probado en la laptop porque no tiene el target.
+2. **Estación:** `web\iniciar_web.bat --fuente simulink` (dual: `... --config ..\config\estacion_dual.json`, relativa a `web` porque el `.bat` se cambia a esa carpeta, o la ruta completa; sin eso START sale rechazado porque el modo no coincide con el del modelo). Comprueba "Puente 50 Hz", "Modelo PID/MPC" igual a `version_control` y los dos drones rastreados.
+3. **Drones:** abre un `cmd` **en `simulink_qdrone2\binarios_dron`** (`quarc_run` busca el ejecutable en la carpeta actual) y pega los comandos `quarc_run` de **Conexiones** **de uno en uno**, dentro de la prueba de correspondencia (ver *Pruebas en seco*): primero solo el del dron 1.
    - **PID:** `QD2_DroneStack_PID_2021a.rt-linux_qdrone2`, que ya está en esa carpeta.
    - **MPC:** `QD2_DroneStack_MPC.rt-linux_qdrone2`. Se compila en la PC del laboratorio con la carpeta actual de MATLAB en `binarios_dron` (abre `versiones/R2022a/QD2_DroneStack_MPC.slx`, target `quarc_linux_qdrone2`). Tiene que ser de **la misma construcción** que tierra MPC: el dron solo acepta el índice 24 = 2.
    - Si a ~1.2 s de lanzarlo tierra no le manda `isTracking = 1`, el dron se detiene solo. Por eso tierra va primero.
    - Los comandos usan `-r`: según la documentación local de QUARC (`%QUARC_DIR%\quarc\doc\quarc_command_line_tools.html`) descarga y ejecuta; `-D` (solo descargar) es una alternativa excluyente. La ayuda corta es `quarc_run -?`.
 4. **Cámara del explorador.** El dron con la D435i hacia abajo va siempre en la **menor x**.
-   1. Copia el streamer: `scp web/drone/qdrone2_camera_streamer.py nvidia@<IP_explorador>:~/`.
-   2. El QDrone 2 trae su propia RealSense frontal. Mira los números de serie con `ssh nvidia@<IP> "rs-enumerate-devices -s"` y lanza el streamer con `--serie <serie de la D435i de abajo>`. Sin `--serie`, `--camara auto` puede abrir la frontal.
+   1. Copia el streamer y su relanzador (los dos en la misma carpeta): `scp web/drone/qdrone2_camera_streamer.py web/drone/correr_streamer.sh nvidia@<IP_explorador>:~/`.
+   2. Mira los números de serie con `ssh nvidia@<IP> "rs-enumerate-devices -s"` y lanza: `ssh nvidia@<IP> "bash ~/correr_streamer.sh --camara auto --serie <serie de la RealSense que mira hacia abajo>"`. Queda en segundo plano, sobrevive al cierre de ssh y se relanza si muere; `--estado` muestra el log y `--detener` lo para (comandos con la IP en **Conexiones**). Si `rs-enumerate-devices -s` lista más de una RealSense, sin `--serie` `--camara auto` puede abrir otra.
    3. Copia a `camara.intrinsecos` los intrínsecos que imprime al arrancar y reinicia la estación.
 
 **Pruebas en seco, con los drones desarmados (switches Arm/Takeoff abajo)**
 - **Telemetría:** los dos drones rastreados y la misión en ASSIGN_ROLES. Cada dron apoyado en el piso debe marcar z ≈ 0 (±0.02 m), porque el autoland exige z ≤ 0.05 m. Si no, corrige `optitrack.bias_z_dronN` y recompila.
 - **Ejes:** mueve un dron a mano hacia +x y hacia +y y revisa que la UI lo siga en el mismo sentido, con yaw ≈ 0 mirando a +x.
-- **Homes:** a ≥ 1.05 m (PID) o ≥ 0.8 m (MPC). Si no, START da la alerta 1.
+- **Homes:** a ≥ 1.05 m (PID) o ≥ 0.8 m (MPC). Si no, START da la alerta 1. Solo lo revisa un modelo dual (`_PID_2D` o MPC); en solo explorador no aplica. Homes duales PID sugeridos: checklist, Etapa 8-pre.
+- **Correspondencia:** con los dos binarios detenidos, lanza solo el `quarc_run` de "dron 1", mueve a mano el dron que pitó y comprueba que en la UI se mueve el dron 1 (luego lanza el 2 y lo mismo). Si se mueve el otro, el rigid body o la IP están cruzados: no volar (checklist, Etapa 6). En dual se repite siempre después de poner el rigid body real del dron 2 y `red.ip_dron2` (checklist, Etapa 8-pre).
 - **Estado de los drones:** PID: "Flight State (tierra): 0 · Reposo (Idle)"; MPC: "FSM a bordo: 1 · IDLE", **sin alerta 10**.
 - **Video:** "Video ~15 fps" y cajas sobre una pieza impresa puesta debajo del explorador con la mano.
 - **Comandos:** START con los switches abajo **no despega**. Revisa en Eventos que el comando sale "recibido" y revisa la capa del operador (`simulink_qdrone2/pid/README.md`, "Abrir en el laboratorio" paso 6).
 
 **Vuelos (detalle y criterios en la checklist)**
-1. **Cada dron solo**, en PID, con Command Source = 1 (modo MANUAL del Equipo2, solo dron 1) y Command Enable = 0 (hover sobre su home). Para volar el dron 2 solo se intercambian en la config los rigid bodies y las IPs de dron 1 y dron 2, se recompila tierra y se lanza con el comando de "dron 1". Después se deshace el cambio y se recompila otra vez.
-2. **Los dos en PID** (misión): primero sin anomalías, luego con anomalías.
+1. **Cada dron solo**, en PID, con Command Source = 1 (modo MANUAL del Equipo2, solo dron 1) y Command Enable = 0 (hover sobre su home). Para volar el dron 2 solo se intercambian en la config los rigid bodies y las IPs de dron 1 y dron 2, se recompila tierra y se lanza con el comando de "dron 1". Después se deshacen los dos cambios (rigid bodies **e** IPs), se recompila otra vez y se repite la prueba de correspondencia.
+2. **Los dos en PID** (misión, modelo `_PID_2D` con `estacion_dual.json`): primero la prueba en seco dual, luego sin anomalías y con anomalías (checklist, Etapa 8).
 3. **MPC:** cada dron solo (Command Source = 1), primero con el switch `MPC Mode` en PID Backup y después en MPC. Luego la misión MPC.
 4. **Seguridad:**
    - **Takeoff/Land abajo** = LAND ALL ordenado (alerta 6). Es la forma normal de abortar desde tierra.
@@ -323,7 +326,7 @@ La lista imprimible, con tiempos y criterios de **seguir / no seguir** en cada v
    - **E-stop** (alerta 5): corta los motores al instante y el dron **cae**. Solo si va a golpear a alguien o algo.
    - **ABORT/RTH** y **LAND ALL** desde la UI.
    - **Nunca pares el modelo de tierra con un dron en el aire**: al perder el enlace el dron pasa a la rampa y, un segundo después, FLIGHT SAFETY corta los motores.
-5. **Guarda** después de cada vuelo: la pestaña **Eventos**, `web/datos/objetivos_estacion.json` y los logs `saved_data` de Simulink.
+5. **Guarda** después de cada vuelo: la pestaña **Eventos**, `web/datos/objetivos_estacion.json` (en dual, `web/datos/objetivos_estacion_dual.json`) y los logs `saved_data` de Simulink.
 
 **Pendiente de verificar en el laboratorio** (los informes de cada parte tienen el detalle):
 - **Build:** que tierra y dron de la misma construcción compilen con QUARC en R2022a.

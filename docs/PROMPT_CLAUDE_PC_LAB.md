@@ -2,6 +2,8 @@
 
 Abre Claude Code en `C:\` (o en `C:\QD2` si ya existe) en la PC principal del laboratorio y pega el bloque completo.
 
+**Solo sirve para el vuelo de solo explorador** (23-nov). Para el dual (modelo `QD2_MissionCtrl_Dual_PID_2D`, `config\estacion_dual.json`) usa [`PROMPT_CONTINUAR_EN_PC.md`](PROMPT_CONTINUAR_EN_PC.md) y la Etapa 8 de [`CHECKLIST_LABORATORIO.md`](CHECKLIST_LABORATORIO.md).
+
 ```text
 Eres Claude Code en la PC PRINCIPAL del laboratorio (DESKTOP-CNN8EQJ, IP 192.168.2.11, Windows, MATLAB R2022a con QUARC, Motive/OptiTrack). Trabajas conmigo (el usuario) en el proyecto QDrone 2 del Equipo 2 (detección de tomas clandestinas y fuegos sobre una tubería de PVC, con QDrone 2 de Quanser + OptiTrack). Hay OTRA sesión de Claude Code en mi laptop (192.168.2.21, misma red por Ethernet) que escribió el código; yo te paso sus mensajes cuando haga falta.
 
@@ -35,7 +37,7 @@ PASO 2. BUILD Y ARRANQUE (lo hago YO en la interfaz; tú me guías y revisas)
 - Comprueba que quedan escuchando 18001, 18002 y 18700.
 - Yo arranco la estación en la laptop (la otra sesión se encarga). En la UI debe verse "SOLO EXPLORADOR · dron 1", dron 2 "NO USADO", estado ASSIGN_ROLES y sin avisos rojos. Si no llega telemetría: firewall de 18700 o modelo sin Start. NO pruebes el puerto 18700 con Test-NetConnection mientras la estación está conectada (el Stream Server atiende a un solo cliente).
 - Dron 1: yo enciendo el dron y, en un cmd en C:\QD2\simulink_qdrone2\binarios_dron, pego el quarc_run del dron 1 que da la pestaña Conexiones de la UI (usa el binario PID original del Equipo2 QD2_DroneStack_PID_2021a.rt-linux_qdrone2, sin compilar; debe llevar -URI_Host tcpip://192.168.2.11:18001). Revísame el comando antes de que lo corra.
-- Cámara: el streamer corre en el Jetson del dron (ssh nvidia@<IP_DEL_DRON> "python3 ~/qdrone2_camera_streamer.py --camara auto"); la contraseña la tecleo yo. Eso lo maneja la laptop.
+- Cámara: el streamer corre en el Jetson del dron: scp web\drone\qdrone2_camera_streamer.py web\drone\correr_streamer.sh nvidia@<IP_DEL_DRON>:~/ y luego ssh nvidia@<IP_DEL_DRON> "bash ~/correr_streamer.sh --camara auto" (queda en segundo plano, sobrevive al cierre de ssh y se relanza si muere; --estado muestra el log y --detener lo para; los comandos con la IP están en la pestaña Conexiones); la contraseña la tecleo yo. Eso lo maneja la laptop.
 
 PASO 3. PRUEBA EN SECO Y VUELO (los hago YO; tú vigilas desde esta PC)
 - En seco: switches abajo -> START en la UI -> en Eventos "START recibido" y el dron NO despega. Cancelar con LAND ALL o ABORT.

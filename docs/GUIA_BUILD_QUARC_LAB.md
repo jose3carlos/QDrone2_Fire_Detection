@@ -12,7 +12,8 @@ Leído de la configuración activa de cada `.slx` (22-nov-2026):
 
 | Modelo | Archivo | Target (configuración activa) | Toolchain | Produce | Etapa |
 |---|---|---|---|---|---|
-| Tierra PID | `versiones/<release>/QD2_MissionCtrl_Dual_PID.slx` | `quarc_win64.tlc` (`Configuration1`) | `QUARC win64 \| nmake (64-bit Windows)` | `QD2_MissionCtrl_Dual_PID.rt-win64`, corre en la PC en external mode | 4 |
+| Tierra PID | `versiones/<release>/QD2_MissionCtrl_Dual_PID.slx` | `quarc_win64.tlc` (`Configuration1`) | `QUARC win64 \| nmake (64-bit Windows)` | `QD2_MissionCtrl_Dual_PID.rt-win64`, corre en la PC en external mode. Solo explorador: lee `config/estacion.json` | 4 |
+| Tierra PID dual | `versiones/R2022a/QD2_MissionCtrl_Dual_PID_2D.slx` | igual | igual | `QD2_MissionCtrl_Dual_PID_2D.rt-win64`. Dual (2 drones): su `InitFcn` lee `config/estacion_dual.json` | 8 |
 | Tierra MPC | `versiones/<release>/QD2_MissionCtrl_Dual_MPC.slx` | `quarc_win64.tlc` (`Configuration1`) | igual | `QD2_MissionCtrl_Dual_MPC.rt-win64` | 9 |
 | Dron MPC | `versiones/<release>/QD2_DroneStack_MPC.slx` | `quarc_linux_qdrone2.tlc` (`Linux64 Configuration`) | `QUARC linux_qdrone2 \| gmake (64-bit Windows)` | `QD2_DroneStack_MPC.rt-linux_qdrone2` en `binarios_dron` | 9 |
 | Dron PID | — | — | — | **No se compila**: es el binario original del Equipo2 (`binarios_dron/QD2_DroneStack_PID_2021a.rt-linux_qdrone2`, md5 `00d4d46e7a2e07158690fe98a9b756af`) | 6 |
@@ -174,12 +175,17 @@ qc_start_model(mdl, 'external')         % qc_start_model.html
   **[SUPUESTO]** Que los tres puertos aparezcan en cuanto arranca el modelo.
 - La primera compilación tarda varios minutos **[SUPUESTO]**. Anota el tiempo: ______ min, y si compiló a la primera.
 
-Después de **cualquier** cambio de `estacion.json` que lea Simulink (Motive, rigid bodies, `bias_z`, pista, `mision.*`, puertos): Stop (`qc_stop_model(mdl)` o el botón Stop) → build de nuevo → Connect → Start. Conectar al binario anterior no relee el JSON (`pid/README.md`, "Abrir en el laboratorio").
+**Dual (etapa 8):** lo mismo con `QD2_MissionCtrl_Dual_PID_2D.slx` (o `laboratorio\INICIAR_DUAL.bat`), que lee `config/estacion_dual.json`; antes, Stop del modelo de solo explorador y copiar a `estacion_dual.json` lo medido en el día (checklist, Etapa 8-0). Debe aparecer `QD2_MissionCtrl_Dual_PID_2D.rt-win64` y la consola decir `modo dual (2 drones)`.
+
+Después de **cualquier** cambio de la config que lea Simulink (`estacion.json`, o `estacion_dual.json` con `_PID_2D`) (Motive, rigid bodies, `bias_z`, pista, `mision.*`, puertos): Stop (`qc_stop_model(mdl)` o el botón Stop) → build de nuevo → Connect → Start. Conectar al binario anterior no relee el JSON (`pid/README.md`, "Abrir en el laboratorio").
 
 ### 2.2 Estación web
 ```bat
 C:\QD2\web\iniciar_web.bat --fuente simulink
+:: dual (_PID_2D):
+C:\QD2\web\iniciar_web.bat --fuente simulink --config C:\QD2\config\estacion_dual.json
 ```
+La estación tiene que usar la misma config que el modelo: si el modo no coincide con el del modelo, START sale rechazado.
 Antes, comprueba que nada ocupe 8080 ni 18700 (por ejemplo, un simulador 3D o un mock abiertos): `Get-NetTCPConnection -State Listen -LocalPort 8080,18700`. 18700 debe salir **solo** con el proceso del modelo de tierra.
 En `http://127.0.0.1:8080` deben salir "Puente 50 Hz", "Modelo PID" (igual a `version_control`) y los dos drones **rastreados**. Sigue la etapa 4 de la checklist (z ≈ 0, ejes, actitud, pista).
 

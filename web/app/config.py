@@ -198,6 +198,40 @@ def mision_t_perdida_aterrizar(cfg):
                              f"{T_PERDIDA_ATERRIZAR_DEF:.2f} s"))
 
 
+# Dron caído (solo dual con el binario PID; qd2_params.m / qd2_mission_step.m): un dron al que la misión le da takeoff,
+# que ya estuvo despegado y que OptiTrack ve en el piso más de t_caido_s es una falla 9 (el otro se aparta y aterriza).
+T_CAIDO_DEF = 1.0                # s, = p.t_caido_s por defecto
+T_CAIDO_MIN, T_CAIDO_MAX = 0.5, 5.0   # s, = T_MIN / T_MAX de t_caido en qd2_params_from_config
+
+
+def mision_t_caido(cfg):
+    """``{"valor": s, "aviso": str|None}`` de ``cfg['mision']['t_caido_s']`` con las mismas reglas que ``t_caido`` de
+    ``qd2_params_from_config.m`` (sobre lo que da ``jsondecode``):
+
+    * ausente, null o [] -> 1.0 s sin aviso;
+    * número real finito (no bool) <= 0 -> 0 = detección de dron caído DESACTIVADA, sin aviso;
+    * número real finito en [0.5, 5.0] -> ese valor (``[1.5]`` también: jsondecode lo vuelve escalar);
+    * cualquier otra cosa (entre 0 y 0.5, mayor que 5, texto, true, lista de 2, objeto) -> 1.0 s con aviso."""
+    m = cfg.get("mision") if isinstance(cfg, dict) else None
+    m = m if isinstance(m, dict) else {}
+    dflt = {"valor": T_CAIDO_DEF, "aviso": None}
+    if "t_caido_s" not in m:
+        return dflt
+    raw = m["t_caido_s"]
+    x = raw
+    if x is None or (isinstance(x, list) and not x):
+        return dflt                                   # null o [] = no definido
+    if isinstance(x, list) and len(x) == 1 and not isinstance(x[0], (list, dict, str)) and x[0] is not None:
+        x = x[0]                                      # jsondecode('[1.5]') = 1.5 (escalar)
+    if not isinstance(x, bool) and isinstance(x, (int, float)) and math.isfinite(float(x)):
+        if float(x) <= 0:
+            return {"valor": 0.0, "aviso": None}      # desactivada
+        if T_CAIDO_MIN <= float(x) <= T_CAIDO_MAX:
+            return {"valor": float(x), "aviso": None}
+    return dict(dflt, aviso=(f"mision.t_caido_s inválido ('{_txt(raw)}'; válido 0 = desactivado o "
+                             f"{T_CAIDO_MIN:.1f} a {T_CAIDO_MAX:.1f} s): se usa {T_CAIDO_DEF:.2f} s"))
+
+
 # Envolvente por eje de las consignas xy (mision.limites_x / mision.limites_y; qd2_params_from_config.m y
 # qd2_limites_xy.m). Sin la clave, ese eje usa limites_xy -/+ XY_MARGEN (±1.35 m con ±1.5).
 XY_MARGEN = 0.15                 # m, = p.xy_margen

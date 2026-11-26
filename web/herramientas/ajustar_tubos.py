@@ -16,11 +16,14 @@ El espacio del laboratorio es compartido y los tubos se mueven. La estación des
    un cluster más allá de un extremo libre de una pieza alarga ese extremo hasta cubrirlo (+ ``--margen``).
 
 Nunca toca ``pista.vertices`` (la ruta de vuelo que compila Simulink). Sin ``--aplicar`` no escribe nada.
+Los vuelos duales (config/estacion_dual.json) quedan en la misma carpeta que los de solo explorador: si alguno se
+registró con otra config que ``--config``, se avisa (``--aplicar`` solo reescribe ``--config``).
 
 Uso (desde la raíz del repo; python del venv de la estación):
     python web/herramientas/ajustar_tubos.py                              # todos los vuelos
     python web/herramientas/ajustar_tubos.py web/datos/vuelos/2026-11-25 --ultimos 2 --svg tubos.svg
     python web/herramientas/ajustar_tubos.py --aplicar                    # reescribe SOLO pista.tubos (+ .bak)
+    python web/herramientas/ajustar_tubos.py --ultimos 1 --config config/estacion_dual.json   # vuelo dual
 """
 from __future__ import annotations
 
@@ -445,6 +448,14 @@ def ejecutar(args, out=print):
     if any(t is not None and not _tubos_iguales(t, tubos) for _, t in cabs):
         out("AVISO: hay vuelos registrados con tubos distintos de los de la config actual; los desplazamientos se "
             "calculan contra la config actual con las xy registradas.")
+    # vuelos registrados con OTRA config (cabecera "config"): p. ej. un vuelo dual (config/estacion_dual.json) en la
+    # misma carpeta que los de solo explorador. --aplicar solo reescribe --config.
+    cfg_rel = _rel(os.path.abspath(args.config)).replace("\\", "/")
+    otras = sorted({str(c).replace("\\", "/") for c in ((v["cabecera"] or {}).get("config") for v in vuelos) if c}
+                   - {cfg_rel})
+    if otras:
+        out(f"AVISO: hay vuelos registrados con otra config ({', '.join(otras)}) y --config es {cfg_rel}: --aplicar "
+            "solo reescribe --config. Para corregir la otra, corre de nuevo con --config <esa> (o pasa solo sus vuelos).")
     # ---------------------------------------------------------------- por vuelo
     todos, todas_obs = [], []
     for v in vuelos:

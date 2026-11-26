@@ -546,7 +546,7 @@ def test_repeticion_reproduce_los_mismos_paquetes_y_es_solo_lectura(tmp_path, cf
     assert len(esperado) - k > 250
     # la repetición no escribió nada (ni caja negra ni registro ni objetivos)
     assert glob.glob(str(tmp_path / "**" / "*.tel.jsonl.gz"), recursive=True) == [f]
-    assert not os.path.exists(os.path.join(os.path.dirname(cfg_path), "objetivos_estacion.json"))
+    assert glob.glob(os.path.join(os.path.dirname(cfg_path), "objetivos_*.json")) == []
 
 
 # =============================================================================== herramienta

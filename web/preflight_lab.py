@@ -23,6 +23,10 @@ Además (26-nov):
   qd2_cargar_config en el InitFcn) compara CONTENIDOS (sha256): de la config solo las claves que lee el modelo
   (CLAVES_MODELO; con el texto que guarda el sello) y de lib/*.m las que usa tierra (sin LIB_NO_TIERRA); si no,
   fechas. Ver revisar_build.
+* Dual con una config que no es estacion.json (config/estacion_dual.json): AVISO si difiere de la estacion.json de
+  la misma carpeta en algo más que mision.modo / dron_solo, red.ip_dron2, optitrack.archivo_motive y mision.limites_x
+  (la envolvente en x, solo del dual). Lo que se mide en las etapas 3-5 del checklist (bias, tubos, ruta, actitud,
+  cámara, visión) queda en estacion.json y, sin copiarlo, el dual vuela con lo viejo. Ver revisar_par_dual.
 
 Imprime [OK] / [INFO] / [AVISO] / [FALLA] por punto y termina con código 1 si hay alguna FALLA.
 Ver docs/CHECKLIST_LABORATORIO.md.
@@ -332,6 +336,43 @@ def claves_distintas(a, b, pre=""):
     return [] if _FALTA not in (a, b) and a == b else [pre]
 
 
+# Claves en las que estacion_dual.json puede (o debe) diferir de estacion.json: el modo, la IP del dron 2 (vacía en
+# solo explorador), el .motive (el dual necesita el rigid body REAL del dron 2, no el auxiliar) y mision.limites_x
+# (decisión del usuario, 26-nov: solo en dual, x [-1.35, 1.2], para que ninguna consigna de los dos drones vaya a la
+# esquina x 1.2-1.35, y > 0.95 donde OptiTrack pierde el dron; estacion.json no la lleva para no cambiar el solo
+# explorador, que ya vuela bien)
+CLAVES_PROPIAS_DUAL = ("mision.modo", "mision.dron_solo", "red.ip_dron2", "optitrack.archivo_motive", "mision.limites_x")
+
+
+def revisar_par_dual(ruta_config, rep=None):
+    """En dual con una config que no es estacion.json (config/estacion_dual.json), AVISO por las claves que difieren
+    de la estacion.json de la misma carpeta fuera de CLAVES_PROPIAS_DUAL. El checklist guarda lo medido en el día
+    (bias_z, pista, actitud, cámara, visión) en estacion.json; si no se copia, el dual (_PID_2D) vuela con lo viejo
+    y nada más lo avisa. Solo lee."""
+    rep = rep or globals()["rep"]
+    solo_json = os.path.join(os.path.dirname(os.path.abspath(ruta_config)), "estacion.json")
+    if os.path.normcase(solo_json) == os.path.normcase(os.path.abspath(ruta_config)) or not os.path.exists(solo_json):
+        return
+    nom, nom_solo = os.path.basename(ruta_config), "estacion.json"
+    try:
+        with open(ruta_config, encoding="utf-8-sig") as f:
+            dual = json.load(f)
+        with open(solo_json, encoding="utf-8-sig") as f:
+            solo = json.load(f)
+    except (OSError, ValueError) as e:
+        rep("AVISO", f"no pude comparar {nom} con {nom_solo}: {e}")
+        return
+    dif = [k for k in claves_distintas(solo, dual)
+           if not any(k == p or k.startswith(p + ".") for p in CLAVES_PROPIAS_DUAL)]
+    if not dif:
+        rep("OK", f"{nom} = {nom_solo} salvo {', '.join(CLAVES_PROPIAS_DUAL)}")
+        return
+    txt = ", ".join(dif[:12]) + (f" y {len(dif) - 12} más" if len(dif) > 12 else "")
+    rep("AVISO", f"{nom} difiere de {nom_solo} en {txt}: si lo medido hoy (bias_z, pista, actitud, cámara, visión) "
+                 f"quedó en {nom_solo}, cópialo a {nom} (checklist, Etapa 8-0; si el modelo lee esa clave, "
+                 f"recompila _PID_2D). Si la diferencia es a propósito, ignora este aviso")
+
+
 def la_lee_el_modelo(clave):
     return not clave or any(clave == k or clave.startswith(k + ".") or k.startswith(clave + ".") for k in CLAVES_MODELO)
 
@@ -511,6 +552,7 @@ def main(argv=None):
         rep("OK", f"modo SOLO EXPLORADOR con el dron {ds} (el dron {3 - ds} no recibe arm/takeoff)")
     else:
         rep("OK", "modo dual (2 drones)")
+        revisar_par_dual(a.config)
     if a.remoto:
         print(f"Estación remota: el modelo de tierra corre en {a.remoto} (no se abre ninguna conexión hacia ella)")
     ver = (a.version or str(get(c, "version_control", default="PID"))).upper()
@@ -666,6 +708,13 @@ def main(argv=None):
     env = mision_envolvente(c)
     if env["aviso"]:
         rep("AVISO", "estacion.json: " + env["aviso"])
+    if not solo and env["x"] is None:
+        # revisar_par_dual no compara mision.limites_x (CLAVES_PROPIAS_DUAL): si se copió estacion.json encima de
+        # estacion_dual.json (checklist, Etapa 8-0) y no se volvió a poner, solo esto lo avisa
+        rep("AVISO", f"modo DUAL sin mision.limites_x (válido): las consignas de los dos drones llegan a x "
+                     f"{env['lo'][0]:g}..{env['hi'][0]:g}, también a la esquina x 1.2-1.35, y > 0.95 donde OptiTrack "
+                     "pierde el dron. Pon \"limites_x\": [-1.35, 1.2] en mision (decisión del 26-nov; se pierde si se "
+                     "copia estacion.json encima, Etapa 8-0) y recompila _PID_2D")
     if env["definida"]:
         fuera = vertices_fuera_envolvente(c)
         txt = f"x {env['lo'][0]:g}..{env['hi'][0]:g}, y {env['lo'][1]:g}..{env['hi'][1]:g} m"

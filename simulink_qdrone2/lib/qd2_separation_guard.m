@@ -31,10 +31,14 @@ function [spE_o, spR_o, guard_active, gs] = qd2_separation_guard(pE, pR, spE, sp
 %     >= D+2m del segmento de A y de la consigna previa de A. Si no, espera
 %     en un punto fijo seguro; si ese punto deja de ser seguro, se evade a
 %     un punto a D+3m de A, dentro de la arena, sin acercarse en el camino.
+%     Si no hay ningún punto de evasión válido, se detiene donde está: ese
+%     punto se fija UNA vez y se conserva (no se vuelve a tomar la pose en
+%     cada paso, que lo dejaría sin retención de posición).
 %   - Si B está marcando, B no se mueve y A espera.
 %   - Respaldo final: si las consignas de salida quedan a < D, A espera.
-%   - En los ejes con envolvente (mision.limites_x / _y) las salidas (y el
-%     punto de espera de B) se recortan a ella (qd2_limites_xy).
+%   - El punto de espera de B siempre se recorta a qd2_limites_xy (los dos
+%     ejes: la envolvente o ±1.35 sin ella). Las salidas se recortan solo en
+%     los ejes con envolvente (mision.limites_x / _y).
 %   guard_active = 1 si alguno está siendo retenido o desviado.
 %   Poses o consignas NaN: se usan la última pose finita / la última
 %   salida; las salidas nunca son NaN.
@@ -67,6 +71,7 @@ respaldo = c6(4) > 0.5;
 dA_espera = D + m;
 dB_seguro = D + 2*m;
 dB_evasion = D + 3*m;
+[lo, hi] = qd2_limites_xy(p);   % envolvente efectiva por eje (1x2: [x y])
 
 % ---------------- Entradas sin NaN ----------------------------------------
 % Pose no finita -> última pose finita. Consigna no finita -> última salida.
@@ -153,6 +158,7 @@ elseif respaldo
             gs.holdB = pB;
             gs.modoB = 1;
         end
+        gs.holdB = min(max(gs.holdB, lo), hi);
         outB = [gs.holdB(1) gs.holdB(2) spB(3) spB(4)];
     else
         gs.modoB = 0;
@@ -184,10 +190,22 @@ else
                 gs.holdB = pB;          % detenerse donde está
                 gs.modoB = 1;
             else
-                gs.holdB = evasion(pB, gB, pA, gA, look, prevA(1:2), dB_seguro, dA_espera, dB_evasion, p);
-                gs.modoB = 2;
+                [c_ev, ok_ev] = evasion(pB, gB, pA, gA, look, prevA(1:2), dB_seguro, dA_espera, dB_evasion, p);
+                if ok_ev
+                    gs.holdB = c_ev;
+                    gs.modoB = 2;
+                elseif gs.modoB ~= 3
+                    % sin punto de evasión: se detiene donde está UNA vez y
+                    % conserva ese punto mientras no haya candidato (antes la
+                    % consigna seguía a la pose medida en cada paso y el dron
+                    % derivaba, p. ej. hacia +x fuera de la arena)
+                    gs.holdB = pB;
+                    gs.modoB = 3;
+                end
             end
         end
+        % el punto de espera siempre dentro de la arena (sin envolvente: ±1.35)
+        gs.holdB = min(max(gs.holdB, lo), hi);
         outB = [gs.holdB(1) gs.holdB(2) spB(3) spB(4)];
     end
 end
@@ -196,13 +214,16 @@ end
 % El guard corre DESPUÉS de recortar_sp de qd2_mission_step: el punto de
 % espera de B es su pose medida (puede pasar del borde por sobretiro), así
 % que en los ejes con envolvente (p.env_x / p.env_y, como qd2_limites_xy)
-% las salidas se recortan aquí. Sin envolvente, igual que antes (el mock
-% recorta igual: _clamp_sp solo en los ejes con envolvente).
-[lo, hi] = qd2_limites_xy(p);
+% las salidas se recortan aquí (el mock igual: _clamp_sp solo en los ejes
+% con envolvente). En los ejes sin envolvente las salidas no se recortan
+% aquí, pero el punto de espera (gs.holdB) ya se recortó arriba en los dos
+% ejes (26-nov: sin envolvente a ±1.35; antes no se recortaba). Con eso y
+% con modoB = 3 (sin evasión fija la pose UNA vez; antes la tomaba en cada
+% paso), sin las claves el guard ya NO es bit a bit el de antes (el hold
+% simplificado del mock no se recorta).
 env = [p.env_x; p.env_y];
 for i = 1:2
     if isfinite(env(i,1)) && isfinite(env(i,2)) && env(i,1) < env(i,2)
-        gs.holdB(i) = min(max(gs.holdB(i), lo(i)), hi(i));
         outA(i) = min(max(outA(i), lo(i)), hi(i));
         outB(i) = min(max(outB(i), lo(i)), hi(i));
     end
@@ -226,16 +247,18 @@ gs.outR = spR_o;
 end
 
 % =========================================================================
-function c = evasion(pB, gB, pA, gA, look, prevA, d_seguro, d_espera, radio, p)
+function [c, ok] = evasion(pB, gB, pA, gA, look, prevA, d_seguro, d_espera, radio, p)
 % Punto de evasión para B. Candidatos: círculos alrededor del punto de A
 % más cercano (radios 'radio' y d_seguro+0.05) y un retroceso radial.
 %  - Restricción dura: el camino recto pB->c no se acerca a la posición
 %    actual de A (ni a su consigna previa) más de lo que ya está (o de
-%    d_espera). Si ningún candidato la cumple, B se queda donde está.
+%    d_espera). Si ningún candidato la cumple, B se queda donde está
+%    (c = pB, ok = false; el llamador fija ese punto una sola vez).
 %  - Preferencia: destino a >= d_seguro de la zona de A ([pA,gA] y
 %    [gA,look]) y camino sin cruzar esa zona -> el más cercano;
 %    si no hay, el que deje más holgura en el destino.
 [lo, hi] = qd2_limites_xy(p);                % envolvente por eje (1x2: [x y])
+ok = true;
 [d_seg, q] = qd2_dist_punto_segmento(pB, pA, gA);
 d_ahora = min(d_seg, norm(pB - prevA));
 req = min(d_ahora, d_seguro) - 0.02;
@@ -287,6 +310,7 @@ if ~isfinite(mejor1)
         c = c2;
     else
         c = pB;
+        ok = false;
     end
 end
 end

@@ -15,7 +15,12 @@ Tolerancias de la comparación (las dos simulaciones usan la MISMA planta, ver g
   eventos del primer segundo después de que empieza cada pérdida (los decide la pérdida, no la planta) y para el
   resto en los escenarios sin MISSION larga; en ``dual_mision_umbral_05`` +-0.25 s para los que dependen de la
   planta (el mock no hace el dwell de 0.3 s por waypoint de MATLAB, así que el explorador va un poco adelantado);
-* posiciones cada 0.1 s: <= 0.01 m (en ``dual_mision_umbral_05`` <= 0.35 m por lo mismo, y <= 0.02 m al final).
+* posiciones cada 0.1 s: <= 0.01 m (en ``dual_mision_umbral_05`` <= 0.35 m por lo mismo, y <= 0.02 m al final;
+  en ``dual_caido_R_despegue`` <= 0.03 m: las muestras empiezan en plena subida de TAKEOFF y el mock da takeoff hasta
+  un paso antes que MATLAB (state_t acumulado frente a t - t_entrada), ~0.02 m de z a 0.5 m/s).
+
+Los escenarios ``dual_caido_*`` (dron caído en dual PID, ``apagados`` = MockMission.apagar_dron) los usa también
+``test_dron_caido.py``.
 
 Limitación conocida (no la cubren estas tolerancias): por ese mismo dwell que falta, si la pérdida llega tras una
 MISSION larga el explorador del mock va más adelantado y aterriza en otro sitio. Con la pista real y la pérdida a
@@ -53,7 +58,7 @@ REF = _cargar("referencia_rastreo_matlab.json")
 CAMPOS = {1: "estado", 2: "alerta", 3: "takeoff1", 4: "takeoff2", 5: "falla1", 6: "falla2", 7: "fase"}
 TOL_T = 0.025
 TOL_T_PLANTA = {"dual_mision_umbral_05": 0.25}
-TOL_POS = {"dual_mision_umbral_05": 0.35}
+TOL_POS = {"dual_mision_umbral_05": 0.35, "dual_caido_R_despegue": 0.03}
 
 
 # =============================================================================== texto de la alerta 2
@@ -272,8 +277,9 @@ def test_perdida_corta_no_hace_nada(cfg_path):
 
 # =============================================================================== mock contra MATLAB
 def _correr_escenario(esc, base, dt):
-    """Mismo arnés que generar_referencia_rastreo.m: START 0.5 s después de ASSIGN_ROLES, pérdidas y comandos
-    relativos a t0, eventos [t campo valor] y posiciones cada 0.1 s desde t0 - 1 s."""
+    """Mismo arnés que generar_referencia_rastreo.m: START 0.5 s después de ASSIGN_ROLES, pérdidas, drones apagados
+    (dron caído, ``apagados``) y comandos relativos a t0, eventos [t campo valor] y posiciones cada 0.1 s desde
+    t0 - 1 s."""
     cfg = copy.deepcopy(base)
     cfg["mision"].update(esc["mision"])
     m = MockMission(cfg, homes=tuple(tuple(h) for h in esc["homes"]))
@@ -298,6 +304,8 @@ def _correr_escenario(esc, base, dt):
             t0 = m.t + esc["disparo"]["retraso_s"]
             for dron, t1, t2 in esc["perdidas"]:
                 m.perder_rastreo(dron, t0 + t1, t0 + (math.inf if t2 is None else t2))
+            for dron, t1 in esc.get("apagados", []):
+                m.apagar_dron(dron, t0 + t1)
         if t0 is not None and round((m.t - t0) / dt) % 5 == 0 and m.t >= t0 - 1:
             mu.append([m.t] + list(m.drones[1].p) + list(m.drones[2].p))
         if t0 is not None and m.t >= t0 + esc["t_fin"]:

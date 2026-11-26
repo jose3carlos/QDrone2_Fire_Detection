@@ -30,7 +30,7 @@ Si MATLAB corre con `-batch`, la ventana "QUARC Tip of the Day" lo bloquea (ver 
 1. Abre el `.slx` de tu versión de MATLAB. Si es R2022a, usa `versiones/R2022a/`.
    - El `PreLoadFcn` agrega solo las rutas `simulink_qdrone2`, `lib` y la carpeta del modelo.
    - El `PostLoadFcn` y el `InitFcn` llaman a `qd2_cargar_config`, que crea `QD2CFG` y `QD2P`.
-2. `config/estacion.json` es la única fuente de verdad:
+2. La config es la única fuente de verdad: `config/estacion.json` para `QD2_MissionCtrl_Dual_PID` (solo explorador) y el MPC, y `config/estacion_dual.json` para `versiones/R2022a/QD2_MissionCtrl_Dual_PID_2D.slx` (dual PID; estación con `--config config\estacion_dual.json`). Lo medido en el día se copia de una a otra a mano (`docs/CHECKLIST_LABORATORIO.md`, Etapa 8-0). En cada una:
    - `optitrack.rigid_body_dron1` y `optitrack.rigid_body_dron2`: van a `rigid_body_ids` del bloque OptiTrack Trackables. **Si son iguales, `qd2_cargar_config` da error** y el modelo no arranca.
    - `optitrack.bias_z_dron1` y `optitrack.bias_z_dron2`: van al Bias de cada Measurement Conditioning.
    - `optitrack.archivo_cal` y `optitrack.archivo_motive`: el `InitFcn` los escribe en el bloque OptiTrack. Si están vacíos, se conservan las rutas del Equipo2.

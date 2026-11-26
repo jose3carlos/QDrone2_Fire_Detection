@@ -31,6 +31,7 @@
     "tol_z": 0.12,
     "auto_land": false,
     "limites_xy": [-1.5, 1.5],
+    "limites_x": [-1.35, 1.2],
     "limites_y": [-1.4, 1.2],
     "modo": "dual",
     "t_perdida_aterrizar_s": 0.2

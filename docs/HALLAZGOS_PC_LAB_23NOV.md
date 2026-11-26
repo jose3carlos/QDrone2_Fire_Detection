@@ -19,6 +19,8 @@ Resultado: el modelo de tierra `versiones/R2022a/QD2_MissionCtrl_Dual_PID.slx` *
 
 `correr_pruebas` sin el arranque de QUARC: **41 de 42**. La que falla, `test_solo_codegen`, carga `pid/QD2_MissionCtrl_Dual_PID.slx`, que está guardado en R2025a (`Simulink:Commands:LoadingNewerModel`): es la versión del archivo, no el código. El modelo equivalente de `versiones/R2022a` sí compiló y corrió con QUARC en modo solo explorador.
 
+**Actualización (26-nov-2026):** hoy son 69 pruebas, y cuatro cargan ese `.slx` (`test_solo_codegen`, `test_trk_codegen_dual`, `test_envolvente_codegen` y `test_caido_codegen_dual`). Ahora las cuatro empiezan con `omitir_si_slx_mas_nuevo`, así que en R2022a salen "Incomplete" (omitidas), no FAIL. En esta PC lo esperado es **64 pasan y 4 Incomplete**. Un FAIL en cualquier otra prueba sí es una regresión (ver `simulink_qdrone2/tests/README.md`).
+
 ## Orden que funcionó
 
 1. Motive cerrado y ningún otro modelo QUARC corriendo.
@@ -58,3 +60,7 @@ Solo cambian las `.m` de `simulink_qdrone2/lib` (nueva `qd2_limites_xy.m`) y `P`
 - `versiones/R2022a/QD2_MissionCtrl_Dual_PID_2D.slx` (dual, lee `config/estacion_dual.json`).
 
 Sin recompilar, el modelo sigue recortando a ±1.35 en y (R podría ir a y = 1.35, dentro de la franja sin rastreo). Al abrir/compilar, `qd2_cargar_config` debe imprimir `envolvente de consignas x [-1.35 1.35], y [-1.40 1.20] m`; si no sale, la librería es vieja (copiar la carpeta `lib` de nuevo), y si sale un warning, `limites_y` es inválido. Los `.slx` no cambian. Sin las claves todo es bit a bit como antes (probado).
+
+## 26-nov: envolvente en x solo en dual (`mision.limites_x`)
+
+Decisión del usuario: `config/estacion_dual.json` (solo ella) trae además `"limites_x": [-1.35, 1.2]`, para que en dual ninguna consigna de los dos drones (evasión del guard, retícula del regreso, `punto_separacion`, aterrizaje, objetivo de R) vaya a la esquina x 1.2-1.35, y > 0.95 donde OptiTrack pierde el dron. `estacion.json` no cambia (el solo explorador ya vuela bien: su envolvente sigue en x ±1.35). Al compilar `QD2_MissionCtrl_Dual_PID_2D.slx`, `qd2_cargar_config` debe imprimir `envolvente de consignas x [-1.35 1.20], y [-1.40 1.20] m`; el de solo explorador, `x [-1.35 1.35], y [-1.40 1.20] m`. Hay que **RECOMPILAR** el `_PID_2D` con el `estacion_dual.json` nuevo. Al copiar `estacion.json` encima de `estacion_dual.json` (checklist, Etapa 8-0) hay que volver a poner `limites_x`; `web/preflight_lab.py` no da AVISO por esa clave (es propia del dual). Pruebas y números en `simulink_qdrone2/lib/README.md` ("Envolvente por eje").

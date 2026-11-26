@@ -40,9 +40,11 @@ echo Instalando dependencias (solo la primera vez) ...
 "%PY%" -m pip install -r requirements.txt || goto fail
 
 :run
-REM QD2_NO_BROWSER=1 evita abrir el navegador. El puerto sale de red.puerto_web de config\estacion.json
+REM QD2_NO_BROWSER=1 evita abrir el navegador. El puerto sale de red.puerto_web de config\estacion.json (o de --config)
+REM "call" dentro del for /f: con un argumento entre comillas (--config "ruta") cmd /c quitaba la primera y la
+REM ultima comilla de la orden, python no corria y se quedaba el 8080
 set "PORT=8080"
-for /f %%P in ('"%PY%" -m app.server --imprimir-puerto %* 2^>nul') do set "PORT=%%P"
+for /f %%P in ('call "%PY%" -m app.server --imprimir-puerto %* 2^>nul') do set "PORT=%%P"
 if not defined QD2_NO_BROWSER start "" cmd /c "timeout /t 4 >nul & start http://127.0.0.1:%PORT%"
 "%PY%" -m app.server %*
 goto :eof

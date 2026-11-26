@@ -41,6 +41,9 @@ function L = qd2_sim_lazo_cerrado(op)
 %     [t1, t2): el dron se queda con el último paquete y a los 0.5 s pasa
 %     a Error (7) como la "Detect Communication Loss" original; tierra
 %     retiene su última respuesta y el loopback crece).
+%     bateria (Kx2 [dron t]: desde t el stack a bordo de ese dron ve
+%     takeoff = 0, como el AUTOLAND por batería (14.0 V) del binario PID:
+%     baja en su sitio a 0.5 m/s y queda en 9; tierra no se entera).
 %   Modo de misión / parámetros:
 %     p (struct de parámetros; [] = qd2_params(); p. ej. con p.modo_mision = 1
 %     y p.dron_solo para el modo solo explorador),
@@ -61,7 +64,7 @@ d = struct('version', 1, 'home1', [-1.0 0.0], 'home2', [1.0 -0.3], ...
     'trk_off', zeros(0,3), 'py_extra', zeros(0,2), ...
     'a_bordo', -1, 'falla_fsm', zeros(0,2), 'falla_apilado', 0, 't_apilado_falla', 1.0, ...
     'proto_mal', zeros(0,3), 'rate_escape', -1, 'enlace_off', zeros(0,3), ...
-    'p', [], 'z_ausente', NaN, 'trk_a_bordo', 0);
+    'p', [], 'z_ausente', NaN, 'trk_a_bordo', 0, 'bateria', zeros(0,2));
 f = fieldnames(d);
 for i = 1:numel(f)
     if ~isfield(op, f{i}), op.(f{i}) = d.(f{i}); end
@@ -311,6 +314,13 @@ for k = 1:n
         else
             t_sin(i) = -1;
             rx(i,:) = [tel.arm(i) tel.takeoff(i) sp_rl(i,:)];
+        end
+        % AUTOLAND por batería a bordo: el stack ve takeoff = 0 desde t
+        for j = 1:size(op.bateria, 1)
+            if op.bateria(j,1) == i && t >= op.bateria(j,2)
+                rx(i,2) = 0;
+                if isnan(L.t_falla), L.t_falla = t; L.dron_falla = i; end
+            end
         end
     end
 

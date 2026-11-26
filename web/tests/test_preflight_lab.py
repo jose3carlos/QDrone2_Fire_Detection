@@ -185,6 +185,106 @@ def test_procesos_motive(pf):
     assert pf.motive_abierto(["python.exe", "MATLAB.exe"]) == []
 
 
+# ============================================================================================ dual vs estacion.json
+def _par_configs(tmp_path):
+    """Copias de config/estacion.json y config/estacion_dual.json del repo en tmp_path/config."""
+    d = tmp_path / "config"
+    d.mkdir(parents=True)
+    for n in ("estacion.json", "estacion_dual.json"):
+        (d / n).write_bytes(open(os.path.join(PROJECT, "config", n), "rb").read())
+    return str(d / "estacion.json"), str(d / "estacion_dual.json")
+
+
+def _editar(ruta, fn):
+    with open(ruta, encoding="utf-8-sig") as f:
+        c = json.load(f)
+    fn(c)
+    with open(ruta, "w", encoding="utf-8") as f:
+        json.dump(c, f)
+
+
+def test_dual_avisa_lo_medido_solo_en_estacion_json(pf, tmp_path, capsys, monkeypatch):
+    """Lo que el checklist guarda en estacion.json (etapas 3-5) y no se copió a estacion_dual.json da AVISO en el
+    preflight dual; las claves propias del dual (modo, dron_solo, ip_dron2, .motive) no."""
+    solo, dual = _par_configs(tmp_path)
+    out = correr(pf.revisar_par_dual, dual)
+    assert niveles(out, "OK") and not niveles(out, "AVISO"), out          # hoy difieren modo, dron_solo y limites_x
+    _editar(dual, lambda c: (c["red"].update(ip_dron2="192.168.2.17"),
+                             c["optitrack"].update(archivo_motive="C:/OptiTrack/hoy/dos_drones.motive")))
+    out = correr(pf.revisar_par_dual, dual)
+    assert niveles(out, "OK") and not niveles(out, "AVISO"), out
+    # la checklist mide en estacion.json: bias del dron 2, offset e intrínsecos de la cámara, signos de la actitud
+    _editar(solo, lambda c: (c["optitrack"].update(bias_z_dron2=-0.04),
+                             c["camara"].update(offset_camara_m=[0.212, 0.0325, 0.019],
+                                                intrinsecos={"640x480": {"fx": 1, "fy": 1, "cx": 1, "cy": 1}}),
+                             c["vision"].update(actitud_signos=[1, -1])))
+    out = correr(pf.revisar_par_dual, dual)
+    a = niveles(out, "AVISO")
+    assert len(a) == 1 and not niveles(out, "OK"), out
+    for k in ("optitrack.bias_z_dron2", "camara.offset_camara_m", "camara.intrinsecos", "vision.actitud_signos"):
+        assert k in a[0], a[0]
+    assert "mision.modo" not in a[0] and "ip_dron2" not in a[0] and "Etapa 8-0" in a[0]
+    # con la propia estacion.json (o sin estacion.json al lado) no compara
+    assert correr(pf.revisar_par_dual, solo) == []
+    os.remove(solo)
+    assert correr(pf.revisar_par_dual, dual) == []
+    # main en dual lo corre; en solo explorador no
+    _par_configs(tmp_path / "b")
+    solo_b, dual_b = str(tmp_path / "b" / "config" / "estacion.json"), str(tmp_path / "b" / "config" / "estacion_dual.json")
+    _editar(solo_b, lambda c: c["optitrack"].update(bias_z_dron2=-0.04))
+    monkeypatch.setattr(pf, "SQ", str(tmp_path))                  # sin .rt-win64 aquí
+    pf.main(["--config", dual_b])
+    assert "[AVISO] estacion_dual.json difiere de estacion.json en optitrack.bias_z_dron2" in capsys.readouterr().out
+    pf.main(["--config", solo_b])
+    assert "difiere de estacion.json" not in capsys.readouterr().out
+
+
+def test_dual_limites_x_solo_en_dual_no_avisa(pf, tmp_path):
+    """mision.limites_x solo en estacion_dual.json (decisión del usuario, 26-nov: x [-1.35, 1.2] en dual; el solo
+    explorador no cambia) es esperado: sin AVISO por esa clave, con otro valor ni si estacion.json también la trae.
+    Otra clave de mision que difiera (limites_y) sí avisa, y la exclusión no tapa claves con el mismo prefijo."""
+    solo, dual = _par_configs(tmp_path)
+    with open(dual, encoding="utf-8-sig") as f:
+        assert json.load(f)["mision"]["limites_x"] == [-1.35, 1.2]       # la config del repo la trae
+    with open(solo, encoding="utf-8-sig") as f:
+        assert "limites_x" not in json.load(f)["mision"]                   # y estacion.json no
+    out = correr(pf.revisar_par_dual, dual)
+    assert not niveles(out, "AVISO") and "mision.limites_x" in niveles(out, "OK")[0], out
+    _editar(dual, lambda c: c["mision"].update(limites_x=[-1.2, 1.0]))
+    assert not niveles(correr(pf.revisar_par_dual, dual), "AVISO")
+    _editar(solo, lambda c: c["mision"].update(limites_x=[-1.35, 1.35]))
+    assert not niveles(correr(pf.revisar_par_dual, dual), "AVISO")
+    _editar(dual, lambda c: c["mision"].update(limites_y=[-1.3, 1.1], limites_x_nota="otra"))
+    a = niveles(correr(pf.revisar_par_dual, dual), "AVISO")
+    assert len(a) == 1, a
+    claves = a[0].split(" difiere de estacion.json en ", 1)[1].split(": ", 1)[0].split(", ")
+    assert sorted(claves) == ["mision.limites_x_nota", "mision.limites_y"], a[0]
+
+
+def test_dual_sin_limites_x_avisa(pf, tmp_path, capsys, monkeypatch):
+    """Etapa 8-0 copia estacion.json (sin limites_x) encima de estacion_dual.json: revisar_par_dual no compara esa
+    clave, así que main avisa aparte si en DUAL falta (o es inválida); con la del repo, o en solo explorador, no."""
+    monkeypatch.setattr(pf, "SQ", str(tmp_path))                  # sin .rt-win64 aquí
+    solo, dual = _par_configs(tmp_path)
+    aviso = "[AVISO] modo DUAL sin mision.limites_x"
+    pf.main(["--config", dual])
+    assert aviso not in capsys.readouterr().out
+    pf.main(["--config", solo])
+    assert aviso not in capsys.readouterr().out
+    for v in (None, [1.2, -1.35]):                                # olvidada (copiada encima) o inválida
+        def poner(c, v=v):
+            c["mision"].pop("limites_x")
+            if v is not None:
+                c["mision"]["limites_x"] = v
+        _editar(dual, poner)
+        pf.main(["--config", dual])
+        out = capsys.readouterr().out
+        ln = [x for x in out.splitlines() if x.startswith(aviso)]
+        assert len(ln) == 1 and "-1.35..1.35" in ln[0] and "[-1.35, 1.2]" in ln[0], out
+        assert "[OK   ] estacion_dual.json = estacion.json salvo" in out or v is not None
+        _editar(dual, lambda c: c["mision"].update(limites_x=[-1.35, 1.2]))
+
+
 # ============================================================================================ build
 def test_modelo_por_modo(pf):
     assert pf.modelo_tierra("PID", True) == "QD2_MissionCtrl_Dual_PID"

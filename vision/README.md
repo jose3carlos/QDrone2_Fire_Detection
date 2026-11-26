@@ -153,11 +153,11 @@ El modelo actual (sintético + negativos de COCO y webcam) es un punto de partid
 ### Captura (~30 min)
 
 1. Arma la pista real: la N de tubo, los 3 fuegos y las 3 tomas en posiciones variadas, más los distractores reales (plantas, carritos, cilindros, cintas, calcomanías de flama…).
-2. Usa **la misma cámara y el mismo montaje del explorador**, con `qdrone2_camera_streamer.py` en el Jetson, lanzado con `--serie <serie de la D435i de abajo>` (el QDrone 2 trae otra RealSense frontal; `rs-enumerate-devices -s` da las series). Con el dron **con los motores apagados (sin modelo QUARC corriendo) y cargado a mano** (o en un palo), recorre la pista:
+2. Usa **la misma cámara y el mismo montaje del explorador**, con `qdrone2_camera_streamer.py` en el Jetson, lanzado con su relanzador (`scp web/drone/qdrone2_camera_streamer.py web/drone/correr_streamer.sh nvidia@<IP>:~/` y `ssh nvidia@<IP> "bash ~/correr_streamer.sh --camara auto --serie <serie de la RealSense que mira hacia abajo>"`; `--estado` / `--detener`; ver `docs/CHECKLIST_LABORATORIO.md`, etapa 5). Si `rs-enumerate-devices -s` lista más de una RealSense, sin `--serie` `--camara auto` puede abrir otra. Con el dron **con los motores apagados (sin modelo QUARC corriendo) y cargado a mano** (o en un palo), recorre la pista:
    ```bat
    %PY% vision\capturar_fotos.py --dron <IP_JETSON_EXPLORADOR> --cada 0.7
    ```
-   - **Cierra antes la estación web:** el streamer atiende un solo cliente. Si está ocupado, el programa lo dice a los 8 s.
+   - **Mejor cierra antes la estación web:** el streamer atiende hasta 3 clientes a la vez (`--max-clientes`; con uno más cierra el más viejo), pero cada cliente es otra copia del video por el Wi-Fi del dron. Si no llega ningún frame, el programa lo dice a los 8 s.
    - Si avisa que llegan frames de 320×240, el Jetson no tiene OpenCV y manda RAW reducido: instala `python3-opencv` en el Jetson para tener 640×480.
    - `a` activa el guardado automático y `ESPACIO` guarda una foto. También sirve `--camara 0` con una RealSense o webcam conectada a la PC. Repetir `--sesion X` continúa la misma carpeta sin sobrescribir; `--max N` cuenta sólo fotos nuevas.
 3. Qué cubrir: alturas 0.5, 1.0, **1.5 (~50 %)** y 1.8 m; orientación 0/90/180/270° e inclinaciones ligeras; piezas al centro, en los bordes, cortadas y tapadas; todas las luces y la mitad. Mueve las piezas 3–4 veces.
@@ -210,7 +210,7 @@ Para que la estación use `mejor_real.pt`, cambia `vision.modelo` en `config/est
 
 La PC del laboratorio no tiene el venv `qdrone2_vision` (torch + GPU). Se captura, etiqueta y afina **en la laptop** y sólo se lleva el modelo a la PC del laboratorio.
 
-1. **Captura desde la laptop:** conéctala a la red de los drones. Si la estación de la PC del lab está conectada al streamer, ciérrala: el streamer atiende un solo cliente. Corre `%PY% vision\capturar_fotos.py --dron <IP_explorador> --cada 0.7 --sesion lab_AAAAMMDD`. Unas 200–300 fotos en ~30 min, más una sesión de validación de ~60–80 (`--sesion lab_val`).
+1. **Captura desde la laptop:** conéctala a la red de los drones. Si la estación de la PC del lab está conectada al streamer, mejor ciérrala: el streamer atiende hasta 3 clientes (`--max-clientes`), pero cada uno es otra copia del video por el Wi-Fi del dron. Corre `%PY% vision\capturar_fotos.py --dron <IP_explorador> --cada 0.7 --sesion lab_AAAAMMDD`. Unas 200–300 fotos en ~30 min, más una sesión de validación de ~60–80 (`--sesion lab_val`).
 2. **Etiqueta** con `etiquetar.py auto` + `revisar` (arriba). A ~3 s por foto, 300 fotos son ~15–20 min.
 3. **Afina partiendo del modelo sintético** (no desde cero), con una salida nueva para no pisar `mejor.pt`:
    ```bat

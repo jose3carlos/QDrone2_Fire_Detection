@@ -72,3 +72,40 @@ def test_historial_de_pose_interpola():
     assert (round(x, 6), round(y, 6), round(z, 6)) == (0.1, -0.1, 1.1)
     assert abs(math.degrees(math.atan2(math.sin(yaw), math.cos(yaw)))) > 179.9
     assert h.at(12.0) is None                           # demasiado viejo
+
+
+def test_reset_no_lo_pisa_una_publicacion_atrasada():
+    """Carrera (A24): el hilo de visión copia la lista y, antes de mandarla, el puente reinicia la lista (Simulink
+    se reinició). La lista vieja no debe llegar al puente DESPUÉS de la vacía del reset."""
+    import threading
+    from app.bridge import BridgeClient
+    from app import protocol as P
+    br = BridgeClient("127.0.0.1", 1)                   # sin start(): no se conecta a nada
+    copiada, seguir = threading.Event(), threading.Event()
+    atrasar = {"si": False}
+
+    def publish_fn(targets):
+        if atrasar["si"] and threading.current_thread().name == "vision-falso":
+            copiada.set()                                # ya copió la lista vieja; se detiene antes de mandarla
+            seguir.wait(5)
+        br.set_targets(targets)
+
+    vs = VisionService(_Cam(), PoseHistory(), lambda: True, publish_fn, lambda: CFG,
+                       *load_detector("falso", ".", CFG, synthetic=True))
+    vs.add_manual(1, 1.0, 1.0)
+    assert [t[0] for t in br._targets] == [1.0]
+    atrasar["si"] = True
+    hilo = threading.Thread(target=vs.publish, name="vision-falso")
+    hilo.start()
+    assert copiada.wait(5)
+    resetter = threading.Thread(target=vs.reset)        # _sync_ids: Simulink se reinició
+    resetter.start()
+    resetter.join(0.3)
+    seguir.set()                                         # el hilo de visión manda su lista (vieja)
+    hilo.join(5)
+    resetter.join(5)
+    assert not hilo.is_alive() and not resetter.is_alive()
+    assert vs.targets()[0] == []
+    br._sesion_con_rx = True
+    m = P.unpack_command(br.build_message())
+    assert br._targets == [] and m["n_targets"] == 0     # antes: la lista vieja (id 1) le ganaba a la vacía

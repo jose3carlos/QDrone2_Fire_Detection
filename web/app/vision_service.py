@@ -210,6 +210,10 @@ class VisionService(threading.Thread):
         vis = cfg_fn().get("vision", {})
         self.clusters = Clusterer(vis.get("radio_cluster_m", 0.25), vis.get("min_observaciones", 3))
         self.lock = threading.Lock()
+        # serializa "leer la lista + mandarla" (publish): la lista vacía de reset() siempre sale DESPUÉS de una
+        # publicación vieja que estuviera en curso en otro hilo (si no, la vieja podía pisarla y llegar a un Simulink
+        # recién reiniciado). publish_fn no vuelve a llamar a publish y solo toma self.lock (export_state): sin deadlock
+        self._pub_lock = threading.Lock()
         self._stop = threading.Event()
         self.last = {"frame_id": 0, "stamp": 0.0, "dets": [], "ms": 0.0, "pose": None, "actitud": None}
         self.n_frames = self.n_obs = 0
@@ -382,9 +386,10 @@ class VisionService(threading.Thread):
             self.registro_error = f"{type(exc).__name__}: {exc}"
 
     def publish(self):
-        with self.lock:
-            tg = self.clusters.targets()
-        self.publish_fn([(t["id"], t["cls"], t["x"], t["y"], t["conf"]) for t in tg])
+        with self._pub_lock:
+            with self.lock:
+                tg = self.clusters.targets()
+            self.publish_fn([(t["id"], t["cls"], t["x"], t["y"], t["conf"]) for t in tg])
 
     def add_manual(self, cls, x, y):
         with self.lock:

@@ -6,6 +6,7 @@ import time
 import pytest
 from fastapi.testclient import TestClient
 
+from app.config import camara_dron
 from app.server import DATA_DIR, Station, create_app
 
 
@@ -38,7 +39,10 @@ def test_pagina_y_estado(client):
     assert client.get("/static/app.js").status_code == 200
     s = wait(lambda: (lambda e: e if e["tel"] and e["tel"]["mission_state_name"] == "ASSIGN_ROLES" else None)(estado(client)))
     assert s and s["fuente"] == "mock" and s["puente"]["connected"]
-    assert s["tel"]["explorer_id"] == 2 and s["tel"]["responder_id"] == 1
+    # demo dual: el dron de la cámara (camara.dron) sale atrás (menor x) y es el explorador, como en el laboratorio
+    cd = camara_dron(json.load(open(client.cfg_path, encoding="utf-8")))["dron"]
+    assert s["tel"]["explorer_id"] == cd and s["tel"]["responder_id"] == 3 - cd
+    assert s["camara"]["dron"] == cd and s["camara"]["explorador"] == cd
     assert len(s["pista"]) >= 2 and len(s["verdad_mock"]) == 3
 
 
@@ -111,8 +115,9 @@ def test_pista_y_captura(client):
     assert client.post("/api/config/pista", json={"vertices": v}).status_code == 200
     assert json.load(open(client.cfg_path, encoding="utf-8"))["pista"]["vertices"] == v
     wait(lambda: client.station.bridge.fresh())
-    cap = client.post("/api/pista/capturar", json={"dron": 2}).json()
-    assert cap["ok"] and cap["rigid_body"] == 2 and cap["x"] == pytest.approx(-0.9, abs=0.01)
+    cd = camara_dron(json.load(open(client.cfg_path, encoding="utf-8")))["dron"]   # sale en el home de atrás
+    cap = client.post("/api/pista/capturar", json={"dron": cd}).json()
+    assert cap["ok"] and cap["rigid_body"] == cd and cap["x"] == pytest.approx(-0.9, abs=0.01)
 
 
 def test_objetivo_manual_se_publica(client):

@@ -100,8 +100,8 @@ s.home_ok    = 0;                % 1 si los homes cumplen la separación mínima
 s.t_despegue = 0;                % instante en que se dio takeoff = 1
 s.t_land_paso = 0;               % instante de entrada al paso actual de LANDING
 
-% Falla a bordo (versión MPC; ver qd2_mission_step y qd2_enlace_mpc)
-s.falla      = [0 0];            % por DRON: 0 nada, 9 FSM a bordo 7/8/9 (o enlace perdido en vuelo),
+% Falla a bordo (versión MPC; ver qd2_mission_step y qd2_enlace_mpc; en dual PID, dron caído)
+s.falla      = [0 0];            % por DRON: 0 nada, 9 FSM a bordo 7/8/9 (o enlace perdido en vuelo, o caído en dual PID),
                                  % 10 protocolo MPC incorrecto, 2 pérdida de rastreo sostenida en
                                  % el aire (> p.t_perdida_aterrizar_s): aterriza, nunca más takeoff
 s.falla_fase = 0;                % reacción: 0 ninguna, 1 apartarse, 2 regresar,
@@ -120,6 +120,9 @@ s.falla_trk  = 0;                % 1 = el dron de la reacción "falló" por pér
 s.t_falla_fase  = 0;
 s.t_falla_llego = -1;
 s.t_falla_suelo = -1;
+% Dron caído (dual PID, ver qd2_mission_step y p.t_caido_s), por DRON
+s.caido_alto = [0 0];            % 1 = ya estuvo despegado en este vuelo (latch)
+s.t_caido    = [-1 -1];          % desde cuándo está en el piso rastreado (-1 = no)
 
 % Parámetros efectivos (con overrides de la estación)
 s.z_E = p.z_E;

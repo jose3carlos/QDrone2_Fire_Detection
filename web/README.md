@@ -67,7 +67,7 @@ Eventos). La web sigue escuchando solo en `127.0.0.1` de la laptop.
 ## Qué hay en la pantalla
 - **Vista 3D** (three.js r160 desde CDN): arena 3×3, la N, los dos QDrone 2 (modelo low-poly con las 4 guardas, color por rol: cian = explorador, naranja = respondedor), consignas (◇), estelas, home (▢), huella y pirámide de la cámara del explorador, anillo `d_min_h` y anomalías (llama = fuego, válvula = toma; el anillo indica el estado: amarillo detectada, azul asignada, verde visitada). Si no hay internet para el CDN, sigue funcionando el mapa 2D.
 - **Mapa 2D**: lo mismo visto desde arriba (x a la derecha, y hacia arriba), con coordenadas bajo el cursor.
-- **Envolvente de consignas** (`mision.limites_x` / `mision.limites_y`, hoy `"limites_y": [-1.4, 1.2]`): límite efectivo de las consignas xy de los dos drones en Simulink (`qd2_limites_xy`, sin el margen de `limites_xy`). El mapa 2D y la vista 3D la dibujan en punteado violeta (el límite de vuelo `limites_xy` sigue en punteado ámbar y el piso en gris) y en **Anomalías** un objetivo fuera lleva "se marca desde (x, y)": R lo marca desde el punto más cercano dentro (en dual). Solo informa, no bloquea nada; avisa si la clave es inválida o si un vértice de la ruta queda fuera (el explorador no alcanzaría ese waypoint). El mock recorta igual en los ejes con envolvente. Simulink la toma al **recompilar**.
+- **Envolvente de consignas** (`mision.limites_x` / `mision.limites_y`, hoy `"limites_y": [-1.4, 1.2]` en las dos configs y, solo en `estacion_dual.json` (26-nov), `"limites_x": [-1.35, 1.2]`: en dual nada va a la esquina x 1.2-1.35, y > 0.95 sin rastreo): límite efectivo de las consignas xy de los dos drones en Simulink (`qd2_limites_xy`, sin el margen de `limites_xy`). El mapa 2D y la vista 3D la dibujan en punteado violeta (el límite de vuelo `limites_xy` sigue en punteado ámbar y el piso en gris) y en **Anomalías** un objetivo fuera lleva "se marca desde (x, y)": R lo marca desde el punto más cercano dentro (en dual). Solo informa, no bloquea nada; avisa si la clave es inválida o si un vértice de la ruta queda fuera (el explorador no alcanzaría ese waypoint). El mock recorta igual en los ejes con envolvente. Simulink la toma al **recompilar**.
 - **Cámara del explorador** con las cajas del detector y la posición geolocalizada de cada una.
 - **Controles**: START, PAUSE, RESUME, ABORT/RTH y LAND ALL (START, ABORT y LAND ALL piden confirmación). También se muestran Δh/Δz entre E y R y el indicador del SEPARATION GUARD.
 - **Seguridad de los comandos**:
@@ -78,7 +78,7 @@ Eventos). La web sigue escuchando solo en `127.0.0.1` de la laptop.
   - Cada resultado (recibido / caducado / descartado / reemplazado) sale como aviso y en **Eventos**.
 - **Alerta de Simulink, y(55)**: barra bajo los controles con el código 0..10 y su texto (tabla en `docs/ARQUITECTURA.md` §3.3). Amarilla = aviso (1 homes cerca, 4 timeout de aterrizaje, 6 Takeoff abajo); roja = grave (las demás). Cada cambio queda en **Eventos**. La alerta 2 (pérdida de rastreo) dice qué dron: con ABORT/LANDING/DONE, "Aterrizaje por pérdida de rastreo (dron N)" (en el aire, más de `mision.t_perdida_aterrizar_s` = 0.2 s sin rastreo: ese dron aterriza y no vuelve a despegar; en dual el otro se aparta, regresa y aterriza); con PAUSED (solo si ese valor es > 0.2 s), "misión en PAUSA". El número del dron no viaja en y(1..64): la estación lo deduce del dron con `tracked` = 0 (en solo explorador, solo el que vuela) y lo recuerda mientras dure la alerta. Un valor inválido de `mision.t_perdida_aterrizar_s`, o mayor que 0.2, sale como aviso amarillo.
 - **Estado de cada dron**: en PID es el *Flight State de tierra* del Equipo2 (0 Idle, 1 Armed, 2 Takeoff, 3 Land, 9 MS Stop), porque el dron PID no reporta su FSM; en MPC es la *FSM a bordo* (1..9; 7 y 8 en rojo). Se decide con y(3). El 9 (DISABLE / MS Stop) es el fin normal de un vuelo: solo sale en rojo si el dron debería estar en el aire (TAKEOFF, HOVER_READY, MISSION, RETURN_HOME, ABORT, PAUSED) o si hay alerta 9. Un y(55) NaN/inf sale como alerta grave (código interno −1, `protocol.ALERTA_NO_FINITA`), no como "nada"; un código > 10 o negativo sale como "alerta desconocida" (grave). La alerta 9 es global: en MPC la estación recuerda qué dron vio fallar (7/8, o 9 debiendo volar) en la corrida actual de Simulink y, con ese historial, solo ese sale en rojo; el 9 del dron sano al aterrizar queda como "fin de vuelo" (sin historial, los dos en rojo, como dice el contrato). La tarjeta de cada dron muestra la distancia a su home y **en home** (< `mision.tol_xy`): en LANDING cada dron baja en su sitio, así que da LAND ALL cuando los dos marquen *en home*.
-- **Barra de avisos** (roja / amarilla): cámara sintética con un puente que no es el mock, detector que no detecta tomas, imagen girada sin `giro_en_dron`, geolocalización sin intrínsecos, actitud del explorador no disponible en misión (y(63) = 0: modelo de Simulink sin y(61:63), se geolocaliza nivelado), o modelo corriendo (y(3)) distinto de `version_control` de `estacion.json` (los comandos `quarc_run` de **Conexiones** lanzarían el binario del dron equivocado).
+- **Barra de avisos** (roja / amarilla): cámara sintética con un puente que no es el mock, detector que no detecta tomas, imagen girada sin `giro_en_dron`, geolocalización sin intrínsecos, actitud del explorador no disponible en misión (y(63) = 0: modelo de Simulink sin y(61:63), se geolocaliza nivelado), o modelo corriendo (y(3)) distinto de `version_control` de `estacion.json` (los comandos `quarc_run` de **Conexiones** lanzarían el binario del dron equivocado). En rojo, **dron sin enlace con tierra en vuelo**: un dron que debería volar (estado de misión de vuelo; en solo explorador, solo el que vuela) con `comm_ok` = 0 o, en PID, Flight State 9; con el binario PID la misión no lo sabe (sigue en MISSION, sin alerta), así que el texto pide LAND ALL; la 1.ª vez y el regreso del enlace quedan en **Eventos** (y en la caja negra). En amarillo, **pausa probablemente por heartbeat**: PAUSED desde MISSION justo después de una reconexión del puente (que también queda en Eventos) o de > 1 s sin telemetría, sin PAUSE propio ni alerta 2 (pide RESUME o LAND ALL; Simulink no reanuda solo).
 - **Pestañas**:
   - **Misión**: progreso de la N, cola, marcado, separación y **Batería** (ver [Batería](#batería)).
   - **Anomalías**: lista, alta manual haciendo clic en el mapa y estado del detector. La lista une lo que publicó la estación con lo que Simulink reporta en y(56:60), por id y por cercanía (un objetivo de Simulink con otro id a menos de `vision.radio_cluster_m` es el alias que guardó Simulink: una sola fila, con "= #N"), sin duplicar. El puente procesa cada mensaje aunque lleguen varios juntos, así no se pierde ningún objetivo rotando. Columna **Origen**: *estación*, *ambos* (publicado aquí y confirmado por Simulink) o *Simulink* (lo conoce Simulink pero no lo publicó esta estación; p. ej. el detector interno del simulador 3D). En el mapa 2D, los de solo Simulink llevan anillo punteado. Con la fuente mock hay una tarjeta **Pruebas con el mock** para forzar y(55) (muestra la alerta forzada actual) y agregar objetivos "de Simulink".
@@ -101,11 +101,26 @@ El mock también se puede correr suelto, para que el equipo de MATLAB pruebe con
 
 El mock emite además, igual que el modelo real:
 - y(55) = alerta. Rechaza START con alerta 1 si los homes están cerca (< 1.05 m en PID, < 0.8 m en MPC). Para probar la UI se puede forzar cualquier código: `--alerta 9`, o desde la UI/`POST /api/mock/alerta {"codigo": 9}` (`null` = alerta real). Pérdida de rastreo: `--rastreo DRON T1 T2` (s de misión; se repite) o `MockServer.perder_rastreo(dron, duracion_s)`.
+- Dron caído (solo dual PID, como `qd2_mission_step`): `--apagar DRON T` (s de misión; se repite), `MockServer.apagar_dron(dron)` o, desde la UI (tarjeta *Pruebas con el mock*, botones **Apagar dron 1/2**), `POST /api/mock/apagar {"dron": 2}`. El dron baja en su sitio sin obedecer y no vuelve a despegar (como el binario PID sin enlace o en AUTOLAND por batería; sigue rastreado). Con takeoff en un estado de vuelo, ya despegado y en el piso más de `mision.t_caido_s` (1.0 s; 0 = desactivado): alerta 9, takeoff 0 al caído y el otro se aparta ≥ 1.60 m, regresa y aterriza (ABORT → LANDING → DONE). La estación muestra la 9 en PID como "Dron N en el piso sin que la misión lo pidiera (pérdida de enlace, error a bordo o batería): el otro se aparta, regresa y aterriza" (N = el dron que vio en el piso al aparecer la alerta) y la deja en Eventos; con `t_caido_s` = 0 o inválido sale un aviso amarillo.
 - y(56:60) = un objetivo de su tabla por mensaje, rotando. Para simular objetivos que conoce Simulink y la estación no publicó: `--objetivo-interno X Y CLS` (se repite) o `POST /api/mock/objetivo_interno {"cls": 1, "x": 0.4, "y": -0.8}`.
 - o+2 = Flight State de tierra en PID y FSM a bordo en MPC.
 - Como `qd2_mission_step`, un id nuevo a menos de `vision.radio_cluster_m` de un objetivo que ya tiene queda como alias (no entra a la tabla ni a y(56:60)) y `visited_mask` lo marca cuando se visita el original.
 - Despegue como `qd2_mission_step`: arma al entrar a TAKEOFF y da takeoff 2 s después. ABORT/LAND_ALL antes de despegar cancelan el despegue (sin takeoff: desarma y vuelve a ASSIGN_ROLES; con takeoff y nadie arriba de 0.15 m: bajan en su sitio hasta DONE).
 - `mock.reset()` cierra la conexión, como un reinicio real de Simulink.
+
+Diferencias de la demo que conviene tener presentes:
+- **Duración.** El mock mueve los drones a 0.55 m/s (xy) y 0.5 m/s (z), sin el SETPOINT RATE LIMITER de tierra
+  (`p.pid.rate_xy` = 1/3 m/s, `rate_z` = 1/6 m/s), y avanza de waypoint en cuanto entra en `tol_xy`, sin el dwell de
+  0.3 s (`p.t_dwell_wp`). Por eso la demo vuela ~2.2-2.5x más rápido que la misión real: con la pista del 24-nov y
+  los homes del mock, el SIL de MATLAB (`qd2_sim_lazo_cerrado`) da en dual despegue ~10 s (mock ~5 s), MISSION ~99 s
+  y DONE ~136 s (mock: RETURN_HOME a ~48 s); en solo explorador, DONE ~95 s (mock: RETURN_HOME a ~35 s). La demo no
+  sirve para estimar tiempos ni batería (la batería simulada baja menos porque el vuelo dura menos). La tarjeta
+  **Pruebas con el mock** lo recuerda.
+- **Homes.** En dual el dron de la cámara (`camara.dron`) sale atrás, en (-0.9, 0.4), y es el explorador (el de
+  menor x), como hay que colocarlo en el laboratorio; el otro sale en (0.9, -0.4). Con `camara.dron` = 2 y en solo
+  explorador quedan los de siempre (`mock_sim.homes_mock`).
+- **Recorte.** La misión simplificada (objetivo de R, evasión y rodeos del guard) recorta a la envolvente en los ejes
+  que la tienen y a `limites_xy` -/+ 0.15 (±1.35, = `qd2_limites_xy`) en los demás, como MATLAB.
 
 **Video** (`camara.fuente` en `estacion.json`):
 - `dron`: se conecta SIEMPRE a `ip_dron{camara.dron}:18800`. `camara.dron` (1 o 2, por defecto 1; otro valor → 1
@@ -113,7 +128,8 @@ El mock emite además, igual que el modelo real:
   reevalúa los roles (el de menor x es el explorador) y el video saltaría de IP antes del START.
   - **Explorador ≠ cámara** (dual: y(4) de la telemetría fresca; solo explorador: `dron_solo`, también sin telemetría):
     aviso rojo *"El explorador es el dron N pero la cámara está en el dron M: reacomoda los drones (el explorador es el
-    de menor x) o cambia camara.dron"* (en solo: vuela con ese dron o cambia `camara.dron`) y **START responde 409**
+    de menor x) o cambia camara.dron; si el dron de la CÁMARA ya está en la menor x, los rigid bodies o las IPs están
+    cruzados: NO reacomodes…"* (en solo: vuela con ese dron o cambia `camara.dron`) y **START responde 409**
     con ese motivo (`CamaraDistinta`, mismo patrón que el modo distinto, que se revisa primero). PAUSE, RESUME, ABORT
     y LAND_ALL nunca se bloquean, y en vuelo no cambia nada. No aplica con el mock ni con `camara.fuente` distinta de
     `dron` (la cámara sintética sigue al explorador). `preflight_lab.py`: FALLA en solo si `dron_solo` ≠ `camara.dron`;
@@ -233,7 +249,10 @@ El vuelo se abre cuando el gate de la visión se activa (MISSION/PAUSED con el e
 `web.z_min_deteccion`) y se cierra al salir de MISSION/PAUSED, al reiniciar objetivos o al detener la estación (una
 pausa no lo parte). Sin observaciones solo queda archivo si hubo > 5 s de gate. Por defecto se registra solo con
 `--fuente simulink` (vuelo real); `web.registro_vuelos` (`"auto"`, `true`, `false`) o `--registro-vuelos auto|si|no`
-lo cambian. Con un `estacion.json` de prueba se escribe junto a ese archivo, y pytest nunca escribe en `web/datos`.
+lo cambian. Con cualquier config de `config/` (`estacion.json` o `estacion_dual.json`, la que pasa `INICIAR_DUAL.bat`)
+se escribe en `web/datos/vuelos`: los vuelos de solo explorador y los duales quedan en la misma carpeta (la cabecera
+dice `config` y `modo_mision`). Con una config de prueba fuera de `config/` se escribe junto a ese archivo, y pytest
+nunca escribe en `web/datos`.
 **`web/datos/vuelos` sí va a git** (el resto de `web/datos` no): así la laptop y la PC del laboratorio leen los
 mismos vuelos.
 
@@ -248,7 +267,9 @@ cluster más allá de un extremo alarga ese extremo. Nunca toca `pista.vertices`
 %USERPROFILE%\.venvs\qd2_web\Scripts\python web\herramientas\ajustar_tubos.py --aplicar          &rem reescribe SOLO pista.tubos (+ estacion.json.bak)
 ```
 Avisa si los vuelos se registraron con tubos distintos (el cálculo siempre es contra la config actual, con las xy
-registradas). Opciones: `--config`, `--umbral`, `--min-clusters`, `--n-fuerte`, `--max-desp`, `--margen`.
+registradas) y si alguno se registró con otra config que `--config` (p. ej. un vuelo dual con el `--config` por
+defecto, `config\estacion.json`): `--aplicar` solo reescribe `--config`; para la dual, `--config
+config\estacion_dual.json`. Opciones: `--config`, `--umbral`, `--min-clusters`, `--n-fuerte`, `--max-desp`, `--margen`.
 
 ## Caja negra y repetición (`*.tel.jsonl.gz`)
 Si algo falla en un vuelo real, la caja negra permite reconstruir qué vio la estación, paquete por paquete. Cada vuelo
@@ -345,7 +366,10 @@ Simulink busca los objetivos por id y no vuelve a mover uno ya visitado. Por eso
 - Solo se usan ids **1..32** (los que caben en `visited_mask`). Si se acaban, la anomalía confirmada **no se publica** y sale un aviso rojo; el alta manual responde 400. El puente descarta cualquier id fuera de 1..32.
 - Los ids nuevos también empiezan después de los que Simulink reporta en y(56:60).
 - En cada conexión nueva el puente no manda objetivos hasta recibir la primera telemetría: si Simulink se reinició, la estación vacía su lista antes.
-- La tabla se guarda en `web/datos/objetivos_estacion.json`. Si reinicias la estación a mitad de misión, la recupera.
+- La tabla se guarda en `web/datos/objetivos_estacion.json` (con `config/estacion_dual.json`, en
+  `web/datos/objetivos_estacion_dual.json`; con las fuentes mock y sim3d, en su propio archivo
+  `..._mock.json` / `..._sim3d.json`). Si reinicias la estación a mitad de misión, la recupera; cambiar de fuente en la UI
+  no la pisa, y al volver a `simulink` se recupera con su siguiente id.
 - Los ids nuevos siempre empiezan después de los que Simulink ya conoce (`n_targets_known`, `visited_mask` y `responder_target_id`).
 - Si Simulink se reinicia (su `t` vuelve a empezar, o se reconecta sin objetivos), la estación también empieza de cero.
 - **Reiniciar lista** solo se permite mientras Simulink no tenga objetivos.
@@ -355,7 +379,7 @@ Simulink busca los objetivos por id y no vuelve a mover uno ya visitado. Por eso
 cd web
 %USERPROFILE%\.venvs\qd2_web\Scripts\python -m pytest -q tests
 ```
-Son 352 pruebas (algunas se saltan si no están `vision/datos/sintetico_smoke` ni el respaldo `mejor_640x640_*.onnx`, que no van a git); `tests/test_frontera_e2e.py` cubre lo que se corrigió en la prueba punta a punta (fallas por dron con la alerta 9 y aviso de versión del modelo distinta de la config); `tests/test_revision.py` cubre los defectos de la revisión y `tests/test_alertas_objetivos_sim.py` la alerta y(55), los objetivos y(56:60), la etiqueta de fsm según la versión, los ids 1..32, el ack con +0.5 del operador, la retención de objetivos al reconectar, las ráfagas de telemetría, el 9 como fin de vuelo, y(55) no finito, el alias de Simulink y la cancelación del despegue en el mock. Cubren:
+Son 387 pruebas (algunas se saltan si no están `vision/datos/sintetico_smoke` ni el respaldo `mejor_640x640_*.onnx`, que no van a git); `tests/test_frontera_e2e.py` cubre lo que se corrigió en la prueba punta a punta (fallas por dron con la alerta 9 y aviso de versión del modelo distinta de la config); `tests/test_revision.py` cubre los defectos de la revisión y `tests/test_alertas_objetivos_sim.py` la alerta y(55), los objetivos y(56:60), la etiqueta de fsm según la versión, los ids 1..32, el ack con +0.5 del operador, la retención de objetivos al reconectar, las ráfagas de telemetría, el 9 como fin de vuelo, y(55) no finito, el alias de Simulink y la cancelación del despegue en el mock. Cubren:
 - protocolo (índices base 1);
 - comandos:
   - rechazo sin telemetría;
@@ -367,6 +391,14 @@ Son 352 pruebas (algunas se saltan si no están `vision/datos/sintetico_smoke` n
 - mock con las reglas de `qd2_mission_step`, y guard PID en 10 misiones aleatorias (homes, anomalías, momento de publicación y paso de tiempo);
 - Origin ajeno rechazado en POST y en el WebSocket, validaciones, y cámara sintética bloqueada con `simulink`;
 - puente: heartbeat a 20 Hz, `cmd_seq`/ack, rotación de ranuras y reconexión;
+- avisos al operador (`tests/test_alertas_objetivos_sim.py`): dron sin enlace con tierra en vuelo (`comm_ok` = 0 o
+  Flight State 9 en PID; una línea en Eventos, nada fuera de los estados de vuelo ni por el dron que no vuela en solo),
+  pausa probablemente por heartbeat (tras reconexión o hueco > 1 s; no con un PAUSE propio ni con la alerta 2) y texto
+  de la alerta 3; tabla de objetivos y vuelos en `web/datos` con cualquier config de `config/` (dual con su propia
+  tabla) y tabla por fuente (cambiar a sim3d y volver a simulink recupera la tabla y el siguiente id); publicación de
+  objetivos serializada con el reinicio de la lista (`tests/test_vision_service.py`), aviso de `ajustar_tubos.py` con
+  un vuelo de otra config y homes de la demo según
+  `camara.dron` (`tests/test_camara_dron.py`);
 - misión mock completa: PID y MPC, pausa por heartbeat, ABORT y LAND ALL;
 - pérdida de rastreo (`tests/test_rastreo_perdida.py`): texto de la alerta 2 y "(dron N)" en la UI, validación de
   `mision.t_perdida_aterrizar_s` igual que MATLAB, mock sin PAUSED (solo 7 → 8, dual 9 → 7 → 8), nunca más takeoff
@@ -374,6 +406,13 @@ Son 352 pruebas (algunas se saltan si no están `vision/datos/sintetico_smoke` n
   el mock contra 4 trazas de `qd2_mission_step` (MATLAB, `tests/referencia_rastreo/generar_referencia_rastreo.m`).
   Estados y tiempos de eventos coinciden; las posiciones no siempre: el mock no hace el dwell de 0.3 s por waypoint
   de MISSION, así que con una pérdida tras una MISSION larga el explorador aterriza en otro sitio (hasta ~0.5 m);
+  desde el 26-nov también 4 trazas de dron caído (`dual_caido_*`: R en TAKEOFF, E en MISSION, R con LAND_ALL durante
+  la reacción y la detección desactivada);
+- dron caído en dual PID (`tests/test_dron_caido.py`): validación de `mision.t_caido_s` igual que MATLAB, texto de la
+  alerta 9 en PID, mock con R y con E apagados (alerta 9, takeoff 0 al caído sin volver nunca, el sano se aparta a
+  1.60 m, regresa y aterriza), 6 misiones normales sin falsos positivos e idénticas con la detección desactivada,
+  nada en solo explorador, MPC ni con `t_caido_s` = 0, un dron que no despegó no cuenta, avisos de la estación y
+  `POST /api/mock/apagar` de punta a punta;
 - geolocalización: ida y vuelta con yaw/montaje, huella y cadena imagen→suelo con error < 3 cm;
 - actitud del explorador (`tests/test_actitud.py`): convención de ejes, nivelado idéntico al cálculo anterior, ida y vuelta mundo→píxel→suelo < 1 mm con roll/pitch de ±12°, yaw y montajes variados, casos a mano (pitch 5° nariz abajo → 0.135 m hacia atrás), el offset de la cámara girando alrededor del pivote de Motive (0.07 m sobre la pose corregida, `optitrack.bias_z_dronN`), y(61:63) en el protocolo, interpolación en `PoseHistory`, descarte por inclinación, `usar_actitud` = false, modelo viejo (y(63) = 0), signos configurables, actitud del mock y huella de la estación;
 - clusters y persistencia de la configuración;
@@ -415,6 +454,8 @@ Son 352 pruebas (algunas se saltan si no están `vision/datos/sintetico_smoke` n
   en dual (FALLA), sin el ID 2, dron 2 real, misma geometría, auxiliar renombrado (se reconoce por el triángulo),
   dron 2 real + auxiliar con el mismo ID (FALLA si vuela, pide borrar el auxiliar),
   ilegibles (AVISO, nunca FALLA), copia del repo (FALLA → AVISO), `archivo_motive` vacío y Motive abierto en `main`;
+  `estacion_dual.json` contra `estacion.json` (AVISO con lo medido solo en `estacion.json`; nada por modo, `ip_dron2`
+  ni `.motive`);
   build ausente, más viejo que la config / una `.m` / `qd2_cargar_config.m`, más nuevo, `.slx` posterior (AVISO),
   sello con el mismo contenido y fechas nuevas (OK), con otro sha, `.m` cambiada o nueva, la línea del build y no
   la de un Connect posterior, sello viejo o solo posterior (fechas), líneas ilegibles y `--remoto` (INFO); con el
@@ -457,11 +498,11 @@ N de 4 vértices y `cfg_path_solo` una en solo (dron 1) con la pista de 7 vérti
 | `app/fomo.py` | Detector FOMO original (respaldo) |
 | `app/static/` | UI (sin compilación): `index.html`, `app.js`, `escena3d.js`, `mapa2d.js`, `style.css` |
 | `drone/qdrone2_camera_streamer.py` | Streamer QDF1 en el Jetson |
-| `preflight_lab.py` | Revisión previa a cada vuelo, de solo lectura: archivos de `versiones/`, binarios de los drones, **build de tierra vs config** (`<modelo>.rt-win64` del modo: solo → `QD2_MissionCtrl_Dual_PID`, dual → `_PID_2D`; FALLA si falta o si la config, `simulink_qdrone2/lib/*.m` o `qd2_cargar_config.m` cambiaron después del build: por contenido con el sello `<modelo>.config_usada.jsonl` que escribe `qd2_cargar_config` en el InitFcn, gitignored, y de la config solo las claves que lee el modelo (dice cuál cambió; `red.ip_*`, `camara`, `pista.tubos`, `web`... no piden recompilar); sin sello, por fechas), ONNX, config (cámara, Motive, rigid bodies, pista, IPs), **contenido del `.motive`** (los dos IDs; FALLA si un dron que vuela tiene el rigid body auxiliar, p. ej. el dron 2 en dual, también si su ID está repetido y uno es el auxiliar; AVISO si no se puede interpretar), interfaces, puertos, Motive abierto (psutil o `tasklist`) y QUARC. Uso: `%USERPROFILE%\.venvs\qd2_web\Scripts\python web\preflight_lab.py [--config config\estacion_dual.json] [--version MPC] [--ping] [--remoto IP_PC]`. Qué hacer con cada FALLA: `docs/CHECKLIST_LABORATORIO.md`, Etapa 6 |
+| `preflight_lab.py` | Revisión previa a cada vuelo, de solo lectura: archivos de `versiones/`, binarios de los drones, **build de tierra vs config** (`<modelo>.rt-win64` del modo: solo → `QD2_MissionCtrl_Dual_PID`, dual → `_PID_2D`; FALLA si falta o si la config, `simulink_qdrone2/lib/*.m` o `qd2_cargar_config.m` cambiaron después del build: por contenido con el sello `<modelo>.config_usada.jsonl` que escribe `qd2_cargar_config` en el InitFcn, gitignored, y de la config solo las claves que lee el modelo (dice cuál cambió; `red.ip_*`, `camara`, `pista.tubos`, `web`... no piden recompilar); sin sello, por fechas), ONNX, config (cámara, Motive, rigid bodies, pista, IPs), **contenido del `.motive`** (los dos IDs; FALLA si un dron que vuela tiene el rigid body auxiliar, p. ej. el dron 2 en dual, también si su ID está repetido y uno es el auxiliar; AVISO si no se puede interpretar), **dual vs `estacion.json`** (con `--config config\estacion_dual.json`, AVISO por cada clave distinta de la `estacion.json` de la misma carpeta fuera de `mision.modo`/`dron_solo`, `red.ip_dron2` y `optitrack.archivo_motive`: lo medido en el día que no se copió al dual), interfaces, puertos, Motive abierto (psutil o `tasklist`) y QUARC. Uso: `%USERPROFILE%\.venvs\qd2_web\Scripts\python web\preflight_lab.py [--config config\estacion_dual.json] [--version MPC] [--ping] [--remoto IP_PC]`. Qué hacer con cada FALLA: `docs/CHECKLIST_LABORATORIO.md`, Etapa 6 |
 
 ## Pendiente de verificar en el laboratorio
 - Las opciones de `quarc_run`. Los comandos generados usan `-r -t tcpip://IP:17000 <modelo>.rt-linux_qdrone2 -uri tcpip://IP:17001?retries=10 -URI_Host tcpip://PC:1800i`. `?retries=10` es el valor por defecto del `_main.c` original. Según la documentación local de QUARC (`%QUARC_DIR%\quarc\doc\quarc_command_line_tools.html`), `-r` descarga y ejecuta y `-D` solo descarga; en la sintaxis son alternativas excluyentes, por eso se usa solo `-r`. La ayuda corta es `quarc_run -?` (con `-h` no imprime nada en la consola). El comando se corre en un `cmd` abierto en `simulink_qdrone2\binarios_dron`, donde están los `.rt-linux_qdrone2`.
-- En el explorador, elegir la D435i de abajo con `--serie` (el QDrone 2 trae otra RealSense frontal): `rs-enumerate-devices -s` en el Jetson da los números de serie.
+- En el explorador, si `rs-enumerate-devices -s` (en el Jetson) lista más de una RealSense, elegir con `--serie` la que mira hacia abajo: sin `--serie`, `--camara auto` puede abrir otra.
 - Copiar a `camara.intrinsecos` los intrínsecos que imprime el streamer en el dron real.
 - Que la PC del laboratorio tenga el `vision/modelos/mejor.onnx` (y `mejor.pt`) actual: van en git; `vision/modelos/mejor.onnx.json` debe decir `92e8dec0…` e `"imgsz": [480, 640]` (y `vision/detector.py` debe ser el de la misma versión: uno anterior sólo maneja `.onnx` de 640×640).
 - Que el Stream Server de Simulink en :18700 mande 64 doubles a 50 Hz y lea 32 (los mismos ajustes de *most recent* que el original).

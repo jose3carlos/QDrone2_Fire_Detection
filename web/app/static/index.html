@@ -29,7 +29,7 @@
   </div>
   <div class="chips">
     <span class="chip" id="chip-ws" title="Conexión navegador ⇄ estación">Web</span>
-    <span class="chip" id="chip-bridge" title="Puente :18700 con Simulink / simulador">Puente</span>
+    <span class="chip" id="chip-bridge" title="Puente con Simulink / simulador">Puente</span>
     <span class="chip" id="chip-cam" title="Video del explorador">Video</span>
     <span class="chip" id="chip-vision" title="Detector">Visión</span>
     <span class="chip neutral" id="chip-version" title="Versión del modelo que está corriendo">—</span>
@@ -39,7 +39,7 @@
   <label class="source">Fuente
     <select id="sel-fuente">
       <option value="mock">mock (sin MATLAB)</option>
-      <option value="simulink">simulink :18700</option>
+      <option value="simulink">simulink (modelo de tierra)</option>
       <option value="sim3d">simulador MATLAB 3D</option>
     </select>
   </label>
@@ -60,7 +60,7 @@
   <button class="btn" data-cmd="PAUSE">PAUSE</button>
   <button class="btn" data-cmd="RESUME">RESUME</button>
   <button class="btn warn" data-cmd="ABORT" data-confirm="¿Abortar? Ambos drones regresan a su home y quedan en hover.">ABORT / RTH</button>
-  <button class="btn danger" data-cmd="LAND_ALL" data-confirm="¿Aterrizar los dos drones donde están?">LAND ALL</button>
+  <button class="btn danger" data-cmd="LAND_ALL" data-confirm="¿Aterrizar los dos drones? Primero baja R en su sitio; E espera a su altura y baja después (unos segundos), en su sitio si está a más de d_min_h + 0.2 m de R (~1.1 m); si está más cerca, antes se aparta a su home o a un punto libre.">LAND ALL</button>
   <span class="cmdinfo" id="cmdinfo">cmd_seq 0 · ack —</span>
   <span class="spacer"></span>
   <span class="metric"><span class="label">t</span> <b id="m-t">—</b></span>
@@ -196,7 +196,7 @@
             <option value="6">6 · Takeoff abajo (operador)</option>
             <option value="7">7 · Arm abajo (operador)</option>
             <option value="8">8 · respaldo del operador</option>
-            <option value="9">9 · falla a bordo (MPC)</option>
+            <option value="9">9 · falla a bordo / dron caído</option>
             <option value="10">10 · protocolo MPC incorrecto</option>
           </select>
           <button class="btn sm" id="btn-mock-alerta">Forzar alerta</button>
@@ -207,6 +207,16 @@
         </div>
         <small>Solo con la fuente mock. El objetivo "de Simulink" entra a la tabla del mock y llega por y(56:60),
           como uno del detector interno del simulador 3D.</small>
+        <div class="row-inline" style="margin-top:6px">
+          <button class="btn sm" id="btn-mock-apagar1">Apagar dron 1</button>
+          <button class="btn sm" id="btn-mock-apagar2">Apagar dron 2</button>
+        </div>
+        <small>El dron baja en su sitio y no vuelve a despegar (como el binario PID sin enlace o en AUTOLAND por
+          batería). En dual PID la misión lo ve en el piso (mision.t_caido_s, 1 s): alerta 9 y el otro se aparta,
+          regresa y aterriza.</small>
+        <small>La demo vuela ~2.2-2.5x más rápido que la misión real (sin el SETPOINT RATE LIMITER de 1/3 y 1/6 m/s ni el
+          dwell de 0.3 s por waypoint): no sirve para estimar tiempos ni batería. Con la pista del 24-nov el SIL da
+          ~136 s hasta DONE en dual y ~95 s en solo explorador.</small>
       </div>
       <div class="card">
         <div class="card-title">Visión</div>

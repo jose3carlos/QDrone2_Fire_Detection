@@ -78,6 +78,9 @@ def test_start_409_dual_explorador_distinto(cfg_path):
     msg = TXT.format(e=2, c=1)
     av = st.avisos()
     assert _hay(av, "rojo", msg) and _hay(av, "rojo", "reacomoda los drones (el explorador es el de menor x)")
+    # un cruce de rigid body / IP da el mismo rechazo: el texto dice que NO se reacomode si la cámara ya va atrás
+    assert _hay(av, "rojo", "si el dron de la CÁMARA ya está en la menor x, los rigid bodies o las IPs están "
+                            "cruzados: NO reacomodes, revisa Motive y Conexiones")
     with pytest.raises(CamaraDistinta):
         st.command("START")
     assert st.bridge.sent == []
@@ -312,3 +315,25 @@ def test_preflight_camara_dron(cfg_path_solo, cfg_path, monkeypatch, capsys):
     _cam(cfg_path, 2)
     pf.main(["--config", cfg_path, "--remoto", pc])
     assert "[INFO ] camara.dron = 2: coloca ese dron con MENOR x" in capsys.readouterr().out
+
+
+# =============================================================================== demo mock: homes según camara.dron
+@pytest.mark.parametrize("modo, dron, explorador", [("dual", 1, 1), ("dual", 2, 2), ("solo_explorador", 1, 1)])
+def test_demo_mock_saca_atras_al_dron_de_la_camara(modo, dron, explorador):
+    """A18: en la demo dual el explorador (el de menor x en ASSIGN_ROLES) es el dron de camara.dron, como hay que
+    colocarlo en el laboratorio; antes los homes eran fijos y siempre salía el dron 2."""
+    from app.mock_sim import HOMES_MOCK, MockMission, homes_mock
+    cfg = {"mision": {"modo": modo, "dron_solo": 1}, "camara": {"dron": dron},
+           "pista": {"vertices": [[-1.2, 1.2], [1.2, 1.2], [-1.2, -1.2], [1.2, -1.2]]}}
+    if modo == "dual":
+        del cfg["mision"]["dron_solo"]
+    homes = homes_mock(cfg)
+    assert homes[dron - 1] == (-0.9, 0.4) or modo != "dual"
+    if modo != "dual" or dron == 2:
+        assert homes == HOMES_MOCK                       # como antes
+    m = MockMission(cfg, homes=homes)
+    for _ in range(int(3 / 0.02)):
+        m.step(0.02)
+        if m.state == P.ASSIGN_ROLES:
+            break
+    assert m.state == P.ASSIGN_ROLES and m.E == explorador

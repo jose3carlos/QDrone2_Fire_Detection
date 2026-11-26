@@ -11,7 +11,11 @@ function generar_referencia_rastreo(salida)
 %   las consignas de la misión van directo a la planta (igual que el mock fuera de MISSION). START se
 %   manda 0.5 s después de entrar a ASSIGN_ROLES.
 %   Además evalúa qd2_params_from_config con varios valores de mision.t_perdida_aterrizar_s
-%   (casos_config) para comparar la validación con config.mision_t_perdida_aterrizar de la estación.
+%   (casos_config) para comparar la validación con config.mision_t_perdida_aterrizar de la estación,
+%   y de mision.t_caido_s (casos_config_caido, config.mision_t_caido).
+%   Dron caído (dual PID): 'apagados' = [dron t1] (t1 relativo a t0): desde t1 ese dron baja en su sitio
+%   (consigna [x y 0] donde se apagó, sin takeoff) y no vuelve a despegar; sigue rastreado. Es el
+%   MockMission.apagar_dron del mock; lo compara web/tests/test_dron_caido.py.
 %
 %   Lo compara web/tests/test_rastreo_perdida.py (test_mock_igual_que_matlab_*). Volver a correrlo si
 %   cambia la lógica de pérdida de rastreo de qd2_mission_step:
@@ -51,6 +55,17 @@ for i = 1:numel(casos)
     fprintf('t_perdida_aterrizar_s = %-12s -> %.2f %s\n', txt, p.t_perdida_aterrizar_s, aviso);
 end
 out.casos_config = cc;
+% validación de mision.t_caido_s
+casos = E.casos_config_caido;
+cc = cell(numel(casos), 1);
+for i = 1:numel(casos)
+    txt = casos{i};
+    cfg = jsondecode(['{"mision": {"t_caido_s": ' txt '}}']);
+    [p, aviso] = qd2_params_from_config(cfg);
+    cc{i} = struct('json', txt, 'valor', p.t_caido_s, 'aviso', ~isempty(aviso));
+    fprintf('t_caido_s = %-12s -> %.2f %s\n', txt, p.t_caido_s, aviso);
+end
+out.casos_config_caido = cc;
 fid = fopen(salida, 'w');
 fwrite(fid, jsonencode(out), 'char');
 fclose(fid);
@@ -78,6 +93,11 @@ if size(perd, 2) ~= 3
     perd = reshape(perd, [], 3);
 end
 perd(isnan(perd(:,3)), 3) = inf;
+apag = zeros(0, 2);               % [dron t1]: apagado a bordo desde t0 + t1 (dron caído)
+if isfield(esc, 'apagados') && ~isempty(esc.apagados)
+    apag = esc.apagados;
+end
+xy_ap = nan(2, 2);                % xy donde se apagó cada dron
 cmds = esc.comandos;
 nombres = {'START', 'ABORT', 'LAND_ALL', 'PAUSE', 'RESUME'};
 t = 0;
@@ -126,6 +146,20 @@ for n = 1:N
     [s, ~, ~, tel] = qd2_mission_step(s, in, p);
     sp = [tel.sp1(1:3); tel.sp2(1:3)];
     for d = 1:2
+        ap = false;
+        for j = 1:size(apag, 1)
+            if apag(j,1) == d && ~isnan(t0) && t >= t0 + apag(j,2)
+                ap = true;
+            end
+        end
+        if ap
+            % apagado a bordo: baja en su sitio sin obedecer (= MockMission._aplicar_apagados)
+            if isnan(xy_ap(d,1)), xy_ap(d,:) = pos(d,1:2); end
+            sp(d,:) = [xy_ap(d,:) 0];
+            vuela(d) = false;
+            [pos(d,:), vel(d,:)] = planta(pos(d,:), vel(d,:), sp(d,:), vuela(d), dt);
+            continue;
+        end
         if tel.takeoff(d) > 0.5
             vuela(d) = true;
         else

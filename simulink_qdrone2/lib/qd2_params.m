@@ -110,6 +110,24 @@ p.falla_rate_xy = 1.5;      % m/s, límite xy del dron SANO mientras se aparta d
                             %    Con 1.5 m/s, cuando el de ARRIBA cae a la altura del de abajo ya
                             %    están a >= d_min_h en horizontal (lazo cerrado: 0.98 m; con 1.0: 0.85 m)
 p.t_falla_sep_max = 8.0;    % s, máximo para apartarse; después sigue con el regreso igual
+% Dron caído (SOLO dual con la versión PID: el binario del Equipo2 no manda su FSM a tierra). Un dron
+% al que la misión le da takeoff = 1, que ya estuvo despegado en este vuelo y que OptiTrack ve en el
+% piso de forma continua más de t_caido_s, es una falla a bordo (alerta 9): el otro se aparta,
+% regresa y aterriza (qd2_mission_step). Así acaba un dron que pierde el enlace (FSM 7 a los 0.5 s,
+% motores cortados a ~1 s), que entra en error a bordo o en AUTOLAND por batería (14.0 V).
+p.t_caido_s     = 1.0;      % s, en el piso de forma continua (rastreado) para declararlo caído. Con
+                            %    la caída por enlace (~1-1.5 s) la reacción empieza ~2.5 s después de
+                            %    perder el enlace; filtra cualquier transitorio de la pose.
+                            %    config: mision.t_caido_s (qd2_params_from_config): 0 o negativo =
+                            %    detección desactivada; si no, válido en [0.5, 5.0] s.
+p.z_caido       = 0.25;     % m, "en el piso" = z < min(z_caido, z_rol - dz_caido), nunca menos
+                            %    que z_despegado: con R a 0.5 m es 0.20 m (0.3 m bajo su consigna, que
+                            %    en hover se sigue a ±tol_z) y con E a 1.5 m es 0.25 m. Más alto que
+                            %    z_despegado (0.15) para cubrir un bias_z mal medido y un dron volteado
+                            %    o de lado (pose corregida ~0.1-0.15 m arriba del piso).
+p.dz_caido      = 0.30;     % m, por debajo de la altura de su rol (ver z_caido)
+p.dz_caido_alto = 0.10;     % m, "ya estuvo despegado" (latch) = z > umbral del piso + este margen
+                            %    (histéresis: un dron que sube despacio no cuenta como caído)
 p.t_rot_obj     = 0.02;     % s, periodo de rotación del objetivo en y(56:60) de la telemetría
 
 % Polilínea de la N invertida (fila = vértice [x y]); tamaño fijo 16x2.

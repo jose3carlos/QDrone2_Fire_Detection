@@ -49,7 +49,7 @@ from .bridge import BridgeClient, PuenteNoListo
 from .caja_negra import EN_VUELO, CajaNegra
 from .cameras import CameraHub, FolderCamera, OpenCVCamera, QDF1Client, SyntheticCamera
 from .config import (DEFAULT_PATH, PROJECT_DIR, WEB_DIR, Config, actitud_vision, camara_dron, es_loopback,
-                     filtros_vision, mision_envolvente, mision_modo, mision_t_perdida_aterrizar,
+                     filtros_vision, mision_envolvente, mision_modo, mision_t_caido, mision_t_perdida_aterrizar,
                      puntos_fuera_limite_consignas, validar_host_puente, validar_ip, vertices_fuera_envolvente)
 from .geo import CameraModel, corregir_actitud, tramos_sin_tubo, tubo_cercano, tubos_pista
 from .mock_sim import MockServer, contar_waypoints
@@ -74,6 +74,10 @@ CAJA_CLI = REGISTRO_CLI                                      # --caja-negra -> v
 MSG_REPETICION = ("repetición: la estación está en solo lectura (no manda comandos ni cambia nada); "
                   "para volar, arráncala sin --repetir")
 SIN_VIDEO_S = 2.0  # s sin frames de la cámara con el gate de visión activo -> aviso rojo "Sin video del explorador"
+# Pausa por heartbeat (qd2_mission_step: MISSION -> PAUSED con más de p.hb_timeout = 1 s sin heartbeat; Simulink no
+# reanuda solo). La estación la deduce: PAUSED tras una reconexión del puente o un hueco de telemetría (ver _ver_pausa_hb)
+HB_TIMEOUT_S = 1.0          # = p.hb_timeout de simulink_qdrone2/lib/qd2_params.m
+PAUSA_HB_VENTANA_S = 5.0    # s: reconexión (o PAUSE propio) así de reciente cuenta para (o descarta) la deducción
 DX_ROLES_MIN = 0.05  # m: en dual, |x1 - x2| menor en ASSIGN_ROLES -> explorador ambiguo (el ruido lo puede voltear)
 
 
@@ -133,17 +137,38 @@ class Station:
         # alerta 2 (pérdida de rastreo): drones vistos con tracked = 0 mientras dura (el número del dron no viaja
         # en y(1..64); ver protocol.texto_alerta_rastreo). Se olvida cuando la alerta deja de ser 2.
         self._perdida_vista = frozenset()
+        # alerta 9 con el binario PID (dron caído, dual): el dron que se vio en el piso al aparecer la alerta (el número
+        # no viaja en y(1..64); ver protocol.texto_alerta_caido). Se olvida cuando la alerta deja de ser 9.
+        self._caido_visto = frozenset()
         self._sin_video_visto = False   # para registrar en eventos cuándo aparece / se va el aviso "Sin video"
-        # con el estacion.json real se guarda en web/datos; con otro (pruebas) junto a ese archivo
-        same = os.path.abspath(config_path) == os.path.abspath(DEFAULT_PATH)
-        self._persist_path = os.path.join(DATA_DIR if same else os.path.dirname(os.path.abspath(config_path)),
-                                          "objetivos_estacion.json")
+        # drones vistos sin enlace con tierra debiendo volar (comm_ok = 0, o Flight State 9 en PID): aviso rojo y una
+        # línea en Eventos la 1.ª vez (ver _avisos_enlace). Se olvida al despejarse o al salir de los estados de vuelo.
+        self._enlace_visto = set()
+        # PAUSED que llega justo después de una reconexión del puente o de un hueco de telemetría (> hb_timeout):
+        # casi seguro es la pausa por heartbeat de Simulink (pausa_por_hb no viaja en y(1..64)); ver _ver_pausa_hb
+        self._t_reconexion = None       # hora (reloj de la estación) de la 1.ª telemetría de una conexión nueva
+        self._t_ultima_tel = None       # hora de la telemetría anterior (para medir huecos)
+        self._t_hueco = None            # hora del último hueco > hb_timeout (aunque siguiera en MISSION: ráfaga TCP)
+        self._hueco_s = 0.0             # duración de ese hueco
+        self._t_pause_propio = None     # hora del último PAUSE que mandó esta estación
+        self._pausa_hb = False
+        self._causa_pausa_hb = ""
+        # Tabla de objetivos, registro de vuelos y caja negra: con una config de <proyecto>/config (estacion.json o
+        # estacion_dual.json, la que pasa el lanzador dual) se guardan en web/datos; con otra (pruebas) junto a ese
+        # archivo. Un archivo de tabla por config y por fuente (ver _persist_path): solo y dual no se mezclan, y
+        # cambiar a mock o sim3d no pisa la tabla de simulink (al volver se recupera con su siguiente id).
+        cfg_abs = os.path.abspath(config_path)
+        # normcase: en Windows "c:\qd2\config" y "C:\QD2\config" son la misma carpeta (--config escrito a mano)
+        real = os.path.normcase(os.path.dirname(cfg_abs)) == os.path.normcase(os.path.dirname(os.path.abspath(DEFAULT_PATH)))
+        self._persist_dir = DATA_DIR if real else os.path.dirname(cfg_abs)
+        base = os.path.splitext(os.path.basename(os.path.normcase(cfg_abs)))[0]
+        self._persist_base = "objetivos_estacion" if base == "estacion" else f"objetivos_{base}"
         # Registro de vuelos (registro_vuelo.py): mismo criterio, web/datos/vuelos o junto al estacion.json de prueba.
         # --registro-vuelos (CLI) pisa web.registro_vuelos; pytest nunca escribe en web/datos.
         if registro_vuelos is not None and registro_vuelos not in REGISTRO_CLI:
             raise ValueError(f"--registro-vuelos debe ser uno de {tuple(REGISTRO_CLI)}")
         self._registro_cli = REGISTRO_CLI.get(registro_vuelos)
-        carpeta = os.path.join(os.path.dirname(self._persist_path), "vuelos")
+        carpeta = os.path.join(self._persist_dir, "vuelos")
         self._registro_bloqueado = bool(os.environ.get("PYTEST_CURRENT_TEST")) and _dentro(carpeta, DATA_DIR)
         # Caja negra (caja_negra.py): misma carpeta y mismo criterio; --caja-negra (CLI) pisa web.caja_negra
         if caja_negra is not None and caja_negra not in CAJA_CLI:
@@ -199,6 +224,10 @@ class Station:
         self._last_alerta = 0
         self._falla_vista = {1: False, 2: False}
         self._perdida_vista = frozenset()
+        self._caido_visto = frozenset()
+        self._enlace_visto = set()
+        self._t_reconexion = self._t_ultima_tel = self._t_hueco = None
+        self._pausa_hb = False
         if self.grabacion is None:
             self._load_targets()
         # web.mock_anomalias o, si no, sobre los tubos reales (pista.tubos) o la ruta (sin pista.tubos)
@@ -256,6 +285,9 @@ class Station:
             self.bateria.reiniciar()
             self.fuente = fuente
             self.poses.clear()
+            # la lista vacía del reset no se guarda: pisaría la tabla de la fuente nueva (y, antes de tener un
+            # archivo por fuente, la de simulink, que al volver arrancaba con next_id = 1)
+            self._saved_sig = ()
             self.vision.reset()
             det, name, err = self._make_detector()
             self.vision.detector, self.vision.detector_name, self.vision.detector_error = det, name, err
@@ -280,7 +312,15 @@ class Station:
     # ------------------------------------------------------------------ ids de objetivos
     # Simulink busca los objetivos por id e ignora actualizaciones de un id ya visitado. Por eso
     # los ids NUNCA se reinician mientras Simulink conserve su tabla: la tabla de la estación se
-    # guarda en web/datos/objetivos_estacion.json y se recupera al reiniciar la estación.
+    # guarda en web/datos/objetivos_estacion.json (objetivos_estacion_dual.json con la config dual) y se
+    # recupera al reiniciar la estación o al volver a la fuente simulink.
+    @property
+    def _persist_path(self):
+        """Archivo de la tabla de objetivos: ``objetivos_<config>[_<fuente>].json`` (sin sufijo con la fuente
+        simulink, el nombre de siempre; con mock o sim3d, el suyo, para que no pisen la tabla de simulink)."""
+        suf = "" if self.fuente == "simulink" else f"_{self.fuente}"
+        return os.path.join(self._persist_dir, f"{self._persist_base}{suf}.json")
+
     def _load_targets(self):
         try:
             with open(self._persist_path, encoding="utf-8") as fh:
@@ -306,7 +346,7 @@ class Station:
         d = self.vision.export_state()
         d.update({"fuente": self.fuente, "sim_t": self._last_sim_t, "guardado": time.strftime("%Y-%m-%d %H:%M:%S")})
         try:
-            os.makedirs(DATA_DIR, exist_ok=True)
+            os.makedirs(self._persist_dir, exist_ok=True)
             tmp = self._persist_path + ".tmp"
             with open(tmp, "w", encoding="utf-8") as fh:
                 json.dump(d, fh)
@@ -328,6 +368,9 @@ class Station:
             # que Simulink se reinició (o que la tabla guardada es de una corrida anterior). En la 1.ª telemetría
             # de la estación solo cuenta la tabla guardada (un objetivo manual recién puesto no se borra).
             reconexion = not self._first_tel
+            if reconexion:
+                self._t_reconexion = time.time()
+                self.log(f"Puente reconectado (conexión {sesion})")
             if (reconexion or self._persisted) and known == 0 and self.vision.targets()[0]:
                 restarted = True
             self._first_tel = False
@@ -336,6 +379,7 @@ class Station:
         if restarted:
             self._falla_vista = {1: False, 2: False}
             self._perdida_vista = frozenset()
+            self._caido_visto = frozenset()
         if restarted:
             self.registro.cerrar("Simulink se reinició")
         if restarted and (self.vision.targets()[0] or self.vision.targets()[1]):
@@ -389,12 +433,31 @@ class Station:
                        else "pérdida de rastreo (PAUSED)")
                 self.log(f"Dron {d}: {que} (tracked = 0)")
 
+    def _registrar_caido(self, tel):
+        """Alerta 9 con el binario PID (y(3) = 1): solo puede ser la detección de dron caído de qd2_mission_step (dual).
+        Recuerda qué dron se vio en el piso (rastreado, z < protocol.Z_PISO_CAIDO) al aparecer la alerta, mientras el
+        otro todavía vuela, y deja una línea en Eventos."""
+        if int(tel.get("alerta") or 0) != 9 or tel.get("version") != 1:
+            self._caido_visto = frozenset()
+            return
+        if self._caido_visto:
+            return
+        piso = P.drones_en_piso(tel)
+        if len(piso) == 1:
+            self._caido_visto = frozenset(piso)          # copia: _tel_ui la lee desde otro hilo
+            self.log(f"Dron {piso[0]} en el piso sin que la misión lo pidiera (pérdida de enlace, error a bordo o "
+                     "batería): el otro se aparta, regresa y aterriza")
+
     def _texto_alerta(self, tel):
-        """y(55) con contexto: la alerta 2 dice qué dron aterriza (o si la misión está en PAUSA)."""
-        if int(tel.get("alerta") or 0) == 2:
+        """y(55) con contexto: la alerta 2 dice qué dron aterriza (o si la misión está en PAUSA); la 9 con el binario
+        PID, qué dron quedó en el piso (dron caído)."""
+        a = int(tel.get("alerta") or 0)
+        if a == 2:
             txt = P.texto_alerta_rastreo(tel.get("mission_state"), self._perdida_vista or P.drones_sin_rastreo(tel))
             if txt:
                 return txt
+        if a == 9 and tel.get("version") == 1:
+            return P.texto_alerta_caido(self._caido_visto or P.drones_en_piso(tel))
         return tel.get("alerta_texto")
 
     def _check_alerta(self, tel):
@@ -412,8 +475,11 @@ class Station:
         self._sync_sim_targets(tel, stamp)
         self._sync_ids(tel)
         self._registrar_perdida(tel)
+        self._registrar_caido(tel)
         self._check_alerta(tel)
         self._registrar_fallas(tel)
+        self._registrar_enlace(tel)
+        self._ver_pausa_hb(tel, stamp)
         e = tel.get("explorer_id", 0)
         if e in (1, 2):
             d = tel["drones"][e]
@@ -446,10 +512,103 @@ class Station:
                 self._falla_vista[d] = True
                 self.log(f"Dron {d}: falla a bordo (FSM {dd['fsm_state']}, {dd['fsm_texto']})")
 
+    def _drones_sin_enlace(self, tel):
+        """[(dron, comm_ok, fsm_state)] de los drones que deberían volar (estado de misión en ESTADOS_EN_VUELO; en
+        solo explorador solo el de y(64)) y no tienen enlace con tierra: comm_ok = 0 (o+18) o, con el binario PID,
+        Flight State de tierra 9 (MS Stop). Con la alerta 2 no cuenta el dron que aterriza por pérdida de rastreo
+        (ya tiene su texto). Solo informa: la estación no actúa por esto."""
+        if not tel or tel.get("mission_state") not in P.ESTADOS_EN_VUELO:
+            return []
+        ds = tel.get("dron_solo") or 0
+        rastreo = self._perdida_vista if int(tel.get("alerta") or 0) == 2 else frozenset()
+        out = []
+        for d in ((ds,) if ds in (1, 2) else (1, 2)):
+            dd = (tel.get("drones") or {}).get(d) or {}
+            fs9 = tel.get("version") == 1 and dd.get("fsm_state") == 9
+            if (dd.get("comm_ok") == 0 or fs9) and d not in rastreo:
+                out.append((d, dd.get("comm_ok"), dd.get("fsm_state")))
+        return out
+
+    def _registrar_enlace(self, tel):
+        """Eventos (y caja negra): la 1.ª vez que un dron que debería volar se queda sin enlace con tierra, y cuando
+        vuelve. Fuera de los estados de vuelo se olvida (sin línea)."""
+        if tel.get("mission_state") not in P.ESTADOS_EN_VUELO:
+            self._enlace_visto = set()
+            return
+        perdidos = {d: (c, fs) for d, c, fs in self._drones_sin_enlace(tel)}
+        for d, (c, fs) in perdidos.items():
+            if d not in self._enlace_visto:
+                self._enlace_visto = self._enlace_visto | {d}     # copia: avisos() lo lee desde otro hilo
+                self.log(f"Dron {d} sin enlace con tierra en vuelo (comm_ok {c}, "
+                         f"{'Flight State' if tel.get('version') == 1 else 'FSM'} {fs}, misión "
+                         f"{P.MISSION_STATES_ES.get(tel.get('mission_state'))})")
+        for d in sorted(self._enlace_visto - set(perdidos)):
+            if ((tel.get("drones") or {}).get(d) or {}).get("comm_ok") == 1:
+                self._enlace_visto = self._enlace_visto - {d}
+                self.log(f"Dron {d}: enlace con tierra de vuelta")
+
+    def _avisos_enlace(self, tel):
+        """Aviso rojo por cada dron que debería volar y no tiene enlace con tierra (ver _drones_sin_enlace). Con el
+        binario PID la misión no recibe la FSM a bordo (Onboard Status = 0); en dual reacciona sola cuando ve a ese dron
+        en el piso (dron caído, alerta 9), pero mientras siga en el aire solo el operador puede dar LAND ALL."""
+        if not tel or self.bridge is None or not self.bridge.fresh():
+            return []
+        out = []
+        for d, c, fs in self._drones_sin_enlace(tel):
+            motivo = " / ".join(([f"comm_ok = {c}"] if c == 0 else [])
+                                + ([f"Flight State {fs}"] if tel.get("version") == 1 and fs == 9 else []))
+            msg = (f"Dron {d} sin enlace con tierra en vuelo ({motivo}): no recibe consignas y a bordo pasa a "
+                   "emergencia (FSM 7). ")
+            solo = (tel.get("dron_solo") or 0) in (1, 2)
+            t_caido = mision_t_caido(self.cfg.data)["valor"]
+            if tel.get("version") == 2:
+                msg += "Tierra MPC lo marca con la alerta 9: revisa el dron y da LAND ALL."
+            elif not solo and t_caido > 0:
+                msg += (f"Con el binario PID la misión no recibe su FSM: cuando lo vea en el piso más de {t_caido:g} s "
+                        "(dron caído) pone la alerta 9 y el otro se aparta, regresa y aterriza solo. Si sigue en el "
+                        "aire sin enlace, da LAND ALL.")
+            else:
+                msg += (f"La misión NO lo sabe con el binario PID (sigue en "
+                        f"{P.MISSION_STATES_ES.get(tel.get('mission_state'))}, sin alerta): da LAND ALL"
+                        + ("." if solo else
+                           " (con ABORT/RTH el otro dron se queda en hover en su home; la detección de dron caído "
+                           "está desactivada: mision.t_caido_s = 0)."))
+            out.append({"nivel": "rojo", "msg": msg})
+        return out
+
+    def _ver_pausa_hb(self, tel, stamp):
+        """MISSION -> PAUSED justo después de una reconexión del puente o de un hueco de telemetría de más de
+        hb_timeout, sin un PAUSE propio reciente ni la alerta 2: casi seguro es la pausa por heartbeat de Simulink
+        (qd2_mission_step; pausa_por_hb no viaja en y(1..64)). Simulink no reanuda solo: una línea en Eventos y un
+        aviso amarillo mientras dure (avisos). Solo informa.
+        El hueco se recuerda PAUSA_HB_VENTANA_S aunque el mensaje que lo cierra siga en MISSION: si el Wi-Fi se
+        congela sin cerrar el TCP, al volver llega de golpe (misma hora de llegada) todo lo que Simulink mandó en el
+        corte, MISSION...MISSION y luego PAUSED...PAUSED, y el hueco solo se ve en el primer mensaje."""
+        prev, self._t_ultima_tel = self._t_ultima_tel, stamp
+        if prev is not None and stamp - prev > HB_TIMEOUT_S:
+            self._t_hueco, self._hueco_s = stamp, stamp - prev
+        if tel.get("mission_state") != P.PAUSED:
+            self._pausa_hb = False
+            return
+        if self._last_state != P.MISSION or self._pausa_hb or int(tel.get("alerta") or 0) == 2:
+            return
+        ahora = time.time()
+        if self._t_pause_propio is not None and ahora - self._t_pause_propio <= PAUSA_HB_VENTANA_S:
+            return
+        reconexion = self._t_reconexion is not None and ahora - self._t_reconexion <= PAUSA_HB_VENTANA_S
+        hueco = self._t_hueco is not None and stamp - self._t_hueco <= PAUSA_HB_VENTANA_S
+        if not (reconexion or hueco):
+            return
+        self._pausa_hb = True
+        self._causa_pausa_hb = "el puente se reconectó" if reconexion else f"{self._hueco_s:.1f} s sin telemetría"
+        self.log(f"Pausa probablemente por heartbeat ({self._causa_pausa_hb}): Simulink no reanuda solo; "
+                 "revisa y da RESUME o LAND ALL")
+
     def _tel_ui(self, tel):
         """Telemetría para la UI: en MPC, con la alerta 9, el 9 del dron que NO falló es su fin de vuelo. Con la
-        alerta 2, el texto dice qué dron aterriza por pérdida de rastreo (deducido de tracked = 0)."""
-        if tel and int(tel.get("alerta") or 0) == 2:
+        alerta 2, el texto dice qué dron aterriza por pérdida de rastreo (deducido de tracked = 0); con la 9 en PID,
+        qué dron quedó en el piso (dron caído)."""
+        if tel and int(tel.get("alerta") or 0) in (2, 9):
             txt = self._texto_alerta(tel)
             if txt != tel.get("alerta_texto"):
                 tel = dict(tel)
@@ -512,6 +671,8 @@ class Station:
                 self.log("START rechazado: " + ci["msg"])
                 raise CamaraDistinta("START rechazado: " + ci["msg"])
         seq = self.bridge.send_command(name)
+        if name == "PAUSE":
+            self._t_pause_propio = time.time()     # una PAUSED que sigue a esto no es por heartbeat (_ver_pausa_hb)
         self.log(f"Comando {name} " + (f"enviado (cmd_seq {seq})" if seq else "en cola"))
         return seq
 
@@ -628,7 +789,11 @@ class Station:
                 msg += (f"vuela con el dron {cd['dron']} (mision.dron_solo; copia estacion.json a la PC y recompila) "
                         "o cambia camara.dron")
             else:
-                msg += "reacomoda los drones (el explorador es el de menor x) o cambia camara.dron"
+                # si el dron de la cámara YA está en la menor x, esto es un cruce de rigid body (o de IP) entre los
+                # dos drones: reacomodarlos quitaría el rechazo y los dos volarían con la pose del otro
+                msg += ("reacomoda los drones (el explorador es el de menor x) o cambia camara.dron; si el dron de "
+                        "la CÁMARA ya está en la menor x, los rigid bodies o las IPs están cruzados: NO reacomodes, "
+                        "revisa Motive y Conexiones (prueba de correspondencia del checklist)")
         return {"dron": cd["dron"], "aviso": cd["aviso"], "explorador": e, "aplica": aplica, "coincide": coincide,
                 "msg": msg}
 
@@ -700,6 +865,14 @@ class Station:
         tp = mision_t_perdida_aterrizar(self.cfg.data)
         if tp["aviso"]:
             out.append({"nivel": "amarillo", "msg": "estacion.json: " + tp["aviso"]})
+        tc = mision_t_caido(self.cfg.data)
+        if tc["aviso"]:
+            out.append({"nivel": "amarillo", "msg": "estacion.json: " + tc["aviso"]})
+        elif (tc["valor"] <= 0 and m["efectivo"] == "dual"
+              and str(self.cfg.get("version_control", default="PID")).upper() != "MPC"):
+            out.append({"nivel": "amarillo", "msg": "estacion.json: mision.t_caido_s = 0: detección de dron caído "
+                        "DESACTIVADA. Con el binario PID, si un dron queda en el piso (enlace, error a bordo o batería) "
+                        "la misión no reacciona: da LAND ALL."})
         elif tp["valor"] > 0.2:
             out.append({"nivel": "amarillo", "msg": f"estacion.json: mision.t_perdida_aterrizar_s = {tp['valor']:g} s: "
                         f"entre 0.2 s y {tp['valor']:g} s sin rastreo la misión pasa a PAUSED; con el binario PID el dron "
@@ -779,6 +952,11 @@ class Station:
             out.append({"nivel": "amarillo", "msg": "Actitud del explorador no disponible (y(63) = 0): la "
                         "geolocalización supone el dron nivelado (5° de inclinación ≈ 0.13 m de error a 1.5 m). "
                         "¿Modelo de Simulink sin y(61:63)? Regenera los modelos (construir_modelos)."})
+        out.extend(self._avisos_enlace(tel))
+        if self._pausa_hb and tel and self.bridge.fresh() and tel.get("mission_state") == P.PAUSED:
+            out.append({"nivel": "amarillo", "msg": f"Misión en PAUSA probablemente por heartbeat ({self._causa_pausa_hb}: "
+                        f"Simulink pausa con más de {HB_TIMEOUT_S:g} s sin mensajes de la estación). No reanuda sola: "
+                        "revisa el enlace y da RESUME o LAND ALL."})
         out.extend(self._avisos_camara())
         out.extend(self._avisos_modo(tel))
         return out
@@ -1268,6 +1446,22 @@ def create_app(station: Station, start=True):
             raise HTTPException(400, str(exc))
         station.log("Mock: " + ("alerta real (sin forzar)" if code is None else f"y(55) forzada a {int(code)}"))
         return {"ok": True, "codigo": code}
+
+    @app.post("/api/mock/apagar")
+    def mock_apagar(body: dict = Body(...)):
+        """El dron se apaga a bordo (baja en su sitio y no vuelve a despegar; OptiTrack lo sigue viendo), como el
+        binario PID que pierde el enlace o entra en AUTOLAND por batería. En dual PID la misión lo detecta en el piso."""
+        if station.mock is None:
+            raise HTTPException(400, "solo disponible con la fuente mock")
+        try:
+            dron = int(body.get("dron"))
+        except (TypeError, ValueError):
+            raise HTTPException(400, "dron debe ser 1 o 2")
+        if dron not in (1, 2):
+            raise HTTPException(400, "dron debe ser 1 o 2")
+        station.mock.apagar_dron(dron)
+        station.log(f"Mock: dron {dron} apagado a bordo (baja en su sitio; tierra PID solo lo ve en el piso)")
+        return {"ok": True, "dron": dron}
 
     @app.post("/api/mock/objetivo_interno")
     def mock_objetivo(body: dict = Body(...)):

@@ -535,6 +535,13 @@ $('btn-mock-alerta').addEventListener('click', async () => {
   catch (e) { toast(e.message, true); }
   finally { mockSelTocado = false; }
 });
+for (const d of [1, 2]) {
+  $(`btn-mock-apagar${d}`).addEventListener('click', async () => {
+    if (!confirm(`¿Apagar el dron ${d} del mock? Baja en su sitio y no vuelve a despegar en esta misión.`)) return;
+    try { await api('/api/mock/apagar', { dron: d }); toast(`Mock: dron ${d} apagado a bordo`); }
+    catch (e) { toast(e.message, true); }
+  });
+}
 $('btn-mock-obj').addEventListener('click', () => {
   manualSimMode = !manualSimMode; manualMode = false;
   $('btn-mock-obj').classList.toggle('on', manualSimMode);

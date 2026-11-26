@@ -1695,6 +1695,7 @@ function test_solo_codegen(tc)
 % El modelo de tierra PID REAL (QD2_MissionCtrl_Dual_PID, copia con stubs de
 % qd2_probar_tierra) compilado y simulado con P en modo solo explorador
 % (estacion.json alterno: mision.modo = solo_explorador, pista del laboratorio).
+omitir_si_slx_mas_nuevo(tc);
 raiz = fileparts(fileparts(fileparts(mfilename('fullpath'))));
 c = jsondecode(fileread(fullfile(raiz, 'config', 'estacion.json')));
 c.mision.modo = 'solo_explorador';
@@ -1722,6 +1723,20 @@ fprintf('[solo codegen] QD2_MissionCtrl_Dual_PID (copia SIL) en modo solo: estad
 end
 
 % ---------------- utilidades del modo solo -------------------------------
+function omitir_si_slx_mas_nuevo(tc)
+% Las pruebas de codegen con el modelo de tierra REAL (qd2_probar_tierra)
+% abren pid/QD2_MissionCtrl_Dual_PID.slx, guardado en una versión posterior
+% (R2025a): en la PC del laboratorio (R2022a) load_system falla con
+% Simulink:Commands:LoadingNewerModel. Ahí la prueba sale "Incomplete"
+% (omitida), no FAIL; el modelo equivalente de versiones/R2022a se valida
+% compilándolo con QUARC.
+src = fullfile(fileparts(fileparts(mfilename('fullpath'))), 'pid', 'QD2_MissionCtrl_Dual_PID.slx');
+rel = Simulink.MDLInfo(src).ReleaseName;
+tc.assumeFalse(isMATLABReleaseOlderThan(rel), sprintf( ...
+    'pid/QD2_MissionCtrl_Dual_PID.slx está guardado en %s y esta MATLAB es %s (LoadingNewerModel)', ...
+    rel, version('-release')));
+end
+
 function V = pista_lab()
 % Pista del laboratorio (23-nov, dibujo del usuario escalado a ±1.2 m).
 V = [1.02 0.41; 0.99 1.20; -0.90 1.10; -0.27 0.29; 0.47 -0.25; 0.99 -1.01; -1.02 -1.20];
@@ -2162,7 +2177,7 @@ function test_trk_dual_identico_base(tc)
 % breves de 0.15 s < t_perdida_trk, y pérdidas de 0.26 s en PID y MPC con
 % t_perdida_aterrizar_s = 100 para comparar el camino PAUSED/RESUME) la
 % librería da EXACTAMENTE lo mismo que la de antes de este cambio (commit
-% b65603f, sacada con git).
+% b65603f, sacada con git), con el guard ACTUAL (usar_guard_actual).
 raiz = fileparts(fileparts(fileparts(mfilename('fullpath'))));
 pp = qd2_params();                    % (de la librería nueva; la base ignora los campos nuevos)
 pp.t_perdida_aterrizar_s = 100;
@@ -2181,6 +2196,7 @@ for k = 1:numel(lista)
     st = system(sprintf('git -C "%s" show %s:%s > "%s"', raiz, base, lista{k}, fullfile(d, [nombres{k} '.m'])));
     tc.assertEqual(st, 0);
 end
+usar_guard_actual(tc, raiz, d);
 limpiar = onCleanup(@() restaurar_lib(d, nombres)); %#ok<NASGU>
 ops = {struct('version', 1, 'objetivos', [0 1.2; 0.5 0.5; -0.4 -1.2], 'duplicados', [0.1 1.25], 'inyectar', [20 -0.8 -1.2], 't_final', 400), ...
        struct('version', 2, 'objetivos', [0.5 0.5; -0.4 -1.2; 0.6 -1.2], 'inyectar', [15 0.96 1.2], 't_final', 300, 'falla_apilado', 1), ...
@@ -2188,6 +2204,11 @@ ops = {struct('version', 1, 'objetivos', [0 1.2; 0.5 0.5; -0.4 -1.2], 'duplicado
        struct('version', 2, 'objetivos', [0 1.2; 0.5 0.5], 'trk_off', [1 40 40.26], 'cmds', [3 1; 42 5], 't_final', 400, 'p', pp), ...
        struct('version', 1, 'objetivos', [0 1.2; 0.5 0.5], 'trk_off', [2 40 40.15; 1 50 50.15], 't_final', 400), ...
        struct('version', 2, 'objetivos', [0 1.2; 0.5 0.5], 'trk_off', [1 40 40.15; 2 50 50.15], 't_final', 400)};
+% P de la librería nueva en todos: el guard actual (usar_guard_actual) lee
+% p.env_x / p.env_y, que el qd2_params de la base no tiene
+for j = 1:numel(ops)
+    if ~isfield(ops{j}, 'p'), ops{j}.p = qd2_params(); end
+end
 campos = {'estado', 'sp', 'sp_mision', 'arm', 'takeoff', 'pos', 'alerta', 'guard', 'y64', 'falla', 'falla_fase', 'escape', 'fsm'};
 Ln = cell(size(ops));
 for j = 1:numel(ops)
@@ -2213,6 +2234,7 @@ function test_trk_codegen_dual(tc)
 % dron 2 baja takeoff y nunca lo vuelve a recibir; misión 9 -> 7 -> 8,
 % alerta 2 en y(55); los dos en el suelo.
 % (estacion.json alterno en modo DUAL: el del repo puede estar en solo explorador)
+omitir_si_slx_mas_nuevo(tc);
 raiz = fileparts(fileparts(fileparts(mfilename('fullpath'))));
 c = jsondecode(fileread(fullfile(raiz, 'config', 'estacion.json')));
 c.mision.modo = 'dual';
@@ -2360,6 +2382,23 @@ end
 end
 
 % ---------------- utilidades de la pérdida de rastreo -------------------
+function usar_guard_actual(tc, raiz, d)
+% Las pruebas "bit a bit igual a la librería base" usan el guard ACTUAL
+% (qd2_separation_guard + qd2_guard_init) sobre la base sacada con git.
+% El arreglo del 26-nov (sin punto de evasión el dron que cede se detiene
+% UNA vez en lugar de seguir su pose; el punto de espera siempre dentro de
+% ±1.35) cambia a propósito el escenario 1 de las dos (la consigna de R
+% llegaba a y = 1.369 / 1.386 siguiendo su pose; ahora se queda en 1.35;
+% los otros 5 dan lo mismo con los dos guards) y se prueba aparte
+% (test_guard_sin_evasion_retiene). Así estas pruebas siguen comparando lo
+% que vigilan: la misión, la pérdida de rastreo y la envolvente. Por eso
+% NO vigilan el guard sin envolvente (eso lo hacen
+% test_guard_sin_evasion_retiene y las pruebas unitarias del guard).
+for nom = {'qd2_separation_guard', 'qd2_guard_init'}
+    tc.assertTrue(copyfile(fullfile(raiz, 'simulink_qdrone2', 'lib', [nom{1} '.m']), d, 'f'));
+end
+end
+
 function restaurar_lib(d, nombres)
 rmpath(d);
 clear(nombres{:});
@@ -2583,18 +2622,25 @@ tc.verifyTrue(isequaln(p0, p1));
 [lo, hi] = qd2_limites_xy(p0);
 tc.verifyEqual([lo hi], [p0.xy_lim(1) + p0.xy_margen, p0.xy_lim(1) + p0.xy_margen, ...
     p0.xy_lim(2) - p0.xy_margen, p0.xy_lim(2) - p0.xy_margen]);
-% configs del repo: envolvente del usuario, sin aviso, ruta dentro
+% configs del repo: envolvente del usuario, sin aviso, ruta dentro. y en
+% [-1.4 1.2] en las dos; x en [-1.35 1.2] SOLO en estacion_dual.json (26-nov:
+% en dual ninguna consigna a la esquina x 1.2-1.35, y > 0.95); el solo
+% explorador (estacion.json) sigue sin limites_x (x ±1.35)
 raiz = fileparts(fileparts(fileparts(mfilename('fullpath'))));
-for nombre = {'estacion.json', 'estacion_dual.json'}
-    [p, aviso] = qd2_params_from_config(fullfile(raiz, 'config', nombre{1}));
-    tc.verifyEmpty(aviso, nombre{1});
-    tc.verifyEqual(p.env_y, [-1.4 1.2], nombre{1});
-    tc.verifyTrue(all(isnan(p.env_x)), nombre{1});
+nombres = {'estacion.json', 'estacion_dual.json'};
+env_x = {[NaN NaN], [-1.35 1.2]};        % envolvente en x de cada una
+lim_x = {[-1.35 1.35], [-1.35 1.2]};     % límite efectivo en x (qd2_limites_xy)
+for j = 1:2
+    [p, aviso] = qd2_params_from_config(fullfile(raiz, 'config', nombres{j}));
+    tc.verifyEmpty(aviso, nombres{j});
+    tc.verifyEqual(p.env_y, [-1.4 1.2], nombres{j});
+    tc.verifyTrue(isequaln(p.env_x, env_x{j}), nombres{j});
     [lo, hi] = qd2_limites_xy(p);
+    tc.verifyEqual([lo(1) hi(1)], lim_x{j}, 'AbsTol', 1e-12, nombres{j});
     V = p.vertices(1:p.n_vertices, :);
-    tc.verifyTrue(all(V >= lo - 1e-9 & V <= hi + 1e-9, 'all'), [nombre{1} ': ruta fuera de la envolvente']);
+    tc.verifyTrue(all(V >= lo - 1e-9 & V <= hi + 1e-9, 'all'), [nombres{j} ': ruta fuera de la envolvente']);
 end
-fprintf('[envolvente config] %d casos de mision.limites_x / limites_y; sin claves P == qd2_params(); configs del repo: y en [-1.4 1.2]\n', size(casos, 1));
+fprintf('[envolvente config] %d casos de mision.limites_x / limites_y; sin claves P == qd2_params(); configs del repo: y en [-1.4 1.2], x en [-1.35 1.2] solo en dual\n', size(casos, 1));
 end
 
 function test_envolvente_guard_y_home(tc)
@@ -2634,18 +2680,84 @@ fprintf('[envolvente guard/home] consigna de R en espera y %.3f (pose 1.26); dua
     b(2), L.t(numel(L.estado)), Ls.t(numel(Ls.estado)));
 end
 
+function test_guard_sin_evasion_retiene(tc)
+% Sin ningún punto de evasión válido, el dron que cede se detiene donde
+% está UNA vez y conserva ese punto (antes su consigna era su pose medida
+% en cada paso: sin retención de posición, derivaba hacia +x y salía de la
+% arena). Geometría del primer vuelo dual (config/estacion_dual.json
+% quitándole limites_x, que trae desde el 26-nov: aquí se prueba el eje SIN
+% envolvente): E espera en su home con wp1 = (1.02, 0.41) y R está en la
+% esquina y = 1.2 a la que se evadió.
+raiz = fileparts(fileparts(fileparts(mfilename('fullpath'))));
+c = jsondecode(fileread(fullfile(raiz, 'config', 'estacion_dual.json')));
+c.mision = rmfield(c.mision, 'limites_x');
+p = qd2_params_from_config(c);
+tc.assertTrue(all(isnan(p.env_x)));
+pE = [0.48 -0.31 1.5]; spE = [1.02 0.41 1.5 0]; spR = [1.291 0.668 0.5 0];
+ctx = [0 0 p.d_min_h 0 0.083 1.16];
+% (1) R deriva 1 cm por paso dentro de la arena: la consigna no lo sigue
+gs = qd2_guard_init();
+xs = 1.25:0.01:1.34;
+b = zeros(numel(xs), 4);
+for k = 1:numel(xs)
+    [a, b(k, :), act, gs] = qd2_separation_guard(pE, [xs(k) 1.2 0.5], spE, spR, p, gs, ctx);
+    tc.verifyEqual(act, 1);
+    tc.verifyEqual(a(1:2), pE(1:2), 'AbsTol', 1e-12);          % E espera
+end
+tc.verifyEqual(gs.modoB, 3);
+% el 1er paso se evade a la esquina (1.35, 1.2); desde el 2o ya no hay
+% candidato y se queda en la pose de ese paso (x = 1.26)
+tc.verifyEqual(b(2:end, 1:2), repmat([xs(2) 1.2], numel(xs) - 1, 1), 'AbsTol', 1e-12);
+[lo, hi] = qd2_limites_xy(p);
+tc.verifyTrue(all(b(:, 1:2) >= lo - 1e-12 & b(:, 1:2) <= hi + 1e-12, 'all'));
+% (2) pose fuera de ±1.35 en x (sobretiro, sin envolvente en x): el punto
+% de espera se recorta a la arena y tampoco sigue a la pose
+gs = qd2_guard_init();
+xs2 = 1.40:0.01:1.49;
+b2 = zeros(numel(xs2), 4);
+for k = 1:numel(xs2)
+    [~, b2(k, :), ~, gs] = qd2_separation_guard(pE, [xs2(k) 1.2 0.5], spE, spR, p, gs, ctx);
+end
+tc.verifyEqual(b2(:, 1:2), repmat([hi(1) 1.2], numel(xs2), 1), 'AbsTol', 1e-12);
+fprintf('[guard sin evasión] R de x %.2f a %.2f -> consigna fija (%.3f, %.3f), modoB %d; pose x %.2f-%.2f -> consigna x %.3f\n', ...
+    xs(1), xs(end), b(end, 1), b(end, 2), gs.modoB, xs2(1), xs2(end), max(b2(:, 1)));
+end
+
+function test_regreso_orden_con_ruta_para_los_dos(tc)
+% planear_regreso elige "R primero" (u "E primero") solo si el segundo
+% también tiene ruta alrededor del home del primero. Antes, con E al final
+% de la N (1.02, 0.41) y el home de R en la franja central, se elegía R
+% primero; luego E no tenía desvío (qd2_ruta_desvio ok = 0), salía en recta
+% sobre R, el guard lo retenía y la misión se quedaba en RETURN_HOME.
+raiz = fileparts(fileparts(fileparts(mfilename('fullpath'))));
+p = qd2_params_from_config(fullfile(raiz, 'config', 'estacion_dual.json'));
+p.auto_land = 1;
+homesR = [0.1 -0.4; 0.3 -0.2];
+for k = 1:size(homesR, 1)
+    L = qd2_sim_lazo_cerrado(struct('version', 1, 'p', p, 'auto_land', 1, 'home1', [-1 -1], ...
+        'home2', homesR(k, :), 'objetivos', zeros(0, 2), 't_final', 300));
+    nom = sprintf('home R %s', mat2str(homesR(k, :)));
+    tc.verifyEqual(L.estado(end), 8, [nom ': no llegó a DONE (se quedó en RETURN_HOME)']);
+    tc.verifyNotEqual(L.s_final.ret_orden, 1, nom);
+    tc.verifyGreaterThanOrEqual(L.min_dh_aire, p.d_min_h, nom);
+    fprintf('[regreso con ruta para los dos] %s: ret_orden %d, estado final %d a t=%.1f, dh mín en el aire %.2f m\n', ...
+        nom, L.s_final.ret_orden, L.estado(end), L.t(numel(L.estado)), L.min_dh_aire);
+end
+end
+
 function test_envolvente_recorte(tc)
 % Lazo cerrado (qd2_sim_lazo_cerrado, PID y MPC) con la ruta real y la
-% envolvente de config/estacion_dual.json y las 4 anomalías sobre los tubos
-% reales (2 fuera: y = 1.40 y -1.476). Las consignas de los DOS drones
-% (misión y tras el limitador) quedan dentro; la posición de R no pasa de
-% y 1.2 / -1.4 más una tolerancia; las 4 quedan visitadas.
+% envolvente de config/estacion_dual.json (x [-1.35 1.2] desde el 26-nov,
+% y [-1.4 1.2]) y las 4 anomalías sobre los tubos reales (2 fuera: y = 1.40
+% y -1.476). Las consignas de los DOS drones (misión y tras el limitador)
+% quedan dentro; la posición de R no pasa de y 1.2 / -1.4 más una
+% tolerancia; las 4 quedan visitadas.
 raiz = fileparts(fileparts(fileparts(mfilename('fullpath'))));
 [p, aviso] = qd2_params_from_config(fullfile(raiz, 'config', 'estacion_dual.json'));
 tc.assertEmpty(aviso);
 tc.assertEqual(p.modo_mision, 0);
 [lo, hi] = qd2_limites_xy(p);
-tc.assertEqual([lo hi], [-1.5 + 0.15, -1.4, 1.5 - 0.15, 1.2]);
+tc.assertEqual([lo hi], [-1.35, -1.4, 1.2, 1.2], 'AbsTol', 1e-12);
 obj = [0.46 1.40; -0.91 1.176; 0.962 -1.347; -0.313 -1.476];
 tol_pos = 0.10;
 for v = 1:2
@@ -2671,20 +2783,23 @@ for v = 1:2
     tc.verifyGreaterThanOrEqual(min(yR), -1.4 - tol_pos);
     tc.verifyEqual(max(spR), 1.2, 'AbsTol', 1e-12);          % llegó a la orilla (marca desde ahí)
     tc.verifyEqual(min(spR), -1.4, 'AbsTol', 1e-12);
-    fprintf('[envolvente lazo] v%d: R consigna y [%+.3f %+.3f], posición y [%+.3f %+.3f]; visitados %d/4; DONE t=%.1f; dh mín en el aire %.3f m\n', ...
-        v, min(spR), max(spR), min(yR), max(yR), max(L.n_vis), L.t(numel(L.estado)), L.min_dh_aire);
+    sx = [L.sp(1, :, 1) L.sp(1, :, 2)];
+    fprintf('[envolvente lazo] v%d: R consigna y [%+.3f %+.3f], posición y [%+.3f %+.3f]; consignas x [%+.3f %+.3f]; visitados %d/4; DONE t=%.1f; dh mín en el aire %.3f m\n', ...
+        v, min(spR), max(spR), min(yR), max(yR), min(sx), max(sx), max(L.n_vis), L.t(numel(L.estado)), L.min_dh_aire);
 end
 end
 
 function test_envolvente_sin_claves_igual(tc)
 % Sin mision.limites_x / limites_y (p.env_x = p.env_y = [NaN NaN]) la
 % librería da EXACTAMENTE lo mismo que la de antes de la envolvente (commit
-% eabc19e, sacada con git): misión con objetivos fuera de ±1.35, falla
+% eabc19e, sacada con git; con el guard ACTUAL, usar_guard_actual):
+% misión con objetivos fuera de ±1.35, falla
 % apilada (MPC), pérdida de rastreo (reacción de falla, aterrizaje con
-% desvío) y la ruta real de config/estacion_dual.json sin limites_y.
+% desvío) y la ruta real de config/estacion_dual.json sin limites_x ni
+% limites_y.
 raiz = fileparts(fileparts(fileparts(mfilename('fullpath'))));
 c = jsondecode(fileread(fullfile(raiz, 'config', 'estacion_dual.json')));
-c.mision = rmfield(c.mision, 'limites_y');
+c.mision = rmfield(c.mision, intersect({'limites_x', 'limites_y'}, fieldnames(c.mision)));
 p_real = qd2_params_from_config(c);
 tc.assertTrue(all(isnan([p_real.env_x p_real.env_y])));
 base = 'eabc19e';
@@ -2702,6 +2817,7 @@ for k = 1:numel(lista)
     st = system(sprintf('git -C "%s" show %s:%s > "%s"', raiz, base, lista{k}, fullfile(d, [nombres{k} '.m'])));
     tc.assertEqual(st, 0);
 end
+usar_guard_actual(tc, raiz, d);
 limpiar = onCleanup(@() restaurar_lib(d, nombres)); %#ok<NASGU>
 obj_real = [0.46 1.40; -0.91 1.176; 0.962 -1.347; -0.313 -1.476];
 ops = {struct('version', 1, 'objetivos', [0.2 1.45; 1.45 -1.45; -0.4 -1.2], 't_final', 400), ...
@@ -2710,6 +2826,11 @@ ops = {struct('version', 1, 'objetivos', [0.2 1.45; 1.45 -1.45; -0.4 -1.2], 't_f
        struct('version', 2, 'objetivos', [0 1.2; 0.5 0.5], 'trk_off', [1 45 1e6], 't_final', 200), ...
        struct('version', 1, 'p', p_real, 'objetivos', obj_real, 't_final', 500), ...
        struct('version', 1, 'p', p_real, 'objetivos', obj_real, 'trk_off', [2 60 1e6], 't_final', 300)};
+% P de la librería nueva en todos: el guard actual (usar_guard_actual) lee
+% p.env_x / p.env_y, que el qd2_params de la base no tiene
+for j = 1:numel(ops)
+    if ~isfield(ops{j}, 'p'), ops{j}.p = qd2_params(); end
+end
 campos = {'estado', 'sp', 'sp_mision', 'arm', 'takeoff', 'pos', 'alerta', 'guard', 'y64', 'falla', 'falla_fase', 'escape', 'fsm'};
 Ln = cell(size(ops));
 for j = 1:numel(ops)
@@ -2731,13 +2852,16 @@ end
 
 function test_envolvente_codegen(tc)
 % El modelo de tierra PID REAL (copia SIL de qd2_probar_tierra) compilado
-% con config/estacion_dual.json (envolvente y en [-1.4 1.2], ruta real) y
-% la toma de la orilla y+ (0.46, 1.40): R la marca desde (0.46, 1.2); las
-% consignas de los dos drones nunca pasan de y 1.2 ni de -1.4.
+% con config/estacion_dual.json (envolvente x en [-1.35 1.2] e y en
+% [-1.4 1.2], ruta real) y la toma de la orilla y+ (0.46, 1.40): R la marca
+% desde (0.46, 1.2); las consignas de los dos drones nunca pasan de y 1.2
+% ni de -1.4, ni de x 1.2 / -1.35.
+omitir_si_slx_mas_nuevo(tc);
 raiz = fileparts(fileparts(fileparts(mfilename('fullpath'))));
 f = fullfile(raiz, 'config', 'estacion_dual.json');
 c = jsondecode(fileread(f));
 tc.assertEqual(c.mision.limites_y(:)', [-1.4 1.2]);
+tc.assertEqual(c.mision.limites_x(:)', [-1.35 1.2]);
 addpath(fullfile(fileparts(fileparts(mfilename('fullpath'))), 'pid'));
 R = qd2_probar_tierra('PID', 160, false, 0, struct('config_json', f, 'objetivo', [0.46 1.40]));
 tc.verifyEqual(R.n_visitados, 1);
@@ -2746,11 +2870,462 @@ tc.verifyFalse(R.choque);
 yd = [R.des1(:, 2) R.des2(:, 2)];
 tc.verifyLessThanOrEqual(max(yd(:)), 1.2 + 1e-12);
 tc.verifyGreaterThanOrEqual(min(yd(:)), -1.4 - 1e-12);
+xd = [R.des1(:, 1) R.des2(:, 1)];
+tc.verifyLessThanOrEqual(max(xd(:)), 1.2 + 1e-12);
+tc.verifyGreaterThanOrEqual(min(xd(:)), -1.35 - 1e-12);
 rid = R.tel(:, 5);
 yR = nan(size(rid));
 yR(rid == 1) = R.des1(rid == 1, 2);
 yR(rid == 2) = R.des2(rid == 2, 2);
 tc.verifyEqual(max(yR), 1.2, 'AbsTol', 1e-9);           % llegó a la orilla
-fprintf('[envolvente codegen] QD2_MissionCtrl_Dual_PID (copia SIL) con estacion_dual.json: toma en (0.46, 1.40) visitada (%d), consigna y de R máx %.4f, consignas y [%+.3f %+.3f], DONE t=%.1f, dh mín en el aire %.3f m\n', ...
-    R.n_visitados, max(yR), min(yd(:)), max(yd(:)), R.t_done, R.dh_min_aire);
+fprintf('[envolvente codegen] QD2_MissionCtrl_Dual_PID (copia SIL) con estacion_dual.json: toma en (0.46, 1.40) visitada (%d), consigna y de R máx %.4f, consignas x [%+.3f %+.3f] y [%+.3f %+.3f], DONE t=%.1f, dh mín en el aire %.3f m\n', ...
+    R.n_visitados, max(yR), min(xd(:)), max(xd(:)), min(yd(:)), max(yd(:)), R.t_done, R.dh_min_aire);
+end
+
+% =========================================================================
+%  Dron caído en dual PID (p.t_caido_s): tierra no recibe la FSM a bordo;
+%  un dron en el piso sin que la misión lo pidiera es una falla 9
+% =========================================================================
+function test_caido_config(tc)
+% mision.t_caido_s: <= 0 -> 0 (desactivada) sin aviso; [0.5, 5.0] se usa; otro
+% valor -> 1.0 s con aviso; ausente/null/[] -> 1.0 s sin aviso. Las dos
+% configs del repo no traen la clave (valor por defecto).
+p0 = qd2_params();
+tc.verifyEqual(p0.t_caido_s, 1.0);
+casos = {
+    '{}',                         1.0, false
+    '{"t_caido_s": null}',        1.0, false
+    '{"t_caido_s": []}',          1.0, false
+    '{"t_caido_s": 0}',           0,   false
+    '{"t_caido_s": -1}',          0,   false
+    '{"t_caido_s": 0.5}',         0.5, false
+    '{"t_caido_s": 2}',           2.0, false
+    '{"t_caido_s": 5}',           5.0, false
+    '{"t_caido_s": [1.5]}',       1.5, false
+    '{"t_caido_s": 0.3}',         1.0, true
+    '{"t_caido_s": 5.5}',         1.0, true
+    '{"t_caido_s": "1"}',         1.0, true
+    '{"t_caido_s": true}',        1.0, true
+    '{"t_caido_s": [1, 2]}',      1.0, true
+    '{"t_caido_s": {"v": 1}}',    1.0, true};
+for k = 1:size(casos, 1)
+    [p, aviso] = qd2_params_from_config(jsondecode(['{"mision": ' casos{k,1} '}']));
+    tc.verifyEqual(p.t_caido_s, casos{k,2}, sprintf('caso %d: %s', k, casos{k,1}));
+    tc.verifyEqual(~isempty(aviso), casos{k,3}, sprintf('caso %d (aviso "%s")', k, aviso));
+end
+for v = {NaN, Inf, -Inf}
+    [p, aviso] = qd2_params_from_config(struct('mision', struct('t_caido_s', v{1})));
+    tc.verifyEqual(p.t_caido_s, 1.0);
+    tc.verifyNotEmpty(aviso);
+end
+raiz = fileparts(fileparts(fileparts(mfilename('fullpath'))));
+for nombre = {'estacion.json', 'estacion_dual.json'}
+    c = jsondecode(fileread(fullfile(raiz, 'config', nombre{1})));
+    tc.verifyFalse(isfield(c.mision, 't_caido_s'), nombre{1});
+    [p, aviso] = qd2_params_from_config(fullfile(raiz, 'config', nombre{1}));
+    tc.verifyEqual(p.t_caido_s, 1.0, nombre{1});
+    tc.verifyFalse(contains(aviso, 't_caido_s'), nombre{1});
+end
+fprintf('[caido config] %d casos de mision.t_caido_s + NaN/Inf; estacion.json y estacion_dual.json sin la clave = 1.0 s\n', size(casos, 1));
+end
+
+function test_caido_dual_pid(tc)
+% Lazo cerrado dual PID con config/estacion_dual.json (envolvente y ruta del
+% laboratorio). Cerca del momento de MISSION en que E y R están más cerca, se
+% "apaga" R (y en otra corrida E) de dos formas: enlace caído (a bordo FSM 7
+% a los 0.5 s: rampa de bajada sin control de posición, motores apagados) y
+% AUTOLAND por batería (baja en su sitio). Tierra PID no recibe la FSM: lo
+% detecta con la pose (en el piso, rastreado, > t_caido_s) -> alerta 9; el
+% otro se aparta (consigna a >= d_min_h + margen + 0.05 + deriva = 1.60 m del
+% caído), regresa y aterriza; DONE. Al caído se le baja takeoff al
+% detectarlo y nunca vuelve a recibirlo.
+raiz = fileparts(fileparts(fileparts(mfilename('fullpath'))));
+p = qd2_params_from_config(fullfile(raiz, 'config', 'estacion_dual.json'));
+tc.assertEqual(p.modo_mision, 0);
+op = struct('version', 1, 'p', p, 'objetivos', [0.4 1.0; 0.6 -0.6; -0.6 -1.0], 't_final', 300);
+L0 = qd2_sim_lazo_cerrado(op);
+tc.assertEqual(L0.estado(end), 8);
+tc.assertEqual(max(L0.alerta), 0);
+[~, km] = min(L0.dh + 10*(L0.estado ~= 5 | ~L0.aire));
+tA = L0.t(km) - 2;
+eid = L0.explorer_id(end);
+r_sep = p.d_min_h + p.guard_margen + 0.05 + p.d_deriva_sin_rastreo;
+for modo = {'enlace_off', 'bateria'}
+    for quien = 1:2
+        dr = eid;
+        if quien == 2, dr = 3 - eid; end
+        h = 3 - dr;
+        o = op;
+        if strcmp(modo{1}, 'enlace_off')
+            o.enlace_off = [dr tA 1e6];
+        else
+            o.bateria = [dr tA];
+        end
+        L = qd2_sim_lazo_cerrado(o);
+        nom = sprintf('%s %s', modo{1}, ternario(quien == 1, 'E', 'R'));
+        k0 = find(L.t >= tA, 1);
+        k9 = find(L.alerta == 9, 1);
+        tc.assertNotEmpty(k9, nom);
+        tc.verifyGreaterThan(k9, k0, nom);
+        tc.verifyEqual(max(L.alerta(1:k0)), 0, nom);
+        % detección: ya en el piso (rastreado) más de t_caido_s
+        zf = squeeze(L.pos(3,:,dr)); zh = squeeze(L.pos(3,:,h));
+        z_piso = max(p.z_despegado, min(p.z_caido, ternario(dr == eid, p.z_E, p.z_R) - p.dz_caido));
+        kp = k0 - 1 + find(zf(k0:end) < z_piso, 1);
+        tc.verifyGreaterThan(L.t(k9) - L.t(kp), p.t_caido_s - 0.05, nom);
+        tc.verifyLessThanOrEqual(L.t(k9) - L.t(kp), p.t_caido_s + 0.1, nom);
+        tc.verifyEqual(max(L.falla(dr,:)), 9, nom);
+        tc.verifyEqual(max(L.falla(h,:)), 0, nom);
+        tc.verifyEqual(L.estado(end), 8, nom);
+        est = L.estado(k9:end);
+        est = est([true diff(est) ~= 0]);
+        tc.verifyEqual(est, [9 7 8], nom);
+        % takeoff del caído en 0 desde la detección; nadie vuelve a subir takeoff
+        tc.verifyEqual(max(L.takeoff(dr, k9:end)), 0, nom);
+        tc.verifyEqual(sum(sum(diff(L.takeoff(:, k0:end), 1, 2) > 0.5)), 0, nom);
+        % el sano se aparta: consigna de la fase 1 a >= r_sep (1.60 m) del caído
+        f1 = find(L.falla_fase == 1);
+        tc.assertNotEmpty(f1, nom);
+        d_sp = sqrt(sum((squeeze(L.sp_mision(1:2, f1, h)) - squeeze(L.pos(1:2, f1, dr))).^2, 1));
+        tc.verifyGreaterThanOrEqual(d_sp(end), r_sep - 0.02, nom);
+        k2 = find(L.falla_fase == 2, 1);
+        tc.assertNotEmpty(k2, nom);
+        d_f1 = L.dh(k2);
+        tc.verifyGreaterThanOrEqual(d_f1, r_sep - 1.5*p.tol_xy - 0.02, nom);
+        % desde la detección el sano (en el aire) nunca queda a < d_min_h del
+        % caído, y ya apartado (fase 2 en adelante) nunca a < d_min_h + margen
+        v = k9:numel(L.t);
+        v = v(zh(v) > 0.1);
+        tc.verifyGreaterThanOrEqual(min([inf L.dh(v)]), p.d_min_h, nom);
+        v2 = v(v >= k2);
+        tc.verifyGreaterThanOrEqual(min([inf L.dh(v2)]), p.d_min_h + p.guard_margen, nom);
+        tc.verifyGreaterThanOrEqual(L.dh(end), p.d_min_h, nom);
+        tc.verifyEqual(L.escape(h, f1(1)), 1, nom);
+        tc.verifyLessThan(max(abs(squeeze(L.pos(3,end,:)))), 0.06, nom);
+        tc.verifyEqual(L.arm(:, end), [0; 0], nom);
+        tc.verifyTrue(all(isfinite(L.sp(:))), nom);
+        fprintf(['[caido dual PID] %s (dron %d) desde t=%.1f: en el piso (z < %.2f) %.2f s después, alerta 9 %.2f s después de eso; ' ...
+            'dh al detectar %.3f m, consigna de la fase 1 a %.3f m del caído, dh al terminar la fase 1 %.3f m, dh mín del sano en el aire ya apartado %.3f, ' ...
+            'el sano aterriza a %.3f m; estados %s; DONE %.1f s después\n'], nom, dr, tA, z_piso, L.t(kp) - tA, L.t(k9) - L.t(kp), ...
+            L.dh(k9), d_sp(end), d_f1, min([inf L.dh(v2)]), L.dh(end), mat2str(est), L.t(end) - tA);
+    end
+end
+end
+
+function test_caido_regreso(tc)
+% Dual PID con config/estacion_dual.json y auto_land: un dron que ya llegó a
+% su home en RETURN_HOME (paso_regreso no vuelve a mirar su z) cae por
+% batería o enlace y el otro llega a su home antes de que pase la caída +
+% t_caido_s. Antes se pasaba a LANDING y terminaba en DONE sin alerta (la
+% detección no aplica en LANDING). Ahora no se pasa a LANDING con un dron
+% más de tol_z por debajo de su altura: alerta 9, falla 9 del caído, DONE.
+raiz = fileparts(fileparts(fileparts(mfilename('fullpath'))));
+p = qd2_params_from_config(fullfile(raiz, 'config', 'estacion_dual.json'));
+op = struct('version', 1, 'p', p, 'objetivos', [0.4 1.0; 0.6 -0.6; -0.6 -1.0; 1.1 1.1], 't_final', 300);
+L0 = qd2_sim_lazo_cerrado(op);
+tc.assertEqual(L0.estado(end), 8);
+tc.assertEqual(max(L0.alerta), 0);
+t6 = L0.t(find(L0.estado == 6, 1));
+t7 = L0.t(find(L0.estado == 7, 1));
+eid = L0.explorer_id(end);
+for modo = {'bateria', 'enlace_off'}
+    for quien = 1:2
+        dr = eid;
+        if quien == 2, dr = 3 - eid; end
+        for dtA = [3.4 1.5]
+            tA = t7 - dtA;
+            o = op;
+            if strcmp(modo{1}, 'enlace_off')
+                o.enlace_off = [dr tA 1e6];
+            else
+                o.bateria = [dr tA];
+            end
+            L = qd2_sim_lazo_cerrado(o);
+            nom = sprintf('%s %s en t=%.1f (RETURN_HOME %.1f-%.1f)', modo{1}, ternario(quien == 1, 'E', 'R'), tA, t6, t7);
+            tc.assertEqual(L.estado(find(L.t >= tA, 1)), 6, nom);
+            k9 = find(L.alerta == 9, 1);
+            tc.assertNotEmpty(k9, nom);
+            tc.verifyEqual(max(L.falla(dr,:)), 9, nom);
+            tc.verifyEqual(max(L.falla(3-dr,:)), 0, nom);
+            tc.verifyEqual(max(L.takeoff(dr, k9:end)), 0, nom);
+            k0 = find(L.t >= tA, 1);
+            tc.verifyEqual(sum(sum(diff(L.takeoff(:, k0:end), 1, 2) > 0.5)), 0, nom);
+            tc.verifyEqual(L.estado(end), 8, nom);
+            tc.verifyLessThan(max(abs(squeeze(L.pos(3,end,:)))), 0.06, nom);
+            fprintf('[caido regreso] %s: alerta 9 a t=%.2f, estados desde ahí %s, DONE t=%.1f\n', nom, L.t(k9), ...
+                mat2str(L.estado([k9 find(diff(L.estado(k9:end)) ~= 0) + k9])), L.t(end));
+        end
+    end
+end
+end
+
+function test_caido_sin_falsos(tc)
+% Misiones dual PID normales en lazo cerrado (ruido de OptiTrack, downwash,
+% R marcando a 0.5 m) con config/estacion_dual.json: semillas y homes al azar,
+% 0 a 8 objetivos, auto_land (regreso y aterrizaje secuencial), LAND_ALL a
+% media misión, ABORT + LAND_ALL, PAUSE/RESUME y pausa por heartbeat. Ninguna
+% dispara la detección: falla 0, nunca alerta 9 y la corrida es IDÉNTICA bit a
+% bit con la detección desactivada (p.t_caido_s = 0).
+raiz = fileparts(fileparts(fileparts(mfilename('fullpath'))));
+p = qd2_params_from_config(fullfile(raiz, 'config', 'estacion_dual.json'));
+p0 = p;
+p0.t_caido_s = 0;
+campos = {'estado', 'sp', 'sp_mision', 'arm', 'takeoff', 'pos', 'alerta', 'guard', 'falla', 'falla_fase', 'escape'};
+[lo, hi] = qd2_limites_xy(p);
+nobj = [3 6 0 4 2 8];
+casos = cell(1, numel(nobj));
+for sem = 1:numel(nobj)
+    rng(100 + sem);
+    obj = lo + (hi - lo).*rand(nobj(sem), 2);
+    h2 = [0.6 + 0.5*rand, -1.2 + 2.4*rand];
+    h1 = [-1.2 + 0.5*rand, -1.2 + 2.4*rand];
+    while norm(h1 - h2) < 1.2
+        h1(2) = -1.2 + 2.4*rand;
+    end
+    o = struct('version', 1, 'objetivos', obj, 'home1', h1, 'home2', h2, 'seed', sem, 't_final', 260);
+    switch sem
+        case 1, o.cmds = [3 1];                                % auto_land: regreso y aterrizaje secuencial
+        case 2, o.cmds = [3 1; 45 3]; o.auto_land = 0;         % LAND_ALL a media misión
+        case 3, o.cmds = [3 1; 40 2; 60 3]; o.auto_land = 0;   % ABORT (hover en home) y LAND_ALL
+        case 4, o.cmds = [3 1; 35 4; 45 5];                    % PAUSE / RESUME
+        case 5, o.cmds = [3 1; 50 4; 58 5]; o.hb_off = [30 33];% pausa por heartbeat, PAUSE/RESUME
+        case 6, o.cmds = [3 1];
+    end
+    casos{sem} = o;
+end
+for j = 1:numel(casos)
+    o = casos{j};
+    o.p = p;
+    La = qd2_sim_lazo_cerrado(o);
+    o.p = p0;
+    Lb = qd2_sim_lazo_cerrado(o);
+    tc.verifyEqual(La.estado(end), 8, sprintf('caso %d', j));
+    tc.verifyFalse(any(La.alerta == 9), sprintf('caso %d', j));
+    tc.verifyEqual(max(La.falla(:)), 0, sprintf('caso %d', j));
+    for c = campos
+        tc.verifyTrue(isequal(La.(c{1}), Lb.(c{1})), sprintf('caso %d: %s distinto con t_caido_s = 0', j, c{1}));
+    end
+    est = La.estado([true diff(La.estado) ~= 0]);
+    rid = 3 - La.explorer_id(end);
+    zR = squeeze(La.pos(3, :, rid));
+    fprintf('[caido sin falsos] caso %d: %d objetivos (%d visitados), estados %s, z mín de R en MISSION %.3f m, DONE t=%.1f; idéntico con t_caido_s = 0\n', ...
+        j, size(o.objetivos, 1), La.n_vis(end), mat2str(est), min([inf zR(La.estado == 5)]), La.t(end));
+end
+end
+
+function test_caido_solo_y_mpc_iguales(tc)
+% Solo explorador (también con el dron solo "apagado": enlace caído o
+% batería) y MPC (con falla a bordo de E apilado y AUTOLAND por batería de un
+% dron) dan EXACTAMENTE lo mismo con la detección activa (1.0 s) y
+% desactivada (0): la detección de dron caído solo existe en dual con PID.
+raiz = fileparts(fileparts(fileparts(mfilename('fullpath'))));
+ps = qd2_params_from_config(fullfile(raiz, 'config', 'estacion.json'));
+ps.modo_mision = 1;
+ps.dron_solo = 1;
+pm = qd2_params();
+ops = {struct('version', 1, 'p', ps, 'objetivos', [0.4 1.0; 0.6 -0.6], 't_final', 200), ...
+       struct('version', 1, 'p', ps, 'objetivos', [0.4 1.0; 0.6 -0.6], 't_final', 200, 'enlace_off', [1 40 1e6]), ...
+       struct('version', 1, 'p', ps, 'objetivos', [0.4 1.0; 0.6 -0.6], 't_final', 200, 'bateria', [1 40]), ...
+       struct('version', 2, 'p', pm, 'objetivos', [0.5 0.5; -0.4 -1.2; 0.6 -1.2], 'inyectar', [15 0.96 1.2], 't_final', 300, 'falla_apilado', 1), ...
+       struct('version', 2, 'p', pm, 'objetivos', [0.5 0.5; -0.4 -1.2], 't_final', 300, 'bateria', [2 40])};
+campos = {'estado', 'sp', 'sp_mision', 'arm', 'takeoff', 'pos', 'alerta', 'guard', 'falla', 'falla_fase', 'escape', 'y64', 'fsm'};
+for j = 1:numel(ops)
+    La = qd2_sim_lazo_cerrado(ops{j});
+    o = ops{j};
+    o.p.t_caido_s = 0;
+    Lb = qd2_sim_lazo_cerrado(o);
+    for c = campos
+        tc.verifyTrue(isequal(La.(c{1}), Lb.(c{1})), sprintf('escenario %d: %s distinto', j, c{1}));
+    end
+    est = La.estado([true diff(La.estado) ~= 0]);
+    fprintf('[caido solo/MPC] escenario %d (v%d, %s): estados %s, alertas %s; idéntico con t_caido_s = 0\n', ...
+        j, ops{j}.version, ternario(ops{j}.p.modo_mision > 0.5, 'solo', 'dual'), mat2str(est), mat2str(unique(La.alerta)));
+end
+end
+
+function test_caido_logica(tc)
+% Casos de borde con drones cinemáticos (función pura, dual PID, sin ruido):
+% (a) R que nunca despega (se queda en el piso) no dispara (latch);
+% (b) un dron SIN rastreo en el piso no dispara por caído (lo cubre la
+%     pérdida de rastreo sostenida: alerta 2);
+% (c) caída en TAKEOFF ya despegado, con el otro todavía subiendo -> 9;
+% (d) caída de R en PAUSED -> reacción; en LANDING (LAND_ALL) -> nada;
+% (e) t_caido_s = 0: la caída no se detecta (la misión sigue en MISSION);
+% (f) z medida forzada: justo t_caido_s en el piso no basta; un rebote arriba
+%     del umbral reinicia la cuenta; 1.2 s seguidos -> 9;
+% (g) caído con rastreo intermitente (huecos cortos frecuentes) -> 9; el
+%     mismo parpadeo en vuelo no dispara.
+p = qd2_params();
+% (a) R se queda en el piso (z_tope 0): TAKEOFF hasta el timeout, sin alerta 9
+K = sim_caido(p, struct('z_tope', [3 0], 't_final', 45));
+tc.verifyFalse(any(K.alerta == 9));
+tc.verifyEqual(max(K.falla(:)), 0);
+tc.verifyTrue(any(K.alerta == 3));                 % timeout de despegue (E sí despegó)
+% (b) R sin rastreo en el piso: alerta 2 (falla 2), nunca 9
+K = sim_caido(p, struct('cae', [2 20], 'trk_off', [2 20 1e6], 't_final', 60));
+tc.verifyFalse(any(K.alerta == 9));
+tc.verifyEqual(max(K.falla(2,:)), 2);
+tc.verifyEqual(K.estado(end), 8);
+% (c) R cae en TAKEOFF ya despegado (E sigue subiendo)
+K = sim_caido(p, struct('cae', [2 10.5], 't_final', 60));
+k = find(K.t >= 10.5, 1);
+tc.verifyEqual(K.estado(k), 3);
+k9 = find(K.alerta == 9, 1);
+tc.assertNotEmpty(k9);
+tc.verifyEqual(max(K.falla(2,:)), 9);
+tc.verifyEqual(max(K.takeoff(2, k9:end)), 0);
+tc.verifyEqual(K.estado(end), 8);
+t_c = K.t(k9);
+% (d) PAUSE y caída de R en PAUSED; LAND_ALL y caída en LANDING
+K = sim_caido(p, struct('cae', [2 30], 'cmds', [4 1; 28 4], 't_final', 70));
+tc.verifyEqual(K.estado(find(K.t >= 30, 1)), 10);
+tc.verifyTrue(any(K.alerta == 9));
+tc.verifyEqual(K.estado(end), 8);
+K = sim_caido(p, struct('cae', [2 30], 'cmds', [4 1; 28 3], 't_final', 70));
+tc.verifyEqual(K.estado(find(K.t >= 30, 1)), 7);
+tc.verifyFalse(any(K.alerta == 9));
+tc.verifyEqual(K.estado(end), 8);
+% (e) desactivada
+p0 = p; p0.t_caido_s = 0;
+K = sim_caido(p0, struct('cae', [2 30], 't_final', 70));
+tc.verifyFalse(any(K.alerta == 9));
+tc.verifyTrue(ismember(K.estado(end), [5 6]));      % sigue la misión (R ya no llega a su home)
+% (f) z forzada: en el piso exactamente t_caido_s (no dispara); rebotes
+K = sim_caido(p, struct('z_forzada', [2 30 30 + p.t_caido_s - 0.02 0.05], 't_final', 50));
+tc.verifyFalse(any(K.alerta == 9));
+K = sim_caido(p, struct('z_forzada', [2 30 30.8 0.05; 2 30.8 30.84 0.4; 2 30.84 31.6 0.05], 't_final', 50));
+tc.verifyFalse(any(K.alerta == 9));
+K = sim_caido(p, struct('z_forzada', [2 30 31.2 0.05], 't_final', 50));
+k9 = find(K.alerta == 9, 1);
+tc.assertNotEmpty(k9);
+tc.verifyEqual(K.t(k9), 30 + p.t_caido_s + 0.02, 'AbsTol', 0.021);
+t_f = K.t(k9);
+% (g) rastreo intermitente del caído (huecos de 60 ms cada 0.3 s y cada
+% 0.5 s, < t_perdida_trk): los huecos no reinician la cuenta -> 9, DONE. El
+% mismo parpadeo con R volando (sin caer) no dispara nada.
+n9 = zeros(1, 2);
+for per = [0.3 0.5]
+    tt = (30.3:per:70)';
+    hu = [2*ones(numel(tt), 1) tt tt + 0.06];
+    K = sim_caido(p, struct('cae', [2 30], 'trk_off', hu, 't_final', 70));
+    k9 = find(K.alerta == 9, 1);
+    tc.assertNotEmpty(k9, sprintf('parpadeo cada %.1f s', per));
+    tc.verifyEqual(max(K.falla(2,:)), 9);
+    tc.verifyEqual(max(K.falla(1,:)), 0);
+    tc.verifyEqual(max(K.takeoff(2, k9:end)), 0);
+    tc.verifyEqual(K.estado(end), 8);
+    n9(per == [0.3 0.5]) = K.t(k9);
+    K = sim_caido(p, struct('trk_off', hu, 't_final', 70));
+    tc.verifyFalse(any(K.alerta == 9));
+    tc.verifyEqual(max(K.falla(:)), 0);
+end
+fprintf(['[caido lógica] R sin despegar: sin 9 (alerta 3); sin rastreo: alerta 2; caída en TAKEOFF: 9 a t=%.2f; PAUSED: 9; LANDING: nada; ' ...
+    't_caido_s = 0: nada; %.2f s en el piso no basta, un rebote reinicia; 1.2 s -> 9 a t=%.2f; ' ...
+    'caído con parpadeo de 60 ms cada 0.3/0.5 s: 9 a t=%.2f/%.2f (en vuelo: nada)\n'], t_c, p.t_caido_s - 0.02, t_f, n9(1), n9(2));
+end
+
+function K = sim_caido(p, op)
+% Drones cinemáticos (como sim_cinematica) en dual PID con la misión sola:
+% siguen la consigna a 0.5 m/s; suben 3 s después de takeoff = 1 y bajan con
+% takeoff = 0. cae = [dron t]: desde t ese dron baja a 1 m/s hasta z = 0 y ya
+% no obedece; trk_off = [dron t1 t2] (una fila por hueco); z_forzada =
+% [dron t1 t2 z] (z MEDIDA).
+d = struct('z_tope', [3 3], 'cmds', [4 1], 't_final', 60, 'cae', [0 -1], 'trk_off', [0 -1 -1], ...
+    'z_forzada', zeros(0, 4));
+f = fieldnames(d);
+for i = 1:numel(f)
+    if ~isfield(op, f{i}), op.(f{i}) = d.(f{i}); end
+end
+s = qd2_mission_init(p);
+P = [-1 0 0; 1 -0.3 0];
+dt = 0.02; n = round(op.t_final/dt);
+t_to = [-1 -1]; seq = 0; cmd = 0; hecho = false(size(op.cmds,1),1);
+K.t = (1:n)*dt; K.estado = zeros(1,n); K.alerta = zeros(1,n);
+K.falla = zeros(2,n); K.takeoff = zeros(2,n);
+for k = 1:n
+    t = k*dt;
+    for c = 1:size(op.cmds,1)
+        if ~hecho(c) && t >= op.cmds(c,1), hecho(c) = true; seq = seq + 1; cmd = op.cmds(c,2); end
+    end
+    py = zeros(32,1); py(1) = k; py(2) = cmd; py(3) = seq;
+    in.t = t; in.pose1 = [P(1,:) 0]; in.pose2 = [P(2,:) 0];
+    in.tracked1 = 1; in.tracked2 = 1; in.py = py; in.version = 1;
+    for j = 1:size(op.z_forzada, 1)
+        zf = op.z_forzada(j,:);
+        if t >= zf(2) && t < zf(3)
+            if zf(1) == 1, in.pose1(3) = zf(4); else, in.pose2(3) = zf(4); end
+        end
+    end
+    for j = 1:size(op.trk_off, 1)
+        to = op.trk_off(j,:);
+        if to(1) > 0 && t >= to(2) && t < to(3)
+            if to(1) == 1
+                in.tracked1 = 0; in.pose1 = nan(1,4);
+            else
+                in.tracked2 = 0; in.pose2 = nan(1,4);
+            end
+        end
+    end
+    [s, ~, ~, tel] = qd2_mission_step(s, in, p);
+    sp = [tel.sp1; tel.sp2];
+    for i = 1:2
+        if op.cae(1) == i && op.cae(2) >= 0 && t >= op.cae(2)
+            P(i,3) = max(P(i,3) - 1.0*dt, 0);
+            continue;
+        end
+        if tel.takeoff(i) > 0.5
+            if t_to(i) < 0, t_to(i) = t; end
+        else
+            t_to(i) = -1;
+        end
+        objetivo = sp(i,:);
+        if t_to(i) < 0 || t - t_to(i) < 3
+            objetivo(3) = 0;
+            if t_to(i) >= 0, objetivo(1:2) = P(i,1:2); end
+        end
+        dv = objetivo(1:3) - P(i,:);
+        if norm(dv) > 0.5*dt, dv = 0.5*dt*dv/norm(dv); end
+        P(i,:) = P(i,:) + dv;
+        P(i,3) = min(max(P(i,3), 0), op.z_tope(i));
+    end
+    K.estado(k) = tel.mission_state;
+    K.alerta(k) = tel.alerta;
+    K.falla(:,k) = tel.falla(:);
+    K.takeoff(:,k) = tel.takeoff(:);
+end
+end
+
+function test_caido_codegen_dual(tc)
+% El modelo de tierra PID REAL (copia SIL de qd2_probar_tierra) compilado con
+% la librería nueva y config/estacion_dual.json: el dron 2 (R) cae a los 45 s
+% (stub: baja a 0.5 m/s sin obedecer, OptiTrack lo sigue viendo; el binario
+% PID no manda su FSM). Tierra lo detecta (alerta 9 en y(55)), le baja takeoff
+% y nunca se lo vuelve a dar; el dron 1 se aparta, regresa y aterriza: 9 -> 7 -> 8.
+omitir_si_slx_mas_nuevo(tc);
+raiz = fileparts(fileparts(fileparts(mfilename('fullpath'))));
+f = fullfile(raiz, 'config', 'estacion_dual.json');
+p = qd2_params_from_config(f);
+addpath(fullfile(fileparts(fileparts(mfilename('fullpath'))), 'pid'));
+R = qd2_probar_tierra('PID', 130, false, 0, struct('config_json', f, 'falla', [2 45]));
+k0 = find(R.t >= 45, 1);
+tc.assertTrue(ismember(R.tel(k0, 2), [4 5 6]), sprintf('a los 45 s la misión está en %d (se esperaba en el aire)', R.tel(k0, 2)));
+tc.assertEqual(R.tel(k0, 5), 2);                       % el dron 2 es R
+k9 = k0 - 1 + find(R.tel(k0:end, 55) == 9, 1);
+tc.assertNotEmpty(k9);
+z2 = R.pos(:, 6);
+kp = k0 - 1 + find(z2(k0:end) < max(p.z_despegado, min(p.z_caido, p.z_R - p.dz_caido)), 1);
+t_det = R.t(k9) - R.t(kp);
+tc.verifyGreaterThanOrEqual(t_det, p.t_caido_s - 0.05);
+tc.verifyLessThanOrEqual(t_det, p.t_caido_s + 0.15);
+kt = k0 - 1 + find(R.trig2(k0:end, 2) < 0.5, 1);
+tc.verifyLessThanOrEqual(abs(R.t(kt) - R.t(k9)), 0.05);
+tc.verifyEqual(max(R.trig2(kt:end, 2)), 0);
+tc.verifyEqual(R.n_despegues, [1 1]);
+tc.verifyTrue(all(ismember([9 7 8], R.estados)));
+tc.verifyTrue(isfinite(R.t_done));
+tc.verifyFalse(R.choque);
+tc.verifyLessThan(max(abs(R.pos(end, [3 6]))), 0.01);
+tc.verifyGreaterThanOrEqual(R.dh(end), p.d_min_h);
+fprintf('[caido codegen] QD2_MissionCtrl_Dual_PID (copia SIL) con estacion_dual.json: R cae a t=45, en el piso a t=%.2f, alerta 9 %.2f s después (takeoff 0 en el mismo paso), estados %s, DONE t=%.1f, despegues [%d %d], el sano aterriza a %.3f m\n', ...
+    R.t(kp), t_det, mat2str(R.estados), R.t_done, R.n_despegues(1), R.n_despegues(2), R.dh(end));
 end

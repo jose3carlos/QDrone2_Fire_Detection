@@ -40,6 +40,22 @@ function [s, sp_E, sp_R, tel] = qd2_mission_step(s, in, p)
 %   normal); si se da START, en TAKEOFF ya armado se detecta, se cancela el
 %   despegue sin dar takeoff y queda la alerta 9 mientras siga en 7/8/9.
 %
+%   Dron caído (SOLO dual con in.version < 1.5, PID: tierra no recibe la FSM
+%   a bordo): un dron con takeoff = 1 en un estado de vuelo (3 con takeoff
+%   dado, 4, 5, 6, 9, 10; nunca LANDING, DONE ni con una falla en curso),
+%   que ya estuvo despegado en este vuelo (z > umbral del piso +
+%   p.dz_caido_alto) y que OptiTrack RASTREA en el piso (z < umbral del piso,
+%   ver p.z_caido) de forma continua más de p.t_caido_s, es un dron EN FALLA
+%   (alerta 9) con la misma reacción (el sano se aparta con el margen
+%   p.d_deriva_sin_rastreo, regresa y aterriza; DONE). Al caído se le baja
+%   takeoff en ese paso. Sin rastreo no aplica (lo cubre la pérdida de
+%   rastreo sostenida); los huecos de rastreo de hasta p.t_perdida_trk no
+%   reinician la cuenta "en el piso". En RETURN_HOME con auto_land no se
+%   pasa a LANDING mientras uno de los dos esté más de p.tol_z por debajo
+%   de su altura (si se cae ya en su home, se detecta aquí y no en un
+%   aterrizaje que parece normal). Con p.t_caido_s <= 0 está desactivado.
+%   En solo explorador y en MPC no cambia nada.
+%
 %   Pérdida de rastreo SOSTENIDA en el aire (más de p.t_perdida_aterrizar_s
 %   sin rastreo válido; por defecto 0.2 s = p.t_perdida_trk, el mismo umbral
 %   con el que la FSM a bordo del Equipo2 pasa a 7, así que en el aire no hay
@@ -306,11 +322,65 @@ elseif cmd == 5 && est == 10 && ~perdido
     s = entrar(s, s.estado_prev, t);
 end
 
+% ======================= Dron caído (dual PID) ============================
+% Con el binario PID tierra nunca ve una falla a bordo (Onboard Status = 0 y
+% qd2_enlace_mpc da ceros con version < 1.5). Un dron que pierde el enlace
+% (FSM 7 a los 0.5 s, motores cortados a ~1 s), que entra en error a bordo o
+% en AUTOLAND por batería (14.0 V) acaba en el piso, rastreado por
+% OptiTrack. caido(i) = 1: dron con takeoff = 1 en un estado de vuelo, que
+% ya estuvo despegado en este vuelo (latch s.caido_alto) y que está en el
+% piso (rastreo válido) de forma continua más de p.t_caido_s. Umbral del
+% piso por dron: z < max(z_despegado, min(z_caido, z_rol - dz_caido)) (R a
+% 0.5 m: 0.20 m; E a 1.5 m: 0.25 m); el latch exige z > ese umbral +
+% dz_caido_alto (histéresis: un despegue lento no cuenta). Sin rastreo no
+% aplica (pérdida de rastreo sostenida, abajo); un hueco de rastreo de hasta
+% p.t_perdida_trk no reinicia la cuenta (pero solo se declara con una
+% muestra rastreada en el piso). Solo dual con PID.
+caido = [0 0];
+if s.estado <= 2
+    s.caido_alto = [0 0];
+    s.t_caido = [-1 -1];
+end
+if version < 1.5 && ~solo && p.t_caido_s > 0
+    est = s.estado;
+    Pc = [pose1; pose2];
+    vc = [val1 val2];
+    z_rc = [s.z_E s.z_R];
+    vuelo = s.falla_fase < 0.5 && ((est >= 3 && est <= 6) || est == 9 || est == 10);
+    for i = 1:2
+        r = rol_de(s, i);
+        z_piso = max(p.z_despegado, min(p.z_caido, z_rc(r) - p.dz_caido));
+        aplica0 = vuelo && s.takeoff(r) > 0.5 && s.falla(i) < 0.5;
+        aplica = aplica0 && vc(i);
+        if aplica && Pc(i,3) > z_piso + p.dz_caido_alto
+            s.caido_alto(i) = 1;
+        end
+        if aplica && s.caido_alto(i) > 0.5 && Pc(i,3) < z_piso
+            if s.t_caido(i) < 0
+                s.t_caido(i) = t;
+            end
+            if t - s.t_caido(i) > p.t_caido_s
+                caido(i) = 1;
+            end
+        elseif aplica0 && ~vc(i) && t - s.t_trk(i) <= p.t_perdida_trk
+            % hueco corto de rastreo (<= t_perdida_trk, no es pérdida
+            % sostenida): la cuenta sigue, sin declararlo (hace falta
+            % volver a verlo en el piso). Un dron tirado en el piso o
+            % volteado puede parpadear en Motive; si se reiniciara, huecos
+            % cortos frecuentes impedirían las dos detecciones.
+        else
+            s.t_caido(i) = -1;
+        end
+    end
+end
+
 % ======================= Falla a bordo ====================================
 % Un dron armado que reporta FSM 7/8 (o 9 con takeoff = 1, o cualquiera de
 % las tres en TAKEOFF antes de dar takeoff), que pierde el enlace debiendo
 % volar (a bordo: FSM 7 a los 0.5 s), o con protocolo MPC incorrecto
-% sostenido, está EN FALLA (se recuerda por dron en s.falla).
+% sostenido, está EN FALLA (se recuerda por dron en s.falla). En dual PID
+% también un dron caído (bloque de arriba): falla 9, con el margen de deriva
+% de un dron sin control de posición y takeoff = 0 ya (está en el piso).
 if s.falla_fase < 0.5
     est = s.estado;
     nueva = [0 0];
@@ -326,6 +396,8 @@ if s.falla_fase < 0.5
             nueva(i) = 9;
         elseif armado_i && proto(i) > 0.5
             nueva(i) = 10;
+        elseif caido(i) > 0.5
+            nueva(i) = 9;
         end
     end
     if nueva(1) + nueva(2) > 0
@@ -339,8 +411,11 @@ if s.falla_fase < 0.5
         elseif en_aire || (est == 7 && s.land_paso == 1 && s.land_r_baja < 0.5)
             % en vuelo, o en LANDING con R todavía esperando a su altura a
             % que E se aparte (p. ej. LAND_ALL dado con los drones apilados
-            % en la versión MPC): reacción completa (el sano se aparta)
-            s = iniciar_falla(s, nueva, pose1, pose2, Dm, p, t, sin_trk);
+            % en la versión MPC): reacción completa (el sano se aparta).
+            % Un dron caído cuenta como "sin rastreo" para la reacción: sin
+            % control de posición (margen p.d_deriva_sin_rastreo) y
+            % takeoff = 0 ya (está en el piso, nunca encima del sano)
+            s = iniciar_falla(s, nueva, pose1, pose2, Dm, p, t, max(sin_trk, caido));
         elseif est == 7 && s.land_paso ~= 4
             % LANDING con R ya bajando: E ya está a >= d_min_h en horizontal
             % del punto de R (condición para que R baje). Se avisa y al dron
@@ -692,6 +767,14 @@ switch s.estado
     case {6, 9}  % RETURN_HOME / ABORT
         s.arm = ar; s.takeoff = ar;
         [s, sp_E, sp_R, listos] = paso_regreso(s, pE, pR, hE, hR, t, p);
+        % Dual PID con detección de dron caído: paso_regreso ya no revisa
+        % la z de un dron que llegó a su home (ret_paso = 3). Si cae ahí
+        % (batería, enlace) no se pasa a LANDING mientras esté más de tol_z
+        % por debajo de su altura: en el piso, el bloque "Dron caído" lo
+        % declara (alerta 9) en vez de terminar en DONE sin aviso.
+        if version < 1.5 && ~solo && p.t_caido_s > 0
+            listos = listos && pE(3) >= s.z_E - p.tol_z && pR(3) >= s.z_R - p.tol_z;
+        end
         if listos && s.estado == 6 && p.auto_land > 0.5
             s = planear_aterrizaje(s, pE, pR, hE, Dm, p, t);
             s = entrar(s, 7, t);
@@ -799,10 +882,11 @@ tel.alerta = s.alerta;             % 0 nada, 1 homes cerca, 2 pérdida de rastre
                                    % (en el aire ese dron aterriza; PAUSED solo si
                                    % p.t_perdida_aterrizar_s > p.t_perdida_trk),
                                    % 3 timeout de despegue, 4 timeout de aterrizaje,
-                                   % 9 falla a bordo, 10 protocolo MPC incorrecto
+                                   % 9 falla a bordo (en dual PID: dron caído, en el piso
+                                   % sin que la misión lo pidiera), 10 protocolo MPC incorrecto
 tel.home_ok = s.home_ok;
 tel.pausa_por_trk = s.pausa_por_trk;
-% Falla a bordo (por DRON): 0 nada, 9 FSM 7/8/9, 10 protocolo MPC incorrecto,
+% Falla a bordo (por DRON): 0 nada, 9 FSM 7/8/9 (o caído, dual PID), 10 protocolo MPC incorrecto,
 % 2 pérdida de rastreo sostenida en el aire (aterriza; nunca más takeoff)
 tel.falla = s.falla;
 tel.falla_fase = s.falla_fase;     % 0 ninguna, 1 apartarse, 2 regresar, 3 aterriza el sano,
@@ -1048,9 +1132,12 @@ function s = planear_regreso(s, pE, pR, hE, hR, Dm, p)
 %  - si no, va primero el dron cuyo home NO queda bloqueado por la posición
 %    de espera del otro (preferentemente R), con desvío alrededor del otro;
 %    el segundo sale cuando el primero llegó, con desvío alrededor del home
-%    del primero (la ruta se calcula en ese momento);
-%  - si ambos homes están bloqueados: R se estaciona en un punto libre,
-%    E regresa, y luego R.
+%    del primero (la ruta se calcula en ese momento). Ese orden solo se
+%    elige si el segundo TAMBIÉN tiene ruta alrededor del home del primero
+%    (si no, su recta pasaría sobre el otro dron y el guard lo retendría
+%    para siempre: la misión se quedaba en RETURN_HOME);
+%  - si ambos homes están bloqueados (o ningún orden tiene ruta para los
+%    dos): R se estaciona en un punto libre, E regresa, y luego R.
 r = Dm + 0.05;
 s.ret_r = r;
 s.ret_t_llegada = [-1 -1];
@@ -1070,7 +1157,8 @@ if dseg >= r
 end
 if norm(pE(1:2) - hR) >= r
     [viaR, nR, okR] = qd2_ruta_desvio(pR(1:2), hR, pE(1:2), r, p);
-    if okR
+    [~, ~, okE2] = qd2_ruta_desvio(pE(1:2), hE, hR, r, p);     % luego E libra el home de R
+    if okR && okE2
         s.ret_orden = 1;
         s.ret_via(2,:) = viaR;
         s.ret_paso = [0, 2 - nR];
@@ -1079,7 +1167,8 @@ if norm(pE(1:2) - hR) >= r
 end
 if norm(pR(1:2) - hE) >= r
     [viaE, nE, okE] = qd2_ruta_desvio(pE(1:2), hE, pR(1:2), r, p);
-    if okE
+    [~, ~, okR2] = qd2_ruta_desvio(pR(1:2), hR, hE, r, p);     % luego R libra el home de E
+    if okE && okR2
         s.ret_orden = 2;
         s.ret_via(1,:) = viaE;
         s.ret_paso = [2 - nE, 0];
@@ -1404,7 +1493,8 @@ end
 % Pérdida de rastreo (falla 2): P(f,:) es la ÚLTIMA pose vista y el dron
 % deriva sin pose -> radio con el margen p.d_deriva_sin_rastreo (0 extra
 % para las fallas 9/10).
-% (también una falla 9/10 de un dron que además está sin rastreo, sin_trk)
+% (también una falla 9/10 de un dron que además está sin rastreo, sin_trk, o
+% caído en dual PID: el llamador lo pasa en sin_trk)
 s.falla_trk = double(s.falla(f) == 2 || sin_trk(f) > 0.5);
 r_sep = Dm + 0.05 + s.falla_trk*p.d_deriva_sin_rastreo;
 s.falla_sep = punto_separacion(P(h,1:2), P(f,1:2), hh, r_sep, p);

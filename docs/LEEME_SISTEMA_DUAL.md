@@ -15,7 +15,7 @@ Este es el punto de entrada del **sistema nuevo** (rama `Quique`). El `README.md
 
 | Carpeta | Qué es | README |
 |---|---|---|
-| `config/estacion.json` | Única fuente de configuración (IPs, puertos, Motive, pista, alturas, visión). La leen Simulink, el simulador 3D y la estación web | — (ARQUITECTURA §5–§6) |
+| `config/estacion.json`, `config/estacion_dual.json` | Configuración (IPs, puertos, Motive, pista, alturas, visión). La leen Simulink, el simulador 3D y la estación web. `estacion.json` es la de solo explorador (modelo `QD2_MissionCtrl_Dual_PID`, estación sin `--config`); `estacion_dual.json` es la del dual (modelo `versiones/R2022a/QD2_MissionCtrl_Dual_PID_2D.slx`, estación con `--config config\estacion_dual.json`). Nada las sincroniza: lo medido en el laboratorio se copia a mano (checklist, Etapa 8-0) | — (ARQUITECTURA §5–§6) |
 | `simulink_qdrone2/equipo2_original/` | Modelos originales del Equipo2 (`QD2_MissionCtrl_NoJoystick_2021a`, `QD2_DroneStack_PID_2021a`). **No se tocan** | — |
 | `simulink_qdrone2/lib/` | Librería MATLAB de misión (`qd2_*.m`, compatible con codegen) y `QD2_Mission_Lib.slx` | [`lib/README.md`](../simulink_qdrone2/lib/README.md) |
 | `simulink_qdrone2/pid/` | Tierra versión PID: `QD2_MissionCtrl_Dual_PID.slx` y sus pruebas SIL | [`pid/README.md`](../simulink_qdrone2/pid/README.md) (cubre también tierra MPC) |
@@ -57,10 +57,10 @@ Luego `web\iniciar_web.bat --fuente sim3d`.
 **Laboratorio (drones reales).** Sigue la checklist imprimible [`CHECKLIST_LABORATORIO.md`](CHECKLIST_LABORATORIO.md) (orden, tiempos y criterios de seguir / no seguir). En corto:
 1. Copia el proyecto a una ruta corta fuera de OneDrive (p. ej. `C:\QD2`) y corre `%USERPROFILE%\.venvs\qd2_web\Scripts\python web\preflight_lab.py`.
 2. Motive: calibra, crea los **dos** rigid bodies, exporta `.cal` y `.motive` y **cierra Motive**. Vincúlalos en la pestaña **Motive** de la UI.
-3. Abre `simulink_qdrone2/pid/QD2_MissionCtrl_Dual_PID.slx` o `mpc/QD2_MissionCtrl_Dual_MPC.slx` (en R2022a, el de `versiones/R2022a/`), haz el **build QUARC**, Connect y Start. Después de cualquier cambio de `estacion.json` hay que **volver a compilar**. Requisitos, comandos y errores típicos del build: [`GUIA_BUILD_QUARC_LAB.md`](GUIA_BUILD_QUARC_LAB.md).
-4. `web\iniciar_web.bat --fuente simulink`.
+3. Abre el modelo de tierra (en R2022a, el de `versiones/R2022a/`): `QD2_MissionCtrl_Dual_PID.slx` en solo explorador (lee `config/estacion.json`), `QD2_MissionCtrl_Dual_PID_2D.slx` en dual PID (lee `config/estacion_dual.json`; o `laboratorio\INICIAR_DUAL.bat`) o `QD2_MissionCtrl_Dual_MPC.slx`. Haz el **build QUARC**, Connect y Start. Después de cualquier cambio de la config que lee el modelo hay que **volver a compilar**. Requisitos, comandos y errores típicos del build: [`GUIA_BUILD_QUARC_LAB.md`](GUIA_BUILD_QUARC_LAB.md).
+4. `web\iniciar_web.bat --fuente simulink` (dual: `... --config ..\config\estacion_dual.json`, relativa a `web` porque el `.bat` se cambia a esa carpeta, o la ruta completa; sin eso START sale rechazado porque el modo no coincide con el del modelo).
 5. Lanza cada dron con el `quarc_run` de la pestaña **Conexiones** (`-URI_Host tcpip://<IP_PC>:18001` / `:18002`), desde un `cmd` abierto en `simulink_qdrone2\binarios_dron`. PID: binario original del Equipo2 (ya está ahí). MPC: `QD2_DroneStack_MPC.rt-linux_qdrone2`, compilado en el laboratorio, de la misma construcción que tierra.
-6. En el explorador (el de menor x): `ssh nvidia@<IP> "python3 ~/qdrone2_camera_streamer.py --camara auto --serie <serie de la D435i de abajo>"`.
+6. En el dron `camara.dron` (el explorador, en la menor x): `scp web/drone/qdrone2_camera_streamer.py web/drone/correr_streamer.sh nvidia@<IP>:~/` y `ssh nvidia@<IP> "bash ~/correr_streamer.sh --camara auto --serie <serie de la RealSense que mira hacia abajo>"` (queda en segundo plano y se relanza si muere; `--estado` / `--detener`; si `rs-enumerate-devices -s` lista más de una RealSense, sin `--serie` `auto` puede abrir otra). Al terminar, con los dos en el piso: `laboratorio\DETENER_DUAL.bat` o **Detener** de cada dron en Conexiones.
 7. Detalle de cada paso: [`PRUEBA_E2E.md`](PRUEBA_E2E.md) §7.
 
 **Visión (solo si se reentrena o se prueba el detector).**
@@ -73,12 +73,12 @@ La estación no necesita torch: corre `vision/modelos/mejor.onnx` con OpenCV.
 **Pruebas.**
 ```matlab
 % cada línea, desde la raíz del repositorio
-cd simulink_qdrone2/tests; correr_pruebas; cd ../..          % librería: 32 pruebas
+cd simulink_qdrone2/tests; correr_pruebas; cd ../..          % librería: 69 pruebas (R2022a: 65 + 4 omitidas)
 cd simulink_qdrone2/pid;   qd2_probar_operador; cd ../..     % capa del operador: 27 casos
-cd simulador3d;            res = probar_sim3d(false); cd ..  % simulador 3D: 18 pruebas (19 con figura)
+cd simulador3d;            res = probar_sim3d(false); cd ..  % simulador 3D: 26 pruebas (27 con figura)
 ```
 ```bat
-cd web && %USERPROFILE%\.venvs\qd2_web\Scripts\python -m pytest -q tests   :: 167 pruebas
+cd web && %USERPROFILE%\.venvs\qd2_web\Scripts\python -m pytest -q tests   :: todas pasan (conteo en web/README.md)
 ```
 Con `matlab -batch`, la ventana "QUARC Tip of the Day" bloquea MATLAB: usa `matlab -sd <carpeta> -batch "..."` con un `startup.m` que solo haga `error('fin')` (ver `simulink_qdrone2/tests/README.md`).
 
@@ -110,12 +110,12 @@ Todo lo que sigue se probó **en software (SIL) en la laptop de desarrollo, con 
 
 | Qué | Dónde está el resultado |
 |---|---|
-| Librería: 32/32 pruebas (misiones PID y MPC, guard, MPC contra `quadprog`, downwash, ABORT/LAND_ALL antes de despegar, homes cerca, timeouts, pérdida de rastreo, falla a bordo apilada, enlace perdido, protocolo, y(56:60), actitud y(61:63), codegen en Simulink, `ExtModeMexArgs` de tierra entre comillas) | `simulink_qdrone2/lib/README.md` "Resultados" |
+| Librería: 69/69 pruebas en R2025a; en R2022a 65 + 4 omitidas, las de codegen con `pid/*.slx` guardado en R2025a (misiones PID y MPC, guard, MPC contra `quadprog`, downwash, ABORT/LAND_ALL antes de despegar, homes cerca, timeouts, pérdida de rastreo, falla a bordo apilada, enlace perdido, protocolo, y(56:60), actitud y(61:63), codegen en Simulink, `ExtModeMexArgs` de tierra entre comillas) | `simulink_qdrone2/lib/README.md` "Resultados" |
 | Modelos de tierra PID y MPC: Update Diagram, 246 bloques originales sin mover, `qd2_probar_operador` 27/27, `qd2_probar_tierra` (nominal PID y MPC, falla a bordo, protocolo, enlace caído) | `simulink_qdrone2/pid/README.md` |
 | Dron MPC: COMMANDER real en lazo cerrado con la planta; PROTOCOL CHECK estricto (solo índice 24 = 2) con tramas sintéticas | `simulink_qdrone2/sim/README.md` §1 y "Resultados" |
 | `QD2_Sim_Dual`: misión completa PID y MPC, fallas a bordo (apilados, protocolo, enlace caído en los dos sentidos), pérdida de rastreo | `simulink_qdrone2/sim/README.md` "Resultados" |
-| Simulador 3D: 18/18 pruebas sin capturas (19 con figura), incluida la telemetría y(61:63), el modelo viejo sin ella y el detector interno, que ahora geolocaliza con roll/pitch igual que la estación (comparado contra `web/app/geo.py`) | `simulador3d/README.md` |
-| Estación web: 167 pruebas (pytest), incluida la geolocalización con roll y pitch del explorador (y(61:63)) y el ONNX de 480×640 | `web/README.md` |
+| Simulador 3D: 26 pruebas sin capturas (27 con figura; en la laptop de desarrollo 25/26: "costo de un cuadro" falla ahí desde antes del 26-nov), incluida la telemetría y(61:63), el modelo viejo sin ella y el detector interno, que ahora geolocaliza con roll/pitch igual que la estación (comparado contra `web/app/geo.py`) | `simulador3d/README.md` |
+| Estación web: 387 pruebas (pytest, 26-nov; conteo vigente en `web/README.md`), incluida la geolocalización con roll y pitch del explorador (y(61:63)) y el ONNX de 480×640 | `web/README.md` |
 | E2E en tiempo real con la estación real: `QD2_Sim_Dual` PID, MPC y MPC con falla a bordo; simulador 3D PID y MPC (todas PASA). Repetida con la actitud y(61:63): error de geolocalización por observación de 22–47 mm (nivelada) a 6–8 mm (mediana) | `PRUEBA_E2E.md` §5 y §5.5 |
 | YOLO11n: 10 000 imágenes sintéticas, afinado con negativos (COCO y capturas de webcam sin piezas). Con OpenCV-ONNX (conf 0.5): fotos de COCO apartadas con "toma" falsa 28.8 % → 0 %, capturas de la cara sin piezas con detección 44/50 → 0/50, fuego detectado en capturas de webcam 50/56 → 49/56 y COCO con "fuego" falso en 1/500, con el `.onnx` de 480×640 (con el de 640×640 eran 47/56 y 2/500); la estación lo carga con OpenCV-ONNX en CPU | `vision/README.md` §3 y "Negativos" |
 
@@ -131,4 +131,5 @@ Todo lo que sigue se probó **en software (SIL) en la laptop de desarrollo, con 
 - **`quarc_run`**: los comandos de Conexiones usan `-r`, que según la documentación local de QUARC descarga y ejecuta (`-D` solo descarga y es una alternativa excluyente). La ayuda corta es `quarc_run -?`, no `-h`.
 - **Abrir `QD2_Sim_Dual` en R2022a**: `qd2_e2e_web`/`qd2_correr_sim` cargan los `.slx` de R2025a. En R2022a hay que abrir `versiones/R2022a/QD2_Sim_Dual.slx` con esa carpeta como carpeta actual (`PRUEBA_E2E.md` §7).
 - **Vuelo de cada dron por separado**: ya hay **modo solo explorador** (`mision.modo = "solo_explorador"`, `mision.dron_solo = 1 | 2` en `config/estacion.json`; ver `docs/ARQUITECTURA.md` §1 y `simulink_qdrone2/lib/README.md`): un solo QDrone recorre la pista con la misión completa y el otro nunca recibe arm/takeoff. Probado en la librería, en el simulador 3D y en el modelo de tierra PID en SIL; **no** en vuelo real (checklist, etapa 7-bis). El modo MANUAL del Equipo2 (Command Source = 1, solo dron 1) sigue disponible para el primer vuelo de cada dron (etapa 7).
+- **Falla a bordo en PID**: el binario del Equipo2 no manda su FSM a tierra ("Onboard Status" es la constante 0 en el modelo PID). Desde el 26-nov, en **dual** tierra lo detecta por la pose: un dron con takeoff = 1 en un estado de vuelo, que ya había despegado y que OptiTrack ve en el piso más de `mision.t_caido_s` (1.0 s) es una falla 9 ("Dron N en el piso sin que la misión lo pidiera (pérdida de enlace, error a bordo o batería): el otro se aparta, regresa y aterriza"), con la misma reacción que la falla a bordo de MPC (`simulink_qdrone2/lib/README.md`). Probado en la librería (lazo cerrado con enlace caído y AUTOLAND por batería), en el modelo de tierra PID en SIL y en el mock; **falta** probarlo en vuelo real y recompilar `_PID_2D` (y `_PID`) en el laboratorio. Mientras el dron siga en el aire sin enlace, y siempre en solo explorador, la misión no se entera: el operador da LAND ALL (tabla de emergencias de [`CHECKLIST_LABORATORIO.md`](CHECKLIST_LABORATORIO.md)); la estación avisa en rojo con `comm_ok` = 0 o Flight State 9. Si en el primer vuelo dual dispara sin razón: `"t_caido_s": 0` en `estacion_dual.json` y recompilar.
 - **Acuerdo entre equipos**: prioridad de las alertas 9/10 frente a las del operador (hoy prevalece la del operador).

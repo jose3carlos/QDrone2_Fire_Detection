@@ -209,3 +209,21 @@ def test_cluster_junto_a_un_vertice_compartido_no_mueve_el_tramo_vecino():
 def test_sin_registros(tmp_path, cfg_path_lab):
     code, txt = _correr([str(tmp_path / "vacia"), "--config", cfg_path_lab])
     assert code == 1 and "No hay registros" in txt
+
+
+def test_avisa_si_el_vuelo_es_de_otra_config(tmp_path, cfg_path_lab):
+    """A9: los vuelos duales quedan en web/datos/vuelos junto a los de solo explorador; si la cabecera dice otra config
+    que --config, se avisa (--aplicar solo reescribe --config)."""
+    reg = _escribir_registro(str(tmp_path / "v" / "vuelo_100000_simulink.jsonl"), TOMAS, PISTA_LAB["tubos"])
+    with open(reg, encoding="utf-8") as fh:
+        lineas = fh.read().splitlines()
+
+    def con_config(cfg_cabecera):
+        cab = dict(json.loads(lineas[0]), config=cfg_cabecera)
+        with open(reg, "w", encoding="utf-8") as fh:
+            fh.writelines(l + chr(10) for l in [json.dumps(cab)] + lineas[1:])
+    con_config("config/estacion_dual.json")
+    code, txt = _correr([reg, "--config", cfg_path_lab])
+    assert code == 0 and "otra config (config/estacion_dual.json)" in txt
+    con_config(AT._rel(os.path.abspath(cfg_path_lab)))              # la misma config: sin aviso
+    assert "otra config" not in _correr([reg, "--config", cfg_path_lab])[1]
