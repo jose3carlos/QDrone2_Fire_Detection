@@ -70,13 +70,20 @@ def _json(o):
 class RegistroVuelos:
     """Abre/cierra vuelos según el gate de la visión y escribe sus observaciones en ``carpeta``.
 
+    ``base_fn()`` (opcional) da la ruta SIN extensión que debe usar el vuelo que se abre (p. ej. la de la caja negra
+    abierta, para que los dos archivos del mismo vuelo se llamen igual) o None (nombre por la hora de apertura).
+
     ``habilitado_fn()`` decide al ABRIR un vuelo si se registra (fuente / ``web.registro_vuelos`` / CLI);
     ``fuente_fn()`` da el nombre de la fuente para el archivo; ``resumen_fn()`` (opcional) da un dict que se agrega
     a la línea de resumen (objetivos finales); ``log_fn(texto)`` manda avisos a los eventos de la estación.
     ``hilo=False`` (pruebas): no arranca el hilo escritor; se escribe llamando ``vaciar()``."""
 
+    EXT = ".jsonl"                       # extensión de los archivos (la caja negra usa .tel.jsonl.gz)
+    NOMBRE = "Registro de vuelo"         # cómo se llama en los eventos de la estación
+    max_cola = MAX_COLA
+
     def __init__(self, carpeta, fuente_fn, habilitado_fn, log_fn=None, resumen_fn=None, flush_s=1.0, flush_n=50,
-                 min_gate_s=5.0, timeout_s=60.0, reloj=time.time, hilo=True, base_rel=None):
+                 min_gate_s=5.0, timeout_s=60.0, reloj=time.time, hilo=True, base_rel=None, base_fn=None):
         self.carpeta = os.path.abspath(carpeta)
         self.fuente_fn, self.habilitado_fn = fuente_fn, habilitado_fn
         self.log_fn = log_fn or (lambda texto: None)
@@ -85,6 +92,7 @@ class RegistroVuelos:
         self.min_gate_s, self.timeout_s = float(min_gate_s), float(timeout_s)
         self.reloj = reloj
         self.base_rel = base_rel
+        self.base_fn = base_fn
         self._usar_hilo = hilo
         self._lock = threading.Lock()          # estado del vuelo y cola (rápido: nunca se hace I/O con él tomado)
         self._lock_disco = threading.Lock()    # una sola escritura a la vez (hilo escritor / detener)
@@ -121,12 +129,21 @@ class RegistroVuelos:
             return self._vuelo is not None
 
     def _ruta_nueva(self, lt):
-        dia = os.path.join(self.carpeta, time.strftime("%Y-%m-%d", lt))
-        base = f"vuelo_{time.strftime('%H%M%S', lt)}_{self.fuente_fn()}"
-        ruta, n = os.path.join(dia, base + ".jsonl"), 1
+        base = None
+        if self.base_fn is not None:
+            try:
+                base = self.base_fn()
+            except Exception:                   # sin nombre sugerido: el de la hora
+                base = None
+        if base:
+            dia, base = os.path.dirname(base), os.path.basename(base)
+        else:
+            dia = os.path.join(self.carpeta, time.strftime("%Y-%m-%d", lt))
+            base = f"vuelo_{time.strftime('%H%M%S', lt)}_{self.fuente_fn()}"
+        ruta, n = os.path.join(dia, base + self.EXT), 1
         while ruta in self._rutas or os.path.exists(ruta):
             n += 1
-            ruta = os.path.join(dia, f"{base}_{n}.jsonl")
+            ruta = os.path.join(dia, f"{base}_{n}{self.EXT}")
         self._rutas.add(ruta)
         return ruta
 
@@ -274,8 +291,8 @@ class RegistroVuelos:
             v["lineas"].append(texto)
 
     def _recortar(self):
-        if len(self._cola) > MAX_COLA:
-            n = len(self._cola) - MAX_COLA
+        if len(self._cola) > self.max_cola:
+            n = len(self._cola) - self.max_cola
             del self._cola[:n]
             self.n_perdidas += n
 
@@ -314,12 +331,12 @@ class RegistroVuelos:
                     if nuevo:
                         self._aviso_err, self._t_aviso, self._aviso_pend = err, now, True
                 if nuevo:
-                    self.log_fn(f"Registro de vuelo: no se pudo escribir ({err}); se reintenta")
+                    self.log_fn(f"{self.NOMBRE}: no se pudo escribir ({err}); se reintenta")
                 return False
             self._t_flush = now
             if self._aviso_pend:
                 self._aviso_pend = False
-                self.log_fn("Registro de vuelo: la escritura volvió a funcionar")
+                self.log_fn(f"{self.NOMBRE}: la escritura volvió a funcionar")
             self.error = ""
             return True
 

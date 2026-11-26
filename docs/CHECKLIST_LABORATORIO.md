@@ -79,7 +79,7 @@ Sigue `impresion3d/README.md`, sección "Soporte de la cámara". La pieza A tard
 - [ ] Exportar la calibración (`.cal`) y los rigid bodies (`.motive`, con **los dos** rigid bodies) a `C:\Users\user\Documents\OptiTrack\<fecha>\`.
 - [ ] **Cerrar Motive.** El bloque OptiTrack Trackables usa la API de Motive y no puede haber otro proceso con las cámaras.
 - [ ] UI → **Motive**: elegir el `.cal` y el `.motive` nuevos (o subirlos) y asignar los rigid bodies al dron 1 y al dron 2. Guardar.
-- [ ] `preflight_lab.py`: `optitrack.archivo_cal` y `archivo_motive` "existe", "Motive cerrado".
+- [ ] `preflight_lab.py`: `optitrack.archivo_cal` y `archivo_motive` "existe", "Motive cerrado", y el `.motive` interpretado: `[OK] rigid body N del dron 1 …` (y del dron 2); ninguna FALLA "NO está en …" ni "AUXILIAR" (en dual, el dron 2 necesita su rigid body **real**, no el auxiliar de `config/motive/RigidBody_dron1_aux2.motive`). Ver "Preflight antes de CADA vuelo" (Etapa 6).
 
 ## Etapa 4. Build del modelo de tierra y pista — 40 min
 
@@ -98,7 +98,7 @@ Sigue `impresion3d/README.md`, sección "Soporte de la cámara". La pieza A tard
   - Después de cambiar `actitud_signos` o `actitud_offset_deg`, la fila *actitud (cruda)* **no cambia** (sigue mostrando y(61:62)). La corrección se confirma en la fila **actitud usada** que aparece debajo, en la misma tarjeta: nivelado ≈ 0°, y con el libro los signos ya positivos. Con video, la misma actitud usada sale en Anomalías → Visión → *Actitud*.
 - [ ] **Tubos reales (`pista.tubos`), medidos ANTES de cualquier vuelo con anomalías.** Con la tubería ya fija, en la pestaña **Pista** elegir en *Qué se edita* **Tubo real (pista.tubos) — pieza N** (o *pieza nueva*), poner un dron (apagado) en el piso sobre cada extremo/esquina de esa pieza, en orden a lo largo del tubo → **Capturar vértice** → **Guardar tubos** (cada pieza con ≥ 2 puntos; no requiere recompilar: Simulink no lee `pista.tubos`). La estación descarta toda toma a más de `vision.dist_max_tubo_toma_m` (0.25 m) de los tubos reales (`pista.tubos`; sin esa clave, de la ruta partida en `tramos_sin_tubo`) ("lejos del tubo"): con tubos mal puestos se descartarían las tomas reales. Comprobar en el mapa 2D que la línea blanca cae sobre el tubo real (error < 0.05 m en cada extremo). Tubos medidos: ______________________.
 - [ ] **Ruta de vuelo (`pista.vertices`) dentro de la zona con rastreo.** NO capturar la ruta sobre los extremos del tubo: los tubos de las orillas (y ≈ ±1.4) quedan en el borde o fuera de la envolvente (`mision.limites_y` = [−1.4, 1.2]); del lado y+ OptiTrack pierde al dron en vuelo en la franja x ~1.3, y ≥ 1.0 (vuelos 2-4 del 24-nov), mientras que hacia y− el rastreo llega más lejos (R vuela hasta y = −1.4 para marcar las tomas de ese borde). La ruta se edita con *Qué se edita* = **Ruta de vuelo (pista.vertices · requiere recompilar)** (máx. 16 vértices, en el orden del recorrido) y debe quedar dentro de la envolvente (punteado violeta en el mapa 2D); un vértice fuera sale en amarillo en la tabla (aviso, no bloquea). Si se cambia: **Guardar ruta** y recompilar (siguiente punto).
-- [ ] **Stop** del modelo de tierra (ningún dron vuela) → **Build de nuevo**: la pista y el bias se leen **al compilar**. Connect → Start.
+- [ ] **Stop** del modelo de tierra (ningún dron vuela) → **Build de nuevo**: la pista y el bias se leen **al compilar**. Connect → Start. `preflight_lab.py` debe decir `[OK] build <modelo>.rt-win64 del …; sello del …: misma config, lib/*.m y qd2_cargar_config.m`; si dice "recompila …: cambió X después del build", falta este Build.
 - [ ] **Envolvente de consignas (`mision.limites_y` = [−1.4, 1.2], 25-nov): RECOMPILAR** `versiones\R2022a\QD2_MissionCtrl_Dual_PID.slx` (solo explorador, `estacion.json`) y, para dual, `QD2_MissionCtrl_Dual_PID_2D.slx` (`estacion_dual.json`) con la carpeta `simulink_qdrone2\lib` del día (trae `qd2_limites_xy.m`). Al abrir/compilar la consola debe decir `qd2_cargar_config: envolvente de consignas x [-1.35 1.35], y [-1.40 1.20] m`. Sin recompilar, R puede ir hasta y = 1.35 (franja donde OptiTrack pierde el dron). `web\preflight_lab.py` dice "envolvente de consignas … la ruta queda dentro"; en el mapa 2D y la vista 3D se ve en punteado violeta.
 
 **SEGUIR si:** los dos rigid bodies se rastrean sin cortes en toda la arena, z ≈ 0 en el piso, los ejes cuadran y la actitud del explorador llega con los signos correctos (o corregidos en `vision.actitud_signos`). **NO SEGUIR si:** un dron se pierde en alguna zona de la arena, o los ejes o el yaw están invertidos (revisar la orientación con que se creó el rigid body).
@@ -112,9 +112,10 @@ Sigue `impresion3d/README.md`, sección "Soporte de la cámara". La pieza A tard
   - Con el dron en el piso, la cara de las lentes queda a ≥ 10 mm del piso: ______ mm. Las hélices giran a mano sin tocar nada y el cable USB no está tenso.
   - Mide la posición de la lente RGB (la del extremo opuesto al USB) respecto al pivote de Motive: x ______, y ______, z ______ m. Para z, si la pose está corregida con `bias_z`: altura sobre el piso + 0.004. Mídelo con el dron **nivelado** y sin restar el pivote: la estación ya sabe por `optitrack.bias_z_dronN` que la pose corregida queda 0.07 m debajo del pivote y, al inclinarse el dron, gira el offset alrededor del pivote.
   - Escríbela en `camara.offset_camara_m` (estimado `[0.212, 0.0325, 0.019]`; hoy dice `[0.20, 0.0, -0.05]`) y reinicia la estación.
-- [ ] `scp web/drone/qdrone2_camera_streamer.py nvidia@<IP_explorador>:~/`
+- [ ] `scp web/drone/qdrone2_camera_streamer.py web/drone/correr_streamer.sh nvidia@<IP_explorador>:~/` (los dos en la misma carpeta; la pestaña **Conexiones** da los comandos con la IP).
 - [ ] Números de serie: `ssh nvidia@<IP> "rs-enumerate-devices -s"`. Si no existe esa herramienta: `ssh nvidia@<IP> "python3 -c \"import pyrealsense2 as rs; [print(d.get_info(rs.camera_info.name), d.get_info(rs.camera_info.serial_number)) for d in rs.context().devices]\""`. Serie de la RealSense: ____________ (debe salir **una sola**: la frontal integrada, ahora girada hacia abajo; si sale la IMU, es D435i).
-- [ ] Lanzar (dejar esa terminal abierta): `ssh nvidia@<IP> "python3 ~/qdrone2_camera_streamer.py --camara auto --serie <serie>"`.
+- [ ] Lanzar con el relanzador: `ssh nvidia@<IP> "bash ~/correr_streamer.sh --camara auto --serie <serie>"`. Regresa de inmediato: el streamer queda en segundo plano (setsid + nohup), **sobrevive al cierre de ssh** y se relanza solo si muere. Ver que arrancó: `ssh nvidia@<IP> "bash ~/correr_streamer.sh --estado"` (últimas líneas de `~/streamer_camara.log`, con los intrínsecos y una línea `Estado:` cada 10 s: fps, reaperturas de la cámara, clientes). Log en vivo: `ssh nvidia@<IP> "tail -f ~/streamer_camara.log"`. Detener (al terminar el día o para cambiar argumentos): `ssh nvidia@<IP> "bash ~/correr_streamer.sh --detener"`. Si el log dice `terminó (código 3)` (lectura/apertura/cierre de la cámara colgado > 30 s) o `(código 4)` (sin frames > 60 s, p. ej. *device busy*), el bucle ya lo relanzó con un proceso limpio; si se repite, revisar el cable USB de la RealSense. Tras cambiar la batería sin `--detener`, el `~/.streamer_camara.pid` viejo se ignora solo (se comprueba que el PID sea el script).
+- [ ] **Recuperación del video** (2 min, antes de volar): con el video en la UI, `--detener` y volver a lanzar. Eventos dice `Video caído (dron <IP>:18800) ...` y, al volver, `Video de vuelta ... tras N s`; el encabezado de la cámara pasa a rojo *SIN VIDEO hace N s · reconectando* y regresa solo (< 3 s después de que el streamer escucha) sin tocar la estación. Contadores: encabezado de la cámara y Conexiones → *Puente y video*.
 - [ ] Copiar la línea `"intrinsecos": {"640x480": {...}}` que imprime a `camara.intrinsecos` de `C:\QD2\config\estacion.json` y reiniciar la estación.
 - [ ] UI: "Video ~15 fps". La imagen es **la de abajo**. Con 0, arriba de la imagen = adelante del dron.
 - [ ] Anomalías → Visión dice `vision/detector.py (mejor.pt)`, sin aviso rojo.
@@ -129,7 +130,7 @@ Sigue `impresion3d/README.md`, sección "Soporte de la cámara". La pieza A tard
 ### 5b. Fotos reales y afinado (otra persona, laptop) — ~2 h en paralelo
 
 Detalle: `vision/README.md` §4, "Afinado corto el mismo día de laboratorio".
-- [ ] La laptop se conecta a la red de los drones. **La estación de la PC del lab no debe estar conectada al streamer**: atiende un solo cliente.
+- [ ] La laptop se conecta a la red de los drones. El streamer atiende hasta 3 clientes a la vez (`--max-clientes`), pero cada cliente es otra copia del video por el Wi-Fi del dron: mejor cerrar la estación de la PC del lab mientras se captura.
 - [ ] Captura (~30 min, 200–300 fotos): `%PY% vision\capturar_fotos.py --dron <IP_explorador> --cada 0.7 --sesion lab_AAAAMMDD`. Alturas 0.5 / 1.0 / **1.5** / 1.8 m, giros, piezas en bordes y tapadas, 50–100 negativas.
 - [ ] Sesión de validación aparte (~60–80 fotos, piezas en otras posiciones): `--sesion lab_val`.
 - [ ] Etiquetar (~15–20 min): `etiquetar.py auto --entrada …lab_AAAAMMDD`, `etiquetar.py auto --entrada …lab_val --split val`, `etiquetar.py revisar` (todas).
@@ -138,6 +139,27 @@ Detalle: `vision/README.md` §4, "Afinado corto el mismo día de laboratorio".
 - [ ] **Usar `mejor_lab.pt` solo si mejora las dos cifras.** Llevarlo con `paquete.py exportar --sin_fotos` → `importar` en la PC del lab → `vision.modelo = "vision/modelos/mejor_lab.pt"` a mano en `estacion.json` → reiniciar la estación. Debe decir `vision/detector.py (mejor_lab.pt)`.
 
 ## Etapa 6. Prueba en seco (drones desarmados, hélices puestas, nadie en la arena) — 20 min
+
+### Preflight antes de CADA vuelo (y después de cada `git pull`, cambio de config o Build) — 1 min
+
+- [ ] En la PC del laboratorio, sin `--remoto`: `cd C:\QD2` → `%USERPROFILE%\.venvs\qd2_web\Scripts\python web\preflight_lab.py` (dual: `--config config\estacion_dual.json`). Termina con `Resumen: … 0 fallas`. **No volar con una FALLA.** Solo lee: no cambia nada ni lanza nada.
+- Qué hacer con cada FALLA (y los AVISOS que importan):
+
+| Línea | Qué hacer |
+|---|---|
+| FALLA `no hay versiones/R2022a/<modelo>.rt-win64` | Compilar ese modelo en esta PC (solo explorador: `QD2_MissionCtrl_Dual_PID`; dual: `QD2_MissionCtrl_Dual_PID_2D`): `laboratorio\INICIAR_EXPLORADOR.bat` / `INICIAR_DUAL.bat`, o MATLAB `cd …\versiones\R2022a` → abrir el modelo → HARDWARE → Monitor & Tune |
+| FALLA `recompila <modelo>: cambió X después del build` | **Stop** de tierra (ningún dron en el aire) → **Build** de nuevo: la config (pista, modo, IDs, envolvente) y las `.m` de `lib` se leen **al compilar**; sin recompilar vuela con lo viejo. Se compara el CONTENIDO con el sello `versiones\R2022a\<modelo>.config_usada.jsonl` (lo escribe `qd2_cargar_config` en cada InitFcn; no se sube a git). X dice qué clave cambió: solo cuentan las que lee el modelo (`version_control`, `red.puerto_*`, `optitrack`, `mision`, `pista.vertices`, `vision.radio_cluster_m`) y las `.m` que usa tierra; `red.ip_*`, `camara`, `pista.tubos`, `web`, el resto de `vision` y `lib/qd2_quad_plant.m`, `qd2_onboard_*`, `qd2_mpc_init/position`… salen como INFO "no hace falta recompilar". Si la línea INFO dice "sin sello" o "comparo fechas" (primer build con esta versión, o build de hace > 30 min sin sello), un `git pull` o una copia sin fechas puede dar esta FALLA de más: recompilar la quita |
+| AVISO `<modelo> lee config\estacion_dual.json, no …` | El modelo y la estación usarían configs distintas: correr estación y preflight con `--config` del modelo |
+| AVISO `<modelo>.slx … con fecha posterior al build` | Si se cambió el modelo, recompilar (guardar sin cambios también mueve la fecha) |
+| FALLA `optitrack.archivo_motive vacío` / `NO EXISTE en esta PC` | Pestaña **Motive**: elegir el `.motive` del día (ruta de esta PC). Vacío = el `RigidBody.motive` del Equipo2 (solo ID 1): QUARC da "The rigid body ID is invalid or not found" al conectar |
+| FALLA `el rigid body N del dron i NO está en <archivo>` | Exportar de Motive un `.motive` con **los dos** rigid bodies (UserData = `rigid_body_dron1/2`; el modelo pide los dos IDs también en solo explorador). En solo explorador basta el auxiliar de `config\motive\RigidBody_dron1_aux2.motive` como ID 2 |
+| FALLA `modo DUAL y el rigid body 2 del dron 2 es el AUXILIAR` | **No volar dual**: el dron 2 nunca se rastrearía (WAIT_TRACKING). Crear en Motive el rigid body REAL del dron 2 (UserData = 2), **borrar el auxiliar**, exportar y apuntar `optitrack.archivo_motive` de `estacion_dual.json` a él; o volar en solo explorador |
+| FALLA `el rigid body 2 del dron 2 está 2 veces en <archivo> y uno es el AUXILIAR` | Se agregó el rigid body real sin borrar el auxiliar (los dos con UserData = 2): QUARC puede tomar el auxiliar. **Borrar el auxiliar** en Motive y volver a exportar el `.motive` |
+| FALLA `el dron solo N usa el rigid body … AUXILIAR` | `mision.dron_solo` o `rigid_body_dronN` apuntan al auxiliar: corregir la config |
+| AVISO `misma geometría de marcadores` | Motive puede confundir los drones: mover un marcador en uno y volver a crear su rigid body |
+| AVISO `no pude interpretar <archivo>.motive` | No bloquea: revisar a mano en Motive que estén los dos IDs |
+| AVISO `Motive está abierto` | Cerrarlo antes de compilar y de correr tierra |
+| Otras FALLAs (`camara.dron`, `ip_dron`, `quarc_run`, red) | La línea dice qué cambiar (pestañas Conexiones / Misión) |
 
 Orden de arranque, **siempre**: tierra Start → estación → drones.
 - [ ] Switches **Arm/Disarm**, **Takeoff/Land** y **Emergency Stop** abajo/en reposo. Command Source = 0 (misión).
@@ -185,11 +207,13 @@ Un solo dron recorre la pista con la misión completa (despegue, N a `z_E`, dete
 - [ ] Motive: rigid body del explorador con el ID de `optitrack.rigid_body_dron1` (en el piso mirando a +x); `rigid_body_dron2` = otro ID distinto. **[NO VERIFICADO]** si el Build/Start falla porque el rigid body 2 no está en el `.motive`, crear uno auxiliar con ese ID y dejarlo fuera del volumen. El segundo QDrone **fuera de la arena** o sin marcadores visibles.
 - [ ] MATLAB (PC): al abrir `QD2_MissionCtrl_Dual_PID.slx` la consola dice `qd2_cargar_config: MODO SOLO EXPLORADOR -> dron 1 (rigid body …, Stream Server :18001)`. Si dice `modo dual`, la config de la PC no es la nueva: copiarla y volver a abrir. La "Roles & Homes Preview" no aplica.
 - [ ] **Command Source = 0**; Arm, Takeoff y E-Stop abajo → **Build** → Connect → Start (cambiar el modo o la pista obliga a recompilar).
+- [ ] **Preflight** (`web\preflight_lab.py` en la PC, Etapa 6): 0 fallas; en particular "build … misma config" y el `.motive` con los dos IDs.
 - [ ] Estación (laptop): `web\iniciar_web.bat --fuente simulink --host-puente <IP_PC>` → chip "SOLO EXPLORADOR · dron 1", dron 2 "NO USADO", estado ASSIGN_ROLES, sin avisos rojos.
 - [ ] Dron 1 encendido en su home (≈ 1.25, 0.0 mirando a +x, a ≥ 0.3 m de los tubos) → `quarc_run` del dron 1 (Conexiones; `-URI_Host tcpip://<IP_PC>:18001`) → streamer.
 - [ ] **Prueba en seco:** switches abajo → START: "START recibido" y el dron **no** despega. LAND ALL / ABORT → vuelve a ASSIGN_ROLES.
 - [ ] **Vuelo:** Arm y Takeoff arriba → START: TAKEOFF → HOVER_READY (2 s) → MISSION (recorre todos los waypoints) → RETURN_HOME ("en home") → **LAND ALL** → DONE. En la telemetría el dron 2 siempre con arm/takeoff = 0.
 - [ ] Al final: `quarc_run -q` del dron 1 con el dron en el piso → Stop de tierra si no se paró solo.
+- [ ] **Después de cada vuelo: caja negra.** La pestaña Anomalías dice `Caja negra: … último: …/vuelo_HHMMSS_simulink.tel.jsonl.gz (N paquetes)` (sin ERROR; se cierra sola 10 s después de DONE). Correr `python web\herramientas\caja_negra.py resumen` y revisar estados, comandos con ack, pérdidas de rastreo, máximos, huecos > 0.2 s y avisos; si algo falló, verlo con `python -m app.server --repetir <archivo> --puerto 8081` (desde `web`, solo lectura). **Subir la caja negra** (`git add web/datos/vuelos`: `.tel.jsonl.gz` y `.jsonl`) aunque el vuelo haya salido bien.
 - [ ] **Después de cada vuelo:** la pestaña Anomalías dice `Registro de vuelo: …/vuelo_HHMMSS_simulink.jsonl · N líneas` (sin ERROR). Correr `python web\herramientas\ajustar_tubos.py --ultimos 1 --svg tubos.svg` y revisar las tomas "LEJOS" y el desplazamiento propuesto; si se confirma, `--aplicar` (solo cambia `pista.tubos`; la ruta no) y subir `web/datos/vuelos` (y la config si cambió) a git para la otra sesión.
 
 **SEGUIR si:** el recorrido completo sin pausas ni alertas, las detecciones salen "detectada" y aterriza en su sitio. **NO SEGUIR si:** la UI muestra modo dual o "pista distinta", el dron 2 recibe arm, o hay pérdida de rastreo/enlace. Emergencias iguales: Takeoff/Land abajo = LAND ALL ordenado; E-Stop corta motores.
@@ -197,8 +221,9 @@ Un solo dron recorre la pista con la misión completa (despegue, N a `z_E`, dete
 ## Etapa 8. Misión PID con los dos drones — 60 min
 
 8a. **Sin anomalías** (pista sin piezas). Command Source = 0.
+- [ ] **Preflight dual** (`web\preflight_lab.py --config config\estacion_dual.json` en la PC, Etapa 6): 0 fallas; build `QD2_MissionCtrl_Dual_PID_2D` con la misma config y el rigid body 2 **real** (no el auxiliar).
 - [ ] Switches Arm y Takeoff **arriba** (permiso) → START en la UI → TAKEOFF → HOVER_READY → MISSION.
-- [ ] Ya en MISSION, sin aviso rojo "Sin video del explorador: no se detecta nada" (sale si no llegan frames en > 2 s con la visión activa; solo avisa: si aparece, revisar la terminal del streamer y `red.ip_dron{camara.dron}`, y decidir si se aborta).
+- [ ] Ya en MISSION, sin aviso rojo "Sin video del explorador: no se detecta nada" (sale si no llegan frames en > 2 s con la visión activa; solo avisa: la estación reconecta sola y el streamer se relanza solo; si no se va en unos segundos, revisar `bash ~/correr_streamer.sh --estado` en el dron y `red.ip_dron{camara.dron}`, y decidir si se aborta). Al aterrizar, anotar *caídas (vuelo N)* del encabezado de la cámara: ______.
 - [ ] En la UI, Δh entre E y R **siempre ≥ 0.9 m** (`d_min_h`). "GUARD ACTIVO" cuando se acercan.
 - [ ] PAUSE (los dos hacen hover) → RESUME.
 - [ ] RETURN_HOME → esperar **"en home"** en las dos tarjetas → LAND ALL. Los dos en el suelo a < 0.15 m de su home, DONE, y el modelo de tierra se detiene solo (Stop Allowed).
@@ -247,7 +272,7 @@ Un solo dron recorre la pista con la misión completa (despegue, N a `z_E`, dete
 
 - [ ] Detener los dos drones ("Detener" en Conexiones) **con los dos en el piso**. Después, Stop de tierra.
 - [ ] Copiar a la USB: `C:\QD2\config\estacion.json` como `estacion_lab_<fecha>.json`, la carpeta `saved_data`, Eventos y `web\datos\objetivos_estacion.json`. Fotos reales con `paquete.py exportar`.
-- [ ] `git add web/datos/vuelos` + commit + push: los registros de vuelo del día (los lee `ajustar_tubos.py` en la laptop).
+- [ ] `git add web/datos/vuelos` + commit + push: los registros de vuelo del día (los lee `ajustar_tubos.py` en la laptop) y las **cajas negras** (`*.tel.jsonl.gz`, ≈ 3-5 MB por vuelo; se analizan con `web\herramientas\caja_negra.py resumen`).
 - [ ] En la laptop **no** se sobrescribe `config\estacion.json` a ciegas: se compara con el del laboratorio.
 - [ ] Anotar lo que falló y en qué etapa: ____________________________________________
 

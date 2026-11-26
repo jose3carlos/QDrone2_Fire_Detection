@@ -61,6 +61,8 @@ class BridgeClient:
         self._rx_times = collections.deque(maxlen=100)
         self._tx_times = collections.deque(maxlen=100)
         self.listeners = []          # funciones f(tel, stamp) llamadas en CADA mensaje de telemetría (en orden)
+        self.raw_listeners = []      # funciones f(bytes de 512, stamp): el mensaje CRUDO, antes de ``listeners``
+                                     # (la caja negra graba el vector tal cual llega)
         self.last_tx = None          # últimos bytes enviados (para diagnóstico/pruebas)
         # Objetivos retenidos hasta la primera telemetría de cada conexión: si Simulink se reinició,
         # la estación lo detecta con esa telemetría (t vuelve a 0) y vacía su lista ANTES de mandar
@@ -121,7 +123,7 @@ class BridgeClient:
         """Registra el final de un comando (llamar con el candado tomado)."""
         self._n_results += 1
         r = {"n": self._n_results, "cmd": item["name"], "cmd_seq": item.get("seq"), "estado": estado,
-             "detalle": detalle, "t": time.time()}
+             "detalle": detalle, "t": time.time(), "t_click": item.get("t_click")}
         self.cmd_results.append(r)
         if self.on_cmd_result:
             try:
@@ -247,8 +249,8 @@ class BridgeClient:
                     # objetivo distinto en cada mensaje (rotando), y Simulink / el simulador 3D pueden mandar
                     # varios juntos (ráfaga). Si solo se leyera el último, con ráfagas regulares algunos
                     # objetivos no se verían nunca. ``telemetry`` sigue siendo el más reciente.
-                    tels = [P.unpack_telemetry(bytes(buf[k * P.TELEMETRY_BYTES:(k + 1) * P.TELEMETRY_BYTES]))
-                            for k in range(n)]
+                    raws = [bytes(buf[k * P.TELEMETRY_BYTES:(k + 1) * P.TELEMETRY_BYTES]) for k in range(n)]
+                    tels = [P.unpack_telemetry(raw) for raw in raws]
                     del buf[:n * P.TELEMETRY_BYTES]
                     stamp = last_rx = time.time()
                     with self._lock:
@@ -256,7 +258,12 @@ class BridgeClient:
                         self.n_rx += n
                         self._rx_times.extend([stamp] * min(n, 5))
                     # los oyentes reciben cada mensaje en orden (el último al final, con la misma hora)
-                    for tel in tels:
+                    for raw, tel in zip(raws, tels):
+                        for f in list(self.raw_listeners):
+                            try:
+                                f(raw, stamp)
+                            except Exception:  # la caja negra nunca debe tumbar el puente
+                                pass
                         for f in list(self.listeners):
                             try:
                                 f(tel, stamp)

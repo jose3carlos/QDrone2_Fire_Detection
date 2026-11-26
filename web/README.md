@@ -61,7 +61,8 @@ Eventos). La web sigue escuchando solo en `127.0.0.1` de la laptop.
   recuerda en las pestañas Pista y Motive).
 - Revisión previa: `%USERPROFILE%\.venvs\qd2_web\Scripts\python web\preflight_lab.py --remoto 192.168.2.11`
   (no revisa Motive ni los puertos 18700/18001/18002 locales, exige `red.ip_pc` vacía o igual a la PC y no abre
-  ninguna conexión hacia ella; en solo exige solo la IP del dron solo).
+  ninguna conexión hacia ella; en solo exige solo la IP del dron solo). El build de tierra y el contenido del
+  `.motive` solo se revisan de verdad en la PC (sin `--remoto`): **correrlo allá antes de cada vuelo**.
 
 ## Qué hay en la pantalla
 - **Vista 3D** (three.js r160 desde CDN): arena 3×3, la N, los dos QDrone 2 (modelo low-poly con las 4 guardas, color por rol: cian = explorador, naranja = respondedor), consignas (◇), estelas, home (▢), huella y pirámide de la cámara del explorador, anillo `d_min_h` y anomalías (llama = fuego, válvula = toma; el anillo indica el estado: amarillo detectada, azul asignada, verde visitada). Si no hay internet para el CDN, sigue funcionando el mapa 2D.
@@ -121,6 +122,28 @@ El mock emite además, igual que el modelo real:
   - **Sin video:** con la visión activa (gate: MISSION/PAUSED, explorador rastreado sobre `web.z_min_deteccion`) y sin
     frames de la cámara hace más de 2 s (`SIN_VIDEO_S`), aviso rojo *"Sin video del explorador: no se detecta nada"*.
     Solo avisa (nada automático) y se va solo cuando vuelve el video; Eventos registra cuándo aparece y cuándo se va.
+  - **Reconexión automática** (`app/cameras.py`, `CameraHub` + `QDF1Client`; el Wi-Fi del dron es intermitente): si
+    el streamer no responde, se corta (también a mitad de frame) o se **atasca** (conectado pero sin recibir ningún
+    byte en 2 s, `ATASCO_S`: streamer colgado o Wi-Fi caído sin cerrar el socket; se mide por progreso, así que un
+    enlace lento que tarda más de 2 s en pasar un JPEG sigue dando video lento), la estación cierra y reconecta con
+    espera creciente 0.25, 0.5, 1, 2, 2 … s (`ESPERA_MIN_S`/`ESPERA_MAX_S`; vuelve a 0.25 con el primer frame). Medido
+    con el streamer real en 127.0.0.1: el video vuelve 0–2 s después de que el streamer relanzado escucha (según la espera de reintento en curso; medido 0.06–1.2 s; cota de
+    las pruebas: 3 s). Solo reconecta el video: no hace nada más.
+  - Contadores en `snapshot.camara` (se reinician al cambiar de fuente): `conexiones`, `reconexiones` (las que siguen a
+    la primera), `fallos` (conexiones fallidas), `atascos`, `caidas` (el video llegaba y se cortó; un corte cuenta una
+    vez aunque tome varias reconexiones), `caidas_vuelo` (desde que la misión entra a un estado de vuelo, los mismos
+    de la caja negra: TAKEOFF..PAUSED, LANDING y ABORT; se conserva hasta el siguiente vuelo), `en_vuelo`, `caida_s`
+    (s desde el último frame del corte en curso; null si llega video), `edad_s` (edad del último frame), `espera_s`
+    y `ultima_caida` (`hora`, `dur_s`, `motivo`). La caja negra los graba en su línea `muestra` de ~1 Hz (`camara`) y
+    `herramientas/caja_negra.py resumen` los resume (caídas y reconexiones dentro de la grabación).
+  - UI: el encabezado de la cámara dice `reconexiones N · caídas M (vuelo K)` (amarillo con caídas en el vuelo, rojo
+    *SIN VIDEO hace X s · reconectando* durante un corte) y Conexiones → *Puente y video* trae edad del último frame,
+    reconexiones, fallos, atascos, caídas y la última caída con su motivo. Los comandos del streamer (scp, lanzar,
+    `--estado`, `--detener`) están en Conexiones con la IP del dron.
+  - Eventos, con antirrebote: `Video caído (dron <IP>:18800): <motivo>; se reconecta solo …` si el video sigue cortado
+    1 s (`CAIDA_MIN_S`) y `Video de vuelta (…) tras X s sin video (N reconexiones; caídas: …)` cuando lleva 1 s
+    (`RECUPERA_MIN_S`) llegando sin cortes. Un corte más breve solo suma en los contadores. El aviso rojo "Sin video"
+    (`SIN_VIDEO_S`, arriba) no cambia.
   - UI: la cabecera de la cámara dice `dron M (camara.dron)` (en rojo con `≠ explorador N`), la tarjeta de ese dron
     lleva la etiqueta **CÁMARA** y `snapshot.camara` trae `dron`, `explorador` y `coincide`.
 - `sintetica`: cámara virtual que dibuja anomalías **inventadas**. Solo se permite con `mock` o `sim3d`. Con `simulink` queda bloqueada (aviso rojo), porque mandaría objetivos falsos a los drones reales. Para usarla a propósito con QD2_Sim_Dual, pon `web.permitir_sintetica_en_simulink: true`.
@@ -149,10 +172,40 @@ El mock emite además, igual que el modelo real:
 
 ## En el dron explorador (Jetson)
 ```bash
-scp web/drone/qdrone2_camera_streamer.py nvidia@<IP_DRON>:~/
-ssh nvidia@<IP_DRON> "python3 ~/qdrone2_camera_streamer.py --camara auto"
+scp web/drone/qdrone2_camera_streamer.py web/drone/correr_streamer.sh nvidia@<IP_DRON>:~/
+ssh nvidia@<IP_DRON> "bash ~/correr_streamer.sh --camara auto"      # en segundo plano; regresa de inmediato
+ssh nvidia@<IP_DRON> "bash ~/correr_streamer.sh --estado"           # ¿corre? + últimas 15 líneas del log
+ssh nvidia@<IP_DRON> "tail -f ~/streamer_camara.log"                # log en vivo
+ssh nvidia@<IP_DRON> "bash ~/correr_streamer.sh --detener"          # detener (bucle + streamer)
 ```
-- Por defecto usa `pyrealsense2`. Si no está, prueba el SDK de Quanser (`Video3D`) y después OpenCV/V4L2.
+- **`correr_streamer.sh`** (bash, LF; va en la misma carpeta que el streamer): corre el streamer con `python3 -u`
+  dentro de un bucle lanzado con `setsid nohup` (no depende de la sesión ssh: cerrar la terminal o perder el Wi-Fi no
+  lo mata) y lo **relanza si termina** (error, `kill`, código 3 del vigía, código 4 sin cámara) tras 2, 4, 8 … 30 s
+  (vuelve a 2 s si duró más de 60 s). Log: `~/streamer_camara.log` (se rota a `.1` al pasar de 5 MB al arrancar); PID
+  del bucle en `~/.streamer_camara.pid` (sobrevive a un apagado: solo se toma si `/proc/<PID>/cmdline` es este
+  script, así un PID viejo reusado por otro proceso no bloquea el arranque ni recibe el `--detener`). Los argumentos pasan tal cual al streamer; si ya corre no lanza otro (primero
+  `--detener`). `--primer-plano` corre el bucle en la terminal (Ctrl+C). No instala servicios ni pide contraseñas
+  (la de ssh la teclea el usuario). Sin el script también funciona como antes:
+  `python3 ~/qdrone2_camera_streamer.py --camara auto`, pero muere con la sesión ssh.
+- **Se recupera solo** (`Captura` y `Cliente` en el streamer; Python 3.6, sin dependencias nuevas):
+  - Cámara: si no abre, si `read()` lanza o si da frames vacíos más de `--vacios-s` (3 s), la cierra y la reabre con
+    espera creciente (0.5, 1, 2 … `--espera-max` 8 s), sin morir; con `auto` reabre primero la que funcionó. Si una
+    lectura, apertura o cierre (`stop_streaming` tras un fallo USB) se queda colgado dentro de la librería más de
+    `--vigia-s` (30 s), sale con código 3; si lleva más de `--sin-camara-s` (60 s) sin un frame bueno (no abre o no
+    entrega, p. ej. *device busy* por handles que la librería dejó abiertos), sale con código 4. En ambos casos
+    `correr_streamer.sh` lo relanza con un proceso limpio. SIGTERM solo marca la parada (sin log ni locks en el
+    manejador) y el streamer cierra la cámara y sale en ≤ 0.5 s.
+  - Clientes: hasta `--max-clientes` (3) a la vez, cada uno en su hilo con el frame más reciente (uno lento se salta
+    frames y no frena a los demás ni a la captura; si llega uno más, se cierra el más viejo). Envío con tiempo límite
+    `--timeout-envio` (3 s), TCP keepalive (2 s + 3×1 s) y `TCP_USER_TIMEOUT`: una PC que desapareció sin cerrar se
+    suelta sola, y la estación que reconecta entra de inmediato como cliente nuevo aunque el socket viejo siga medio
+    abierto. Solo se codifica JPEG si hay clientes.
+  - Cada `--cada-estado` s (10) una línea `Estado: captura X fps, envío Y fps · cámara abierta · reaperturas N
+    (fallos apertura a, lectura b) · clientes activos c, total d, desconectados e · frames enviados f`.
+  - Pruebas en la laptop (fuente falsa, 127.0.0.1): `tests/test_streamer_robusto.py`; `Streamer(args, abrir_fn=...)`
+    acepta cualquier objeto con `read()` y `close()`.
+- Por defecto usa `pyrealsense2`. Si no está, prueba el SDK de Quanser (`Video3D`) y después OpenCV/V4L2. En el Jetson
+  del laboratorio `pyrealsense2` está roto y abre con `quanser Video3D` (~11 fps a 640×480).
 - Al arrancar imprime los intrínsecos reales de la D435i, listos para copiar en `camara.intrinsecos` de `estacion.json`. Ejemplo: `"intrinsecos": {"640x480": {"fx": 615.3, "fy": 615.1, "cx": 322.4, "cy": 238.9}}`.
   - La geolocalización toma fx, fy, cx, cy en este orden: `camara.intrinsecos` → `vision.intrinsecos_nominales` (fx = fy = 617.1 a 640×480, HFOV ≈ 55°) → `hfov_deg`/`vfov_deg`. Esto último solo pasa si no hay ninguno de los dos, y sale un aviso amarillo.
   - A 640×480 la FOV **no** es la 69.4×42.5 de 16:9.
@@ -197,6 +250,67 @@ cluster más allá de un extremo alarga ese extremo. Nunca toca `pista.vertices`
 Avisa si los vuelos se registraron con tubos distintos (el cálculo siempre es contra la config actual, con las xy
 registradas). Opciones: `--config`, `--umbral`, `--min-clusters`, `--n-fuerte`, `--max-desp`, `--margen`.
 
+## Caja negra y repetición (`*.tel.jsonl.gz`)
+Si algo falla en un vuelo real, la caja negra permite reconstruir qué vio la estación, paquete por paquete. Cada vuelo
+deja `web/datos/vuelos/AAAA-MM-DD/vuelo_HHMMSS_<fuente>.tel.jsonl.gz` (`app/caja_negra.py`) **junto al registro de
+observaciones del mismo vuelo, con el mismo nombre base** (`vuelo_HHMMSS_<fuente>.jsonl`). Va a git igual que el
+registro. Es JSON Lines dentro de gzip; `t` = s desde que se abrió el archivo (negativo = antes del START):
+- `cabecera`: formato, fecha, fuente, modo de misión, motivo de apertura, `config_datos` (el `estacion.json` en
+  memoria), puente, `campos.nombres` = nombre de cada índice y(1..64) (`d1_x`, `mission_state`, `cmd_seq_ack`…, los
+  de `protocol.py`) y los últimos eventos de la estación;
+- `tel`: **cada paquete del puente tal cual llegó** (los 64 doubles; null = NaN, `"Inf"`), con la hora de llegada;
+- `cmd` (cada /api/cmd: comando, origen, resultado enviado / en cola / 409 / 400, `cmd_seq`), `ack` (recibido,
+  caducado, descartado o reemplazado, con la latencia desde el clic), `evento` (cada línea de los eventos), `aviso`
+  (aparece / desaparece / activo al abrir) y `muestra` (~1 Hz: cámara con fps y edad del último frame, visión,
+  puente, avisos y objetivos de la estación);
+- `fin`: motivo, duración y paquetes.
+
+Ciclo: habilitada, la estación guarda siempre los últimos **10 s** en memoria; el archivo se abre con un START que
+sale o al entrar a un estado de vuelo (TAKEOFF..PAUSED, LANDING, ABORT) y se cierra 10 s después de salir de ellos
+(DONE; un START que Simulink no aceptó también queda grabado), tras 60 s sin telemetría, al cambiar de fuente (el
+búfer de la fuente anterior se tira) o al detener la estación. Un archivo dura a lo más **30 min** (`MAX_S`): si la
+misión sigue en un estado de vuelo (p. ej. Simulink olvidado en PAUSED) se cierra y sigue en otro, para que ninguno
+llegue a los 100 MB que GitHub rechaza. Usa el hilo escritor y el manejo de errores del registro: el puente solo
+agrega a una cola en memoria, un error de disco se avisa (a lo más una vez por minuto) y se reintenta, y nunca frena
+ni tumba la estación. Cada línea se comprime una sola vez: los reintentos escriben los mismos miembros ya comprimidos
+(sin gastar CPU aunque la falla dure); si dura más de 90000 líneas (~30 min) se pierden las más viejas, nunca la
+cabecera.
+Cada vaciado (cada 2 s) es un miembro gzip completo: **un corte de luz deja el archivo legible hasta el último
+vaciado** (`gzip -dc` avisa del final cortado; `caja_negra.py` y `--repetir` lo leen sin quejarse). Por defecto
+graba solo con `--fuente simulink`; `web.caja_negra` (`"auto"`, `true`, `false`) o `--caja-negra auto|si|no` lo
+cambian (pytest nunca escribe en `web/datos`). Solo graba: no manda comandos ni cambia nada.
+
+Tamaño (10 min de vuelo dual a 50 Hz): **0.95–3.7 MB** con el mock tal cual (sin ruido; ~5 MB por 10 min solo en MISSION) y **6.3 MB** con el mock más
+ruido tipo OptiTrack en pose, velocidad y batería (todos los dígitos de los doubles ocupados, como un vuelo real);
+a 25 Hz, 3.2 MB. Se deja a 50 Hz (todos los paquetes: un vuelo real dura 5-8 min, ≈ 3-5 MB, quizá algo más con ruido real). Si en el laboratorio
+pasara de ~6 MB por cada 10 min (`caja_negra.py resumen` lo imprime), `web.caja_negra_decimacion: 2` graba uno de
+cada dos paquetes (25 Hz).
+
+**Analizar** (después de cada vuelo; una sesión de Claude en la PC del laboratorio puede hacerlo sola):
+```bat
+%USERPROFILE%\.venvs\qd2_web\Scripts\python web\herramientas\caja_negra.py resumen                 &rem la caja negra más reciente
+%USERPROFILE%\.venvs\qd2_web\Scripts\python web\herramientas\caja_negra.py resumen web\datos\vuelos\2026-11-26 --json
+%USERPROFILE%\.venvs\qd2_web\Scripts\python web\herramientas\caja_negra.py csv <archivo.tel.jsonl.gz>   &rem <nombre>.tel.csv + <nombre>.tel_eventos.csv
+```
+`resumen`: línea de tiempo de estados de misión, Flight States / FSM por dron, alertas y explorador; comandos con su
+resultado, ack y latencia (del puente y de y(54) en la telemetría); pérdidas de rastreo (duración, en el aire o no);
+máximos |x|, |y| y z por dron; separación horizontal mínima con los dos en el aire (dual); tiempo en el aire;
+huecos de telemetría > 0.2 s; avisos; fps del video. `csv`: una fila por paquete (`t_estacion`, s desde que abrió el archivo, + las 64 columnas con nombre, donde `t` es y(1) de Simulink;
+NaN = sin dato) y otro CSV con comandos, acks, eventos y avisos, para `readtable` en MATLAB.
+
+**Repetir en la UI** (otra estación, en otro puerto; usa la config grabada en el archivo):
+```bat
+cd web
+%USERPROFILE%\.venvs\qd2_web\Scripts\python -m app.server --repetir datos\vuelos\2026-11-26\vuelo_HHMMSS_simulink.tel.jsonl.gz --puerto 8081 [--velocidad 4]
+```
+La telemetría grabada entra por el **mismo camino que la real** (un Stream Server local que manda los paquetes con su
+ritmo → el puente de siempre), así que la vista 3D, el mapa, las tarjetas, la batería y las alertas se ven igual; los
+avisos, la cámara, la visión, los objetivos de la estación y los eventos salen de la grabación. Arriba aparece el chip
+**REPETICIÓN** y una barra con pausa, velocidad (0.25×-16×) y una barra para saltar en el tiempo. Es **solo lectura**:
+todos los comandos y cambios (fuente, config, objetivos, mock) responden 409 "repetición", no se conecta a la cámara
+ni a la red de los drones y no graba caja negra ni registro. En pausa y al final sigue mandando el último paquete
+para que la telemetría no se vea vieja.
+
 ## Batería
 Pestaña **Misión → Batería** (`app/bateria.py`), por dron activo (en solo explorador, solo el dron solo): voltaje
 actual, gráfica de los últimos 5 min (medias de 1 s; banda cian = en el aire), estado (en reposo / armado / bajo
@@ -217,7 +331,7 @@ bordo y `simulink_qdrone2/bateria/qd2_bateria.m`. En MPC llega en vivo y queda e
 
 ## Configuración (`config/estacion.json`)
 - Es la única fuente de verdad. Al arrancar **no se escribe nada**: los valores por defecto de `web` viven en memoria. Cuando guardas algo desde la página, el archivo conserva el formato, los números tal como estaban escritos (`0.20` sigue siendo `0.20`) y los finales de línea (CRLF). Así `git diff` solo muestra lo que cambió.
-- Claves que agregó la estación (todas opcionales): `web.*` (fuente, host, detector, `cmd_timeout_s`, latencia de video, puertos QUARC, `permitir_sintetica_en_simulink`), `camara.dron` (dron con la RealSense, por defecto 1), `camara.intrinsecos`, `camara.giro_en_dron` y los filtros `vision.tam_max_m`, `vision.tam_min_m`, `vision.dist_max_tubo_toma_m`, `vision.dist_max_tubo_fuego_m` (ver **Filtros físicos de la estación**; Simulink no los lee).
+- Claves que agregó la estación (todas opcionales): `web.*` (fuente, host, detector, `cmd_timeout_s`, latencia de video, puertos QUARC, `permitir_sintetica_en_simulink`, `registro_vuelos`, `caja_negra`, `caja_negra_decimacion`), `camara.dron` (dron con la RealSense, por defecto 1), `camara.intrinsecos`, `camara.giro_en_dron` y los filtros `vision.tam_max_m`, `vision.tam_min_m`, `vision.dist_max_tubo_toma_m`, `vision.dist_max_tubo_fuego_m` (ver **Filtros físicos de la estación**; Simulink no los lee).
 - Valores existentes que modifica:
   - `red.ip_*`
   - `optitrack.*`
@@ -241,7 +355,7 @@ Simulink busca los objetivos por id y no vuelve a mover uno ya visitado. Por eso
 cd web
 %USERPROFILE%\.venvs\qd2_web\Scripts\python -m pytest -q tests
 ```
-Son 229 pruebas (227 y 2 saltadas si no están `vision/datos/sintetico_smoke` ni el respaldo `mejor_640x640_*.onnx`, que no van a git); `tests/test_frontera_e2e.py` cubre lo que se corrigió en la prueba punta a punta (fallas por dron con la alerta 9 y aviso de versión del modelo distinta de la config); `tests/test_revision.py` cubre los defectos de la revisión y `tests/test_alertas_objetivos_sim.py` la alerta y(55), los objetivos y(56:60), la etiqueta de fsm según la versión, los ids 1..32, el ack con +0.5 del operador, la retención de objetivos al reconectar, las ráfagas de telemetría, el 9 como fin de vuelo, y(55) no finito, el alias de Simulink y la cancelación del despegue en el mock. Cubren:
+Son 352 pruebas (algunas se saltan si no están `vision/datos/sintetico_smoke` ni el respaldo `mejor_640x640_*.onnx`, que no van a git); `tests/test_frontera_e2e.py` cubre lo que se corrigió en la prueba punta a punta (fallas por dron con la alerta 9 y aviso de versión del modelo distinta de la config); `tests/test_revision.py` cubre los defectos de la revisión y `tests/test_alertas_objetivos_sim.py` la alerta y(55), los objetivos y(56:60), la etiqueta de fsm según la versión, los ids 1..32, el ack con +0.5 del operador, la retención de objetivos al reconectar, las ráfagas de telemetría, el 9 como fin de vuelo, y(55) no finito, el alias de Simulink y la cancelación del despegue en el mock. Cubren:
 - protocolo (índices base 1);
 - comandos:
   - rechazo sin telemetría;
@@ -263,6 +377,12 @@ Son 229 pruebas (227 y 2 saltadas si no están `vision/datos/sintetico_smoke` ni
 - geolocalización: ida y vuelta con yaw/montaje, huella y cadena imagen→suelo con error < 3 cm;
 - actitud del explorador (`tests/test_actitud.py`): convención de ejes, nivelado idéntico al cálculo anterior, ida y vuelta mundo→píxel→suelo < 1 mm con roll/pitch de ±12°, yaw y montajes variados, casos a mano (pitch 5° nariz abajo → 0.135 m hacia atrás), el offset de la cámara girando alrededor del pivote de Motive (0.07 m sobre la pose corregida, `optitrack.bias_z_dronN`), y(61:63) en el protocolo, interpolación en `PoseHistory`, descarte por inclinación, `usar_actitud` = false, modelo viejo (y(63) = 0), signos configurables, actitud del mock y huella de la estación;
 - clusters y persistencia de la configuración;
+- caja negra y repetición (`tests/test_caja_negra.py`): búfer de 10 s antes del START, apertura por START o estado de
+  vuelo y cierre 10 s después, vector crudo exacto (NaN/inf), comandos/acks/eventos/avisos/muestras, decimación,
+  archivo cortado o con basura legible, error de disco que no tumba ni duplica, reintentos que no recomprimen y
+  desborde que conserva la cabecera, tope de duración por archivo, cambio de fuente que tira el búfer, registro con el
+  mismo nombre, mock forzado de punta a punta (`--caja-negra si`), habilitación y CLI, repetición con los mismos
+  paquetes por el puente, solo lectura (409) y saltos con t no finito (400), y `herramientas/caja_negra.py` resumen/csv;
 - registro de vuelos (`tests/test_registro_vuelo.py`): `geo.tubo_cercano` igual a `dist_tubos`, formato de las
   líneas, apertura/cierre por gate y estado de la misión, flush, error de disco, habilitación y que pytest no
   escriba en `web/datos`; `tests/test_ajustar_tubos.py`: tubo 2 desplazado 0.2 m hacia y- → corrimiento correcto
@@ -272,6 +392,16 @@ Son 229 pruebas (227 y 2 saltadas si no están `vision/datos/sintetico_smoke` ni
   descendente que no reacciona, y que ningún comando, alerta, aviso ni cambio de misión dependa de `battery_V`;
 - API REST y WebSocket;
 - video QDF1 entre el streamer y el cliente;
+- video que se recupera solo (`tests/test_streamer_robusto.py`, todo en 127.0.0.1): el streamer real del repo matado
+  y relanzado (la estación recupera el video < 3 s después de que escucha, 1 caída, 1 reconexión, eventos de caída y
+  de vuelta una sola vez y no antes de 1 s), corte a mitad de frame (reconecta en < 1 s; corte breve sin eventos,
+  cuenta en `caidas_vuelo`), servidor que acepta y no manda nada (atasco a los 2 s, no es caída), corte que deja el
+  socket colgado, cámara que falla al abrir, al leer, con None y con frames vacíos y luego se recupera (la PC ni
+  reconecta), cliente que deja de leer y cliente que cierra con RST (el streamer los suelta y la estación sigue a
+  ~30 fps), cliente nuevo que no se atasca en el viejo, vigía con código 3 (también con `close()` colgado), código 4
+  sin cámara, enlace lento (JPEG que tarda > 2 s) que sigue dando video, `pid_bucle` que ignora un PID ajeno, y la
+  estación completa
+  (`snapshot.camara`, Eventos, caídas en el vuelo con el estado de misión y la muestra de la caja negra);
 - detector FOMO;
 - modo solo explorador (`tests/test_solo_explorador.py`): tabla de `mision.modo`/`dron_solo`, y(64) y telemetría
   vieja, mock solo hasta DONE con el dron 1 y con el dron 2 sin tocar al otro, ABORT/pausa/auto_land, mock dual
@@ -281,6 +411,16 @@ Son 229 pruebas (227 y 2 saltadas si no están `vision/datos/sintetico_smoke` ni
   aunque cambie el explorador, START 409 con explorador ≠ cámara (dual y solo) y START ok cuando coinciden, ABORT/LAND
   /PAUSE nunca bloqueados, sin bloqueo con el mock o la cámara sintética, aviso "Sin video" que aparece y se va
   (también con el mock real, donde nunca sale) y `preflight_lab.py`;
+- preflight (`tests/test_preflight_lab.py`, carpetas temporales): `.motive` real copiado en solo (auxiliar = INFO) y
+  en dual (FALLA), sin el ID 2, dron 2 real, misma geometría, auxiliar renombrado (se reconoce por el triángulo),
+  dron 2 real + auxiliar con el mismo ID (FALLA si vuela, pide borrar el auxiliar),
+  ilegibles (AVISO, nunca FALLA), copia del repo (FALLA → AVISO), `archivo_motive` vacío y Motive abierto en `main`;
+  build ausente, más viejo que la config / una `.m` / `qd2_cargar_config.m`, más nuevo, `.slx` posterior (AVISO),
+  sello con el mismo contenido y fechas nuevas (OK), con otro sha, `.m` cambiada o nueva, la línea del build y no
+  la de un Connect posterior, sello viejo o solo posterior (fechas), líneas ilegibles y `--remoto` (INFO); con el
+  texto de la config en el sello, claves de la estación (`red.ip_*`, `pista.tubos`, `camara`, `web`...) = INFO y
+  las que lee el modelo = FALLA con su nombre; `.m` que tierra no usa (`LIB_NO_TIERRA`, comprobado contra
+  `QD2_Mission_Lib.slx`) no cuentan;
 - ruta y tubos reales separados (`tests/test_tubos_reales.py`): anomalías por defecto sobre `pista.tubos` (orillas
   incluidas) y sin tubos idénticas a las de antes, la cámara sintética (también la de `Station`) dibuja los tubos
   reales y no la ruta, confianza del detector falso (completa ≥ 0.9, cortada < 0.6), la toma de la orilla pasa el
@@ -309,12 +449,15 @@ N de 4 vértices y `cfg_path_solo` una en solo (dron 1) con la pista de 7 vérti
 | `app/registro_vuelo.py` | Registro JSON Lines de las observaciones (y la batería) de cada vuelo (`web/datos/vuelos`) |
 | `app/bateria.py` | Batería por dron para la UI y el registro (solo visualización; nada actúa por ella) |
 | `herramientas/ajustar_tubos.py` | Propone (y con `--aplicar` escribe) `pista.tubos` a partir de los registros |
+| `app/caja_negra.py` | Caja negra de cada vuelo: telemetría cruda, comandos, acks, eventos, avisos (`*.tel.jsonl.gz`) |
+| `app/repeticion.py` | Lectura tolerante de la caja negra y Stream Server de la repetición (`--repetir`) |
+| `herramientas/caja_negra.py` | `resumen` (línea de tiempo, comandos, rastreo, máximos, separación, huecos) y `csv` |
 | `app/cameras.py` | Fuentes de video (cliente QDF1, sintética, webcam, carpeta) |
 | `app/netinfo.py` | IPs por interfaz y comandos `quarc_run` |
 | `app/fomo.py` | Detector FOMO original (respaldo) |
 | `app/static/` | UI (sin compilación): `index.html`, `app.js`, `escena3d.js`, `mapa2d.js`, `style.css` |
 | `drone/qdrone2_camera_streamer.py` | Streamer QDF1 en el Jetson |
-| `preflight_lab.py` | Revisión previa al laboratorio, de solo lectura: archivos de `versiones/`, binarios de los drones, ONNX, config (cámara, Motive, rigid bodies, pista, IPs), interfaces, puertos, Motive abierto y QUARC. Uso: `%USERPROFILE%\.venvs\qd2_web\Scripts\python web\preflight_lab.py [--version MPC] [--ping] [--remoto IP_PC]` (ver `docs/CHECKLIST_LABORATORIO.md`) |
+| `preflight_lab.py` | Revisión previa a cada vuelo, de solo lectura: archivos de `versiones/`, binarios de los drones, **build de tierra vs config** (`<modelo>.rt-win64` del modo: solo → `QD2_MissionCtrl_Dual_PID`, dual → `_PID_2D`; FALLA si falta o si la config, `simulink_qdrone2/lib/*.m` o `qd2_cargar_config.m` cambiaron después del build: por contenido con el sello `<modelo>.config_usada.jsonl` que escribe `qd2_cargar_config` en el InitFcn, gitignored, y de la config solo las claves que lee el modelo (dice cuál cambió; `red.ip_*`, `camara`, `pista.tubos`, `web`... no piden recompilar); sin sello, por fechas), ONNX, config (cámara, Motive, rigid bodies, pista, IPs), **contenido del `.motive`** (los dos IDs; FALLA si un dron que vuela tiene el rigid body auxiliar, p. ej. el dron 2 en dual, también si su ID está repetido y uno es el auxiliar; AVISO si no se puede interpretar), interfaces, puertos, Motive abierto (psutil o `tasklist`) y QUARC. Uso: `%USERPROFILE%\.venvs\qd2_web\Scripts\python web\preflight_lab.py [--config config\estacion_dual.json] [--version MPC] [--ping] [--remoto IP_PC]`. Qué hacer con cada FALLA: `docs/CHECKLIST_LABORATORIO.md`, Etapa 6 |
 
 ## Pendiente de verificar en el laboratorio
 - Las opciones de `quarc_run`. Los comandos generados usan `-r -t tcpip://IP:17000 <modelo>.rt-linux_qdrone2 -uri tcpip://IP:17001?retries=10 -URI_Host tcpip://PC:1800i`. `?retries=10` es el valor por defecto del `_main.c` original. Según la documentación local de QUARC (`%QUARC_DIR%\quarc\doc\quarc_command_line_tools.html`), `-r` descarga y ejecuta y `-D` solo descarga; en la sintaxis son alternativas excluyentes, por eso se usa solo `-r`. La ayuda corta es `quarc_run -?` (con `-h` no imprime nada en la consola). El comando se corre en un `cmd` abierto en `simulink_qdrone2\binarios_dron`, donde están los `.rt-linux_qdrone2`.

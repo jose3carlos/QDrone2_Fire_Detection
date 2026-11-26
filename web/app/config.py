@@ -37,6 +37,8 @@ WEB_DEFAULTS = {
     "z_min_deteccion": 0.4,      # no se geolocaliza con el explorador por debajo de esta altura
     "cmd_timeout_s": 1.5,        # un comando sin ack de Simulink en este tiempo caduca (no se ejecuta tarde)
     "registro_vuelos": "auto",   # registro por vuelo en web/datos/vuelos: auto (solo fuente simulink) | true | false
+    "caja_negra": "auto",        # caja negra por vuelo (*.tel.jsonl.gz, caja_negra.py): auto (solo simulink) | true | false
+    "caja_negra_decimacion": 1,  # 1 = graba todos los paquetes (50 Hz); 2 = uno de cada 2 (25 Hz), ver web/README.md
     "puerto_quarc_target": 17000,
     "puerto_ext_mode": 17001,
 }

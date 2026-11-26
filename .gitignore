@@ -42,3 +42,8 @@ desktop.ini
 # Caches de pruebas y mallas
 .pytest_cache/
 /simulador3d/*_mallas*.mat
+# Sello del build de tierra (qd2_cargar_config -> web/preflight_lab.py), propio de cada PC
+*.config_usada.jsonl
+# CSV que exporta web/herramientas/caja_negra.py csv (por defecto en la carpeta actual): decenas de MB, no van a git
+*.tel.csv
+*.tel_eventos.csv

@@ -34,6 +34,7 @@
     <span class="chip" id="chip-vision" title="Detector">Visión</span>
     <span class="chip neutral" id="chip-version" title="Versión del modelo que está corriendo">—</span>
     <span class="chip neutral" id="chip-modo" title="Modo de misión (y(64) del modelo de tierra)">—</span>
+    <span class="chip rep" id="chip-rep" hidden title="Repetición de una caja negra grabada (python -m app.server --repetir): solo lectura, los comandos no salen">REPETICIÓN</span>
   </div>
   <label class="source">Fuente
     <select id="sel-fuente">
@@ -44,6 +45,14 @@
   </label>
 </header>
 
+<div class="repeticion" id="rep-bar" hidden>
+  <b class="rep-titulo">REPETICIÓN</b>
+  <button class="btn sm" id="rep-play" title="Pausa / seguir">Pausa</button>
+  <label class="rep-vel">Velocidad <select id="rep-vel"></select></label>
+  <input type="range" id="rep-t" min="0" max="1" step="0.1" value="0" aria-label="Tiempo de la repetición (s desde la apertura de la caja negra)">
+  <span class="rep-tiempo" id="rep-tiempo">—</span>
+  <span class="rep-archivo" id="rep-archivo"></span>
+</div>
 <div class="avisos" id="avisos" role="alert"></div>
 <div class="alerta" id="alerta" role="alert" hidden></div>
 <nav class="controls" aria-label="Controles de misión">
@@ -92,7 +101,10 @@
       <div class="panel cam">
         <div class="panel-head">
           <h2 title="Video del dron con la RealSense (camara.dron); debe ser el explorador">Cámara del explorador</h2>
-          <span class="hint" id="cam-info">—</span>
+          <div class="cam-hints">
+            <span class="hint" id="cam-info">—</span>
+            <span class="hint" id="cam-enlace"></span>
+          </div>
         </div>
         <div class="camwrap"><img id="video" alt="Video de la cámara del explorador" src="/video.mjpg"></div>
       </div>
@@ -160,6 +172,7 @@
       <small id="targets-note">Origen: <b>estación</b> = publicada por esta estación; <b>Simulink</b> = la reporta Simulink
         en y(56:60) (p. ej. el detector interno del simulador 3D); <b>ambos</b> = publicada aquí y confirmada por Simulink.</small>
       <small id="registro-vuelo" title="Observaciones de visión de cada vuelo (aceptadas y descartadas) en JSON Lines, para corregir pista.tubos con web/herramientas/ajustar_tubos.py"></small>
+      <small id="caja-negra" title="Caja negra del vuelo (telemetría cruda, comandos, acks, avisos y eventos) en *.tel.jsonl.gz: web/herramientas/caja_negra.py resumen / csv y python -m app.server --repetir"></small>
       <div class="card">
         <div class="card-title">Agregar anomalía manual (prueba)</div>
         <div class="row-inline">

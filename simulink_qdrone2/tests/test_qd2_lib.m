@@ -1346,6 +1346,81 @@ fprintf('[config modo] %d casos de la tabla §1.2 OK; qd2_cargar_config: solo dr
     size(casos, 1), cfg1.modo_mision);
 end
 
+function test_sello_config(tc)
+% Sello del build (<carpeta del .slx>/<modelo>.config_usada.jsonl) que lee web/preflight_lab.py: una línea por
+% llamada con el modelo cargado, sha256 y texto de la config, sha256 de lib/*.m + qd2_cargar_config.m, últimas 30
+% líneas más la del build del .rt-win64 actual (aunque después haya muchos Connect).
+% Modelo vacío de prueba en una carpeta temporal (no toca ningún .slx del repo); sin modelo no escribe nada.
+raiz = fileparts(fileparts(fileparts(mfilename('fullpath'))));
+d = tempname;
+mkdir(d);
+mdl = sprintf('qd2_sello_%d', randi(1e6));
+new_system(mdl);
+limpiar = onCleanup(@() cerrar_y_borrar(mdl, d)); %#ok<NASGU>
+save_system(mdl, fullfile(d, [mdl '.slx']));
+c = jsondecode(fileread(fullfile(raiz, 'config', 'estacion.json')));
+f1 = fullfile(d, 'cfg.json');
+escribir(f1, jsonencode(c));
+sello = fullfile(d, [mdl '.config_usada.jsonl']);
+qd2_cargar_config([], f1);                                    % PostLoadFcn: sin modelo, sin sello
+tc.verifyFalse(logical(exist(sello, 'file')));
+t0 = posixtime(datetime('now', 'TimeZone', 'UTC'));
+qd2_cargar_config(mdl, f1);
+c.mision.modo = 'dual';
+escribir(f1, jsonencode(c));
+qd2_cargar_config(mdl, f1);
+L = strtrim(splitlines(fileread(sello)));
+L = L(~cellfun(@isempty, L));
+tc.verifyEqual(numel(L), 2);
+e1 = jsondecode(L{1});
+e2 = jsondecode(L{2});
+tc.verifyEqual(e1.modelo, mdl);
+tc.verifyEqual(e1.config.ruta, f1);
+tc.verifyEqual(numel(e1.config.sha256), 64);
+tc.verifyNotEqual(e1.config.sha256, e2.config.sha256);       % cambió el contenido
+fid = fopen(f1, 'r', 'n', 'UTF-8');
+txt = fread(fid, inf, '*char')';
+fclose(fid);
+tc.verifyEqual(e2.config.texto, txt);                          % el preflight compara claves con este texto
+tc.verifyEqual({e1.modo, e2.modo}, {'solo_explorador', 'dual'});
+tc.verifyLessThan(abs(e1.t_posix - t0), 60);
+tc.verifyEqual(e2.rb_ids(:)', [1 2]);
+rutas = {e2.archivos.ruta};
+nlib = numel(dir(fullfile(raiz, 'simulink_qdrone2', 'lib', '*.m')));
+tc.verifyEqual(numel(rutas), nlib + 1);
+tc.verifyTrue(all(ismember({'qd2_cargar_config.m', 'lib/qd2_params.m', 'lib/qd2_mission_step.m'}, rutas)));
+tc.verifyTrue(all(cellfun(@numel, {e2.archivos.sha256}) == 64));
+for k = 1:30
+    qd2_cargar_config(mdl, f1);
+end
+L = strtrim(splitlines(fileread(sello)));
+tc.verifyEqual(nnz(~cellfun(@isempty, L)), 30);
+% build hace 1000 s (.rt-win64 con esa fecha) y su línea; luego 30 Connect: la línea del build se conserva
+L = L(~cellfun(@isempty, L));
+eb = e1;
+eb.t_posix = posixtime(datetime('now', 'TimeZone', 'UTC')) - 1000;
+eb.fecha = 'linea del build';
+escribir(sello, strjoin([{jsonencode(eb)}; L(:)], newline));
+rt = fullfile(d, [mdl '.rt-win64']);
+escribir(rt, 'binario');
+java.io.File(rt).setLastModified(int64((eb.t_posix + 1) * 1000));
+for k = 1:30
+    qd2_cargar_config(mdl, f1);
+end
+L = strtrim(splitlines(fileread(sello)));
+L = L(~cellfun(@isempty, L));
+tc.verifyEqual(numel(L), 31);
+e = jsondecode(L{1});
+tc.verifyEqual(e.fecha, 'linea del build');
+fprintf('[sello] %s: %d archivos con sha256, config %s... y su texto, se conservan 30 líneas + la del build\n', ...
+    [mdl '.config_usada.jsonl'], numel(rutas), e2.config.sha256(1:12));
+end
+
+function cerrar_y_borrar(mdl, d)
+if bdIsLoaded(mdl), close_system(mdl, 0); end
+if exist(d, 'dir'), rmdir(d, 's'); end
+end
+
 function test_solo_mision_pid(tc)
 % Misión completa en lazo cerrado con UN dron (el 1) sobre la pista del laboratorio;
 % el dron 2 no existe para OptiTrack (sin rastreo todo el tiempo).

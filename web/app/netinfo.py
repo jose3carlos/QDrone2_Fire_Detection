@@ -125,7 +125,10 @@ def comandos(cfg, ip_pc=None, modo=None, host_puente=None):
             "ext_mode_args": (f"set_param('{model}', 'ExtModeMexArgs', '''-w -d /tmp -uri %u -URI_Host {uri_host}'','"
                               f"'tcpip://{host}:{eport}?retries=10''')"),
             "ping": f"ping {host}",
-            "scp_camara": f"scp web/drone/qdrone2_camera_streamer.py nvidia@{host}:~/",
-            "ssh_camara": f"ssh nvidia@{host} \"python3 ~/qdrone2_camera_streamer.py --camara auto --puerto {int(red.get('puerto_video', 18800))}\"",
+            "scp_camara": f"scp web/drone/qdrone2_camera_streamer.py web/drone/correr_streamer.sh nvidia@{host}:~/",
+            # correr_streamer.sh: en segundo plano (sobrevive al cierre de ssh), lo relanza si muere, log en el dron
+            "ssh_camara": f"ssh nvidia@{host} \"bash ~/correr_streamer.sh --camara auto --puerto {int(red.get('puerto_video', 18800))}\"",
+            "ssh_camara_estado": f"ssh nvidia@{host} \"bash ~/correr_streamer.sh --estado\"",
+            "ssh_camara_detener": f"ssh nvidia@{host} \"bash ~/correr_streamer.sh --detener\"",
         }
     return out

@@ -14,6 +14,7 @@
   --ok: #22c55e;
   --warn: #f59e0b;
   --bad: #ef4444;
+  --rep: #a855f7;
   --radius: 10px;
   --viewh: 54vh;
   --mono: ui-monospace, "Cascadia Mono", Consolas, monospace;
@@ -59,6 +60,18 @@ h2 { font-size: 13px; font-weight: 600; margin: 0; letter-spacing: .02em; text-t
 .chip.solo { border-color: var(--explorer); color: var(--explorer); font-weight: 700; }
 .chip.solo.warn, .chip.solo.bad { color: var(--text); }
 .chip.solo.warn { border-color: var(--warn); } .chip.solo.bad { border-color: var(--bad); }
+.chip.rep { border-color: var(--rep); background: var(--rep); color: #fff; font-weight: 700; letter-spacing: .04em; }
+.chip.rep::before { display: none; }
+.chip[hidden] { display: none; }
+/* ---------- repetición de una caja negra (--repetir) ---------- */
+.repeticion { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; padding: 6px 16px;
+  background: color-mix(in srgb, var(--rep) 18%, var(--panel)); border-bottom: 2px solid var(--rep); }
+.repeticion[hidden] { display: none; }
+.rep-titulo { color: var(--rep); letter-spacing: .06em; }
+.rep-vel { display: flex; align-items: center; gap: 6px; font-size: 12px; color: var(--muted); }
+#rep-t { flex: 1 1 240px; min-width: 160px; accent-color: var(--rep); }
+.rep-tiempo { font-family: var(--mono); font-size: 12px; white-space: nowrap; }
+.rep-archivo { color: var(--muted); font-size: 12px; overflow-wrap: anywhere; flex-basis: 100%; }
 .source { margin-left: auto; display: flex; gap: 8px; align-items: center; color: var(--muted); }
 select, input { background: var(--panel-2); color: var(--text); border: 1px solid var(--line); border-radius: 6px;
   padding: 5px 8px; font: inherit; min-width: 0; }
@@ -126,6 +139,9 @@ input.mono { font-family: var(--mono); }
 .role.nu { background: var(--line); color: var(--text); }
 .role.cam { background: var(--line); color: var(--text); }
 #cam-info.bad { color: var(--bad); font-weight: 600; }
+.panel.cam .panel-head h2 { white-space: nowrap; }
+.cam-hints { display: flex; flex-direction: column; align-items: flex-end; text-align: right; gap: 2px; min-width: 0; }
+#cam-enlace.bad { color: var(--bad); font-weight: 600; } #cam-enlace.warn { color: var(--warn); }
 .modo-info { font-size: 12px; color: var(--muted); margin: 8px 0; line-height: 1.4; }
 .modo-info b { color: var(--text); }
 .aviso-remoto { margin: 0 0 8px; padding: 6px 8px; border-radius: 8px; font-size: 12px; font-weight: 600;

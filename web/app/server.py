@@ -11,6 +11,10 @@ Uso (desde la carpeta ``web``):
                                             # modelo de tierra en OTRA PC (laptop -> PC del laboratorio)
     python -m app.server --fuente mock --registro-vuelos si
                                             # registra también los vuelos del mock (web/datos/vuelos)
+    python -m app.server --fuente mock --caja-negra si
+                                            # graba también la caja negra del mock (*.tel.jsonl.gz)
+    python -m app.server --repetir web/datos/vuelos/AAAA-MM-DD/vuelo_HHMMSS_simulink.tel.jsonl.gz --puerto 8081
+                                            # repite un vuelo grabado (solo lectura; --velocidad 4 = 4x)
 Luego abre http://127.0.0.1:8080
 """
 from __future__ import annotations
@@ -19,9 +23,11 @@ import argparse
 import asyncio
 import collections
 import contextlib
+import copy
 import json
 import math
 import os
+import shutil
 import threading
 import time
 from urllib.parse import urlsplit
@@ -40,6 +46,7 @@ from . import netinfo
 from . import protocol as P
 from .bateria import HistorialBateria
 from .bridge import BridgeClient, PuenteNoListo
+from .caja_negra import EN_VUELO, CajaNegra
 from .cameras import CameraHub, FolderCamera, OpenCVCamera, QDF1Client, SyntheticCamera
 from .config import (DEFAULT_PATH, PROJECT_DIR, WEB_DIR, Config, actitud_vision, camara_dron, es_loopback,
                      filtros_vision, mision_envolvente, mision_modo, mision_t_perdida_aterrizar,
@@ -48,6 +55,7 @@ from .geo import CameraModel, corregir_actitud, tramos_sin_tubo, tubo_cercano, t
 from .mock_sim import MockServer, contar_waypoints
 from .mock_world import anomalias_mock, render_view
 from .registro_vuelo import RegistroVuelos
+from .repeticion import Grabacion, ServidorRepeticion
 from .vision_service import PoseHistory, VisionService, load_detector, pose_para_geo
 
 STATIC = os.path.join(WEB_DIR, "app", "static")
@@ -62,6 +70,9 @@ TUBO_COORD_MAX = 3.0  # m; un punto más lejos del origen OptiTrack no está en 
 SIM_TTL_S = 5.0    # s sin ver un objetivo en y(56:60) (con telemetría fresca) -> deja de mostrarse
 CHOQUE_ID_M = 0.5  # m: mismo id en la estación y en Simulink pero tan lejos -> choque de ids
 REGISTRO_CLI = {"auto": "auto", "si": True, "no": False}   # --registro-vuelos -> valor de web.registro_vuelos
+CAJA_CLI = REGISTRO_CLI                                      # --caja-negra -> valor de web.caja_negra
+MSG_REPETICION = ("repetición: la estación está en solo lectura (no manda comandos ni cambia nada); "
+                  "para volar, arráncala sin --repetir")
 SIN_VIDEO_S = 2.0  # s sin frames de la cámara con el gate de visión activo -> aviso rojo "Sin video del explorador"
 DX_ROLES_MIN = 0.05  # m: en dual, |x1 - x2| menor en ASSIGN_ROLES -> explorador ambiguo (el ruido lo puede voltear)
 
@@ -77,7 +88,18 @@ class CamaraDistinta(PuenteNoListo):
 class Station:
     """Une puente, cámara, visión y configuración. Una instancia por proceso."""
 
-    def __init__(self, config_path=DEFAULT_PATH, fuente=None, mock_speed=1.0, host_puente=None, registro_vuelos=None):
+    def __init__(self, config_path=DEFAULT_PATH, fuente=None, mock_speed=1.0, host_puente=None, registro_vuelos=None,
+                 caja_negra=None, repetir=None, velocidad_repeticion=1.0):
+        # --repetir (repeticion.py): la telemetría sale de una caja negra grabada, con la config de ESE vuelo, por el
+        # mismo puente TCP; sin cámara, sin registro ni caja negra y en solo lectura (comandos -> 409)
+        self.grabacion = None
+        self.repeticion = None
+        if repetir:
+            self.grabacion = Grabacion(repetir)
+            config_path = self.grabacion.config_temporal() or config_path
+            fuente = self.grabacion.fuente if self.grabacion.fuente in FUENTES else "simulink"
+            host_puente, registro_vuelos, caja_negra = None, "no", "no"
+            self._velocidad_rep = velocidad_repeticion
         self.cfg = Config(config_path)  # no se escribe nada al arrancar (defaults en memoria)
         self.fuente = fuente or self.cfg.web("fuente")
         if self.fuente not in FUENTES:
@@ -123,11 +145,25 @@ class Station:
         self._registro_cli = REGISTRO_CLI.get(registro_vuelos)
         carpeta = os.path.join(os.path.dirname(self._persist_path), "vuelos")
         self._registro_bloqueado = bool(os.environ.get("PYTEST_CURRENT_TEST")) and _dentro(carpeta, DATA_DIR)
+        # Caja negra (caja_negra.py): misma carpeta y mismo criterio; --caja-negra (CLI) pisa web.caja_negra
+        if caja_negra is not None and caja_negra not in CAJA_CLI:
+            raise ValueError(f"--caja-negra debe ser uno de {tuple(CAJA_CLI)}")
+        self._caja_cli = CAJA_CLI.get(caja_negra)
+        try:
+            decimacion = min(10, max(1, int(self.cfg.web("caja_negra_decimacion"))))
+        except (TypeError, ValueError):
+            decimacion = 1
+        self.caja = CajaNegra(carpeta, lambda: self.fuente, lambda: self.caja_modo()[0], log_fn=self.log,
+                              cabecera_fn=self._cabecera_caja, muestra_fn=self._muestra_caja, base_rel=PROJECT_DIR,
+                              decimacion=decimacion)
+        # con la caja negra abierta, el registro de observaciones usa su mismo nombre (vuelo_HHMMSS_<fuente>)
         self.registro = RegistroVuelos(carpeta, lambda: self.fuente, lambda: self.registro_modo()[0], log_fn=self.log,
-                                       resumen_fn=self._resumen_vuelo, base_rel=PROJECT_DIR)
+                                       resumen_fn=self._resumen_vuelo, base_rel=PROJECT_DIR,
+                                       base_fn=self.caja.base_actual)
         # Batería (bateria.py): SOLO se muestra y se registra; la estación no actúa por ella (el corte es a bordo)
         self.bateria = HistorialBateria()
-        self.camera = CameraHub(self._camera_key, self._camera_factory)
+        # el video se reconecta solo (cameras.CameraHub); cada caída / recuperación va a Eventos con antirrebote
+        self.camera = CameraHub(self._camera_key, self._camera_factory, evento_fn=self.log)
         det, name, err = self._make_detector()
         self.vision = VisionService(self.camera, self.poses, self._vision_gate, self._publish_targets,
                                     lambda: self.cfg.data, det, name, err,
@@ -147,8 +183,13 @@ class Station:
         self.registro.detener()
         if self.bridge:
             self.bridge.stop()
+        self.caja.detener()             # después del puente: graba hasta el último paquete
         if self.mock:
             self.mock.stop()
+        if self.repeticion:
+            self.repeticion.stop()
+        if self.grabacion is not None and os.path.basename(os.path.dirname(self.cfg.path)).startswith("qd2_repeticion_"):
+            shutil.rmtree(os.path.dirname(self.cfg.path), ignore_errors=True)   # config temporal de la repetición
 
     def _start_source(self):
         cfg = self.cfg.data
@@ -158,10 +199,15 @@ class Station:
         self._last_alerta = 0
         self._falla_vista = {1: False, 2: False}
         self._perdida_vista = frozenset()
-        self._load_targets()
+        if self.grabacion is None:
+            self._load_targets()
         # web.mock_anomalias o, si no, sobre los tubos reales (pista.tubos) o la ruta (sin pista.tubos)
         self.world = anomalias_mock(cfg)
-        if self.fuente == "mock":
+        if self.grabacion is not None:
+            if self.repeticion is None:
+                self.repeticion = ServidorRepeticion(self.grabacion, self._velocidad_rep).start()
+            host, port = "127.0.0.1", self.repeticion.port
+        elif self.fuente == "mock":
             self.mock = MockServer(cfg, "127.0.0.1", 0, speed=self.mock_speed,
                                    cfg_fn=self.cfg.reload_if_changed).start()
             host, port = "127.0.0.1", self.mock.port
@@ -169,6 +215,9 @@ class Station:
             host, port = self.host_puente(), int(cfg["red"].get("puerto_puente", 18700))
         self.bridge = BridgeClient(host, port, params_fn=self._bridge_params,
                                    cmd_timeout_s=float(self.cfg.web("cmd_timeout_s")))
+        crudos = getattr(self.bridge, "raw_listeners", None)
+        if self.grabacion is None and crudos is not None:
+            crudos.append(self.caja.telemetria)   # cada paquete crudo, antes de procesarlo
         self.bridge.listeners.append(self._on_telemetry)
         self.bridge.on_cmd_result = self._on_cmd_result
         self.bridge.start()
@@ -187,6 +236,8 @@ class Station:
         return h if h and not es_loopback(h) else None
 
     def set_fuente(self, fuente):
+        if self.grabacion is not None:
+            raise ValueError(MSG_REPETICION)
         if fuente not in FUENTES:
             raise ValueError(f"fuente desconocida '{fuente}'")
         if fuente != "simulink":
@@ -200,6 +251,8 @@ class Station:
                 self.mock.stop()
                 self.mock = None
             self.registro.cerrar("cambio de fuente")
+            self.caja.cerrar("cambio de fuente")
+            self.caja.descartar_buffer()      # lo de la fuente anterior no entra al siguiente archivo
             self.bateria.reiniciar()
             self.fuente = fuente
             self.poses.clear()
@@ -210,7 +263,13 @@ class Station:
         self.cfg.update({"web": {"fuente": fuente}})
 
     def log(self, text):
-        self.events.appendleft({"t": time.strftime("%H:%M:%S"), "msg": text})
+        if self.grabacion is not None:  # repetición: los eventos son los grabados (Grabacion.eventos_en)
+            return
+        now = time.time()
+        self.events.appendleft({"t": time.strftime("%H:%M:%S", time.localtime(now)), "msg": text, "ts": round(now, 3)})
+        caja = getattr(self, "caja", None)
+        if caja is not None:
+            caja.evento(text)
 
     # ------------------------------------------------------------------ puente
     def _bridge_params(self):
@@ -238,6 +297,8 @@ class Station:
         self.log(f"Recuperada la tabla de objetivos guardada ({n} publicados, siguiente id {d.get('next_id')})")
 
     def _save_targets(self, targets):
+        if self.grabacion is not None:
+            return
         sig = tuple((t[0], t[1], round(t[2], 2), round(t[3], 2)) for t in targets)
         if sig == self._saved_sig:
             return
@@ -365,6 +426,13 @@ class Station:
         if st != self._last_state:
             self.log(f"Estado de misión: {P.MISSION_STATES_ES.get(st, st)}")
             self._last_state = st
+        # caídas del video "en el vuelo" (snapshot.camara.caidas_vuelo): cuentan desde que la misión entra a un
+        # estado de vuelo (los mismos de la caja negra) y se conservan hasta el siguiente vuelo
+        if (st in EN_VUELO) != self.camera.en_vuelo:
+            if st in EN_VUELO:
+                self.camera.iniciar_vuelo()
+            else:
+                self.camera.fin_vuelo()
         self._tick_registro(tel)
         self._registrar_bateria(tel, stamp)
 
@@ -396,6 +464,8 @@ class Station:
         return tel
 
     def _publish_targets(self, targets):
+        if self.grabacion is not None:
+            return
         if self.bridge:
             self.bridge.set_targets(targets)
         self._save_targets(targets)
@@ -404,9 +474,25 @@ class Station:
         txt = {"recibido": "recibido por Simulink", "caducado": "CADUCADO (no se ejecutará)",
                "descartado": "descartado", "reemplazado": "reemplazado"}.get(r["estado"], r["estado"])
         self.log(f"Comando {r['cmd']} (cmd_seq {r['cmd_seq'] or '—'}) {txt}. {r['detalle']}")
+        self.caja.ack(r)
 
-    def command(self, name):
-        """Pone el comando en la cola del puente. ``PuenteNoListo`` si no hay telemetría fresca."""
+    def command(self, name, origen="estación"):
+        """Pone el comando en la cola del puente. ``PuenteNoListo`` si no hay telemetría fresca. La caja negra graba
+        el pedido y lo que respondió la estación (``origen`` = quién lo pidió, p. ej. "web 127.0.0.1")."""
+        try:
+            seq = self._command(name)
+        except PuenteNoListo as exc:
+            self.caja.comando(name, origen, "409", detalle=str(exc))
+            raise
+        except ValueError as exc:
+            self.caja.comando(name, origen, "400", detalle=str(exc))
+            raise
+        self.caja.comando(name, origen, "enviado" if seq else "en cola", seq)
+        return seq
+
+    def _command(self, name):
+        if self.grabacion is not None:
+            raise PuenteNoListo(MSG_REPETICION)
         if name not in COMMANDS_UI:
             raise ValueError(f"comando desconocido '{name}'")
         if self.bridge is None:
@@ -440,9 +526,13 @@ class Station:
         return self.fuente == "mock" or (self.cfg.get("camara", "fuente") == "sintetica" and self._synthetic_allowed())
 
     def _make_detector(self):
+        if self.grabacion is not None:    # repetición: sin cámara (la visión grabada sale de las líneas "muestra")
+            return load_detector("ninguno", PROJECT_DIR, self.cfg.data, False)
         return load_detector(self.cfg.web("detector"), PROJECT_DIR, self.cfg.data, self._synthetic())
 
     def _camera_key(self):
+        if self.grabacion is not None:    # repetición: NUNCA se conecta a la cámara (ni a la red de los drones)
+            return ("ninguna",)
         if self.fuente == "mock":
             return ("sintetica",)
         src = str(self.cfg.get("camara", "fuente", default="dron"))
@@ -635,7 +725,9 @@ class Station:
         return out
 
     def avisos(self):
-        """Avisos para la barra roja/amarilla de la página."""
+        """Avisos para la barra roja/amarilla de la página (en la repetición, los grabados en ese momento)."""
+        if self.grabacion is not None:
+            return [dict(a) for a in (self._rep_muestra().get("avisos") or []) if isinstance(a, dict)]
         out = []
         synth_cam = self.camera.key == ("sintetica",)
         if synth_cam and self.fuente != "mock":
@@ -775,6 +867,8 @@ class Station:
     def registro_modo(self):
         """(habilitado, texto). ``web.registro_vuelos``: "auto" (por defecto: solo la fuente simulink = vuelo real),
         true (siempre) o false (nunca); ``--registro-vuelos auto|si|no`` lo pisa."""
+        if self.grabacion is not None:
+            return False, "desactivado (repetición)"
         if self._registro_bloqueado:
             return False, "desactivado (pytest: nunca se escribe en web/datos)"
         modo = self._registro_cli if self._registro_cli is not None else self.cfg.web("registro_vuelos")
@@ -785,6 +879,87 @@ class Station:
         if self.fuente == "simulink":
             return True, "auto (fuente simulink)"
         return False, f"desactivado con la fuente {self.fuente} (auto; --registro-vuelos si para registrarla)"
+
+    # ------------------------------------------------------------------ caja negra (caja_negra.py) y repetición
+    def caja_modo(self):
+        """(habilitada, texto). ``web.caja_negra``: "auto" (por defecto: solo la fuente simulink = vuelo real), true
+        o false; ``--caja-negra auto|si|no`` lo pisa. Nunca en una repetición ni en pytest dentro de web/datos."""
+        if self.grabacion is not None:
+            return False, "desactivada (repetición)"
+        if self._registro_bloqueado:
+            return False, "desactivada (pytest: nunca se escribe en web/datos)"
+        modo = self._caja_cli if self._caja_cli is not None else self.cfg.web("caja_negra")
+        if modo is True:
+            return True, "siempre"
+        if modo is False:
+            return False, "desactivada (web.caja_negra = false)"
+        if self.fuente == "simulink":
+            return True, "auto (fuente simulink)"
+        return False, f"desactivada con la fuente {self.fuente} (auto; --caja-negra si para grabarla)"
+
+    def _cabecera_caja(self):
+        """Contexto del vuelo para la cabecera de la caja negra (todo en memoria: corre en el hilo del puente)."""
+        cfg = self.cfg.data
+        mi = self.modo_info()
+        config = self.cfg.path.replace(os.sep, "/")
+        if _dentro(self.cfg.path, PROJECT_DIR):
+            config = os.path.relpath(self.cfg.path, PROJECT_DIR).replace(os.sep, "/")
+        tel = self.bridge.telemetry if self.bridge else None
+        return {"config": config, "config_datos": copy.deepcopy(cfg), "modo_mision": mi["efectivo"],
+                "dron_solo": mi["dron_solo"], "modo_config": mi["config"], "explorador": (tel or {}).get("explorer_id"),
+                "version_control": cfg.get("version_control"), "version_modelo": (tel or {}).get("version_name"),
+                "puente": getattr(self.bridge, "uri", None), "camara_dron": camara_dron(cfg)["dron"],
+                "registro_vuelos": self.registro_modo()[1], "eventos_previos": list(self.events)[:15],
+                "estacion": {k: self.cfg.web(k) for k in ("z_min_deteccion", "cmd_timeout_s", "camara_latencia_s")}}
+
+    def _muestra_caja(self):
+        """Línea "muestra" de la caja negra (~1 Hz, hilo de la caja): cámara, visión, puente, avisos y objetivos."""
+        targets, pending = self.vision.targets()
+        b = self.bridge.status() if self.bridge else {}
+        tel, stamp = self.bridge.latest() if self.bridge else (None, 0.0)
+        return {"camara": self._camara_ui(), "vision": self.vision.status(),
+                "puente": {k: b.get(k) for k in ("connected", "fresh", "rx_hz", "tx_hz", "rx_age_s", "reconnects",
+                                                  "error", "cmd", "cmd_seq", "cmd_seq_ack", "cola")},
+                "tel_edad_s": round(time.time() - stamp, 2) if stamp else None,
+                "avisos": self.avisos(), "objetivos": targets, "candidatos": pending,
+                "objetivos_sin_id": len(self.vision.blocked())}
+
+    def _rep_muestra(self):
+        """Repetición: la línea "muestra" grabada en el instante que se está repitiendo ({} si todavía no hay)."""
+        if self.grabacion is None or self.repeticion is None:
+            return {}
+        return self.grabacion.muestra_en(self.repeticion.t) or {}
+
+    def _targets_estacion(self):
+        """(objetivos, candidatos) de la estación: los de la visión o, en la repetición, los grabados."""
+        if self.grabacion is not None:
+            m = self._rep_muestra()
+            return ([dict(t) for t in m.get("objetivos") or []], [dict(c) for c in m.get("candidatos") or []])
+        return self.vision.targets()
+
+    def repeticion_control(self, accion=None, velocidad=None, t=None):
+        """Pausa / seguir / velocidad / saltar en la repetición. Al saltar se olvida lo acumulado (poses, batería,
+        objetivos de Simulink) como si Simulink se hubiera reiniciado."""
+        if self.repeticion is None:
+            raise ValueError("la estación no está en una repetición (--repetir)")
+        if accion not in (None, "", "pausa", "seguir", "alternar"):
+            raise ValueError("accion debe ser pausa, seguir o alternar")
+        if velocidad is not None:
+            self.repeticion.set_velocidad(velocidad)
+        if t is not None:
+            self.repeticion.saltar(float(t))
+            self.poses.clear()
+            self.bateria.reiniciar()
+            self.vision.reset()
+            with self.lock:
+                self.sim_targets = {}
+            self._last_sim_t, self._last_state, self._last_alerta = None, None, 0
+            self._falla_vista = {1: False, 2: False}
+            self._perdida_vista = frozenset()
+        if accion:
+            pausado = {"pausa": True, "seguir": False}.get(accion, not self.repeticion.estado()["pausado"])
+            self.repeticion.pausa(pausado)
+        return self.repeticion.estado()
 
     def _tick_registro(self, tel):
         try:
@@ -853,7 +1028,8 @@ class Station:
                 "camara": {"offset_camara_m": cam.get("offset_camara_m"), "rotacion_montaje": cam.get("rotacion_montaje"),
                            "giro_en_dron": cam.get("giro_en_dron", 0), "resolucion": cam.get("resolucion"),
                            "modelo": modelo},
-                "z_min_deteccion": self.cfg.web("z_min_deteccion"), "camara_latencia_s": self.cfg.web("camara_latencia_s")}
+                "z_min_deteccion": self.cfg.web("z_min_deteccion"), "camara_latencia_s": self.cfg.web("camara_latencia_s"),
+                "caja_negra": self.caja.archivo_actual()}
 
     def _resumen_vuelo(self):
         """Objetivos y candidatos de la estación al cerrar el vuelo (con su distancia al tubo actual)."""
@@ -894,7 +1070,7 @@ class Station:
         sin duplicar: mismo id = mismo objetivo, y un objetivo de Simulink a menos de radio_cluster de uno de la
         estación con otro id también (Simulink guardó el id de la estación como alias; ``alias_de``).
         ``origen``: estacion | estacion+simulink | simulink."""
-        targets, _ = self.vision.targets()
+        targets, _ = self._targets_estacion()
         sim = self._sim_vigentes()
         visited = set(tel["visited_ids"]) if tel else set()
         cur = tel["responder_target_id"] if tel else 0
@@ -958,11 +1134,11 @@ class Station:
     def snapshot(self):
         tel, stamp = self.bridge.latest() if self.bridge else (None, 0.0)
         tel = self._tel_ui(tel)
-        _, pending = self.vision.targets()
+        _, pending = self._targets_estacion()
         targets = self.merged_targets(tel)
         foot = self.huella()
         cfg = self.cfg.data
-        return {
+        snap = {
             "t_servidor": time.time(), "fuente": self.fuente,
             "puente": self.bridge.status() if self.bridge else None,
             "tel": tel, "tel_edad_s": round(time.time() - stamp, 2) if stamp else None,
@@ -979,8 +1155,19 @@ class Station:
             "mock": self.mock.estado_pruebas() if self.mock is not None else None,
             "eventos": list(self.events)[:15], "avisos": self.avisos(), "modo": self.modo_info(),
             "registro_vuelo": dict(self.registro.estado(), modo=self.registro_modo()[1]),
+            "caja_negra": dict(self.caja.estado(), modo=self.caja_modo()[1]),
             "bateria": self.bateria_ui(tel),
+            "repeticion": self.repeticion.estado() if self.repeticion is not None else None,
         }
+        if self.grabacion is not None:
+            # lo que no viaja en la telemetría sale de la grabación (línea "muestra" de ese instante y eventos)
+            m = self._rep_muestra()
+            snap["camara"] = dict(m.get("camara") or {"fuente": ["repeticion"], "conectada": False, "fps": 0})
+            if m.get("vision"):
+                snap["vision"] = m["vision"]
+            snap["objetivos_sin_id"] = m.get("objetivos_sin_id") or 0
+            snap["eventos"] = self.grabacion.eventos_en(self.repeticion.t if self.repeticion else 0.0)
+        return snap
 
 
 # ---------------------------------------------------------------------------- FastAPI
@@ -1007,6 +1194,10 @@ def create_app(station: Station, start=True):
     async def check_origin(request: Request, call_next):
         if request.method not in ("GET", "HEAD", "OPTIONS") and not origin_ok(request.headers):
             return JSONResponse({"detail": "origen no permitido"}, status_code=403)
+        # repetición: solo lectura (comandos, fuente, config, objetivos, mock...); solo se controla la repetición
+        if (station.grabacion is not None and request.method not in ("GET", "HEAD", "OPTIONS")
+                and request.url.path != "/api/repeticion"):
+            return JSONResponse({"detail": MSG_REPETICION}, status_code=409)
         return await call_next(request)
 
     @app.get("/", response_class=HTMLResponse)
@@ -1019,14 +1210,29 @@ def create_app(station: Station, start=True):
         return JSONResponse(station.snapshot())
 
     @app.post("/api/cmd")
-    def cmd(body: dict = Body(...)):
+    def cmd(request: Request, body: dict = Body(...)):
+        origen = f"web {request.client.host if request.client else '?'}"
         try:
-            seq = station.command(str(body.get("cmd", "")).upper())
+            seq = station.command(str(body.get("cmd", "")).upper(), origen=origen)
         except ValueError as exc:
             raise HTTPException(400, str(exc))
         except PuenteNoListo as exc:
             raise HTTPException(409, str(exc))
         return {"ok": True, "cmd_seq": seq, "estado": "enviado" if seq else "en cola"}
+
+    @app.get("/api/repeticion")
+    def repeticion_estado():
+        if station.repeticion is None:
+            raise HTTPException(404, "la estación no está en una repetición (--repetir)")
+        return station.repeticion.estado()
+
+    @app.post("/api/repeticion")
+    def repeticion(body: dict = Body(...)):
+        """``{"accion": "pausa" | "seguir" | "alternar", "velocidad": N, "t": s}`` (cualquiera de las tres)."""
+        try:
+            return station.repeticion_control(body.get("accion"), body.get("velocidad"), body.get("t"))
+        except (TypeError, ValueError) as exc:
+            raise HTTPException(400, str(exc))
 
     @app.post("/api/fuente")
     def fuente(body: dict = Body(...)):
@@ -1406,6 +1612,13 @@ def build_parser():
     ap.add_argument("--registro-vuelos", choices=tuple(REGISTRO_CLI), default=None,
                     help="registro de observaciones por vuelo en web/datos/vuelos: auto (por defecto: solo con la fuente "
                          "simulink), si o no. Pisa web.registro_vuelos de estacion.json")
+    ap.add_argument("--caja-negra", choices=tuple(CAJA_CLI), default=None,
+                    help="caja negra por vuelo (telemetría cruda, comandos, avisos; *.tel.jsonl.gz en web/datos/vuelos): "
+                         "auto (por defecto: solo con la fuente simulink), si o no. Pisa web.caja_negra de estacion.json")
+    ap.add_argument("--repetir", metavar="ARCHIVO", default=None,
+                    help="repite una caja negra (.tel.jsonl.gz) por el mismo camino que la telemetría real, en solo "
+                         "lectura (comandos -> 409); usa la config grabada en el archivo")
+    ap.add_argument("--velocidad", type=float, default=1.0, help="velocidad de la repetición (con --repetir)")
     ap.add_argument("--imprimir-puerto", action="store_true", help="solo imprime el puerto web y sale (lo usa el .bat)")
     return ap
 
@@ -1419,8 +1632,9 @@ def main(argv=None):
     import uvicorn
     try:
         station = Station(a.config, a.fuente, a.velocidad_mock, host_puente=a.host_puente,
-                          registro_vuelos=a.registro_vuelos)
-    except ValueError as exc:
+                          registro_vuelos=a.registro_vuelos, caja_negra=a.caja_negra, repetir=a.repetir,
+                          velocidad_repeticion=a.velocidad)
+    except (ValueError, OSError) as exc:
         ap.error(str(exc))
     host = a.host or station.cfg.web("host") or "127.0.0.1"
     port = a.puerto or int(station.cfg.get("red", "puerto_web", default=8080))
@@ -1433,6 +1647,12 @@ def main(argv=None):
     print(f"  Modo de misión (estacion.json de esta estación): {_modo_txt(m)}"
           + (f"  AVISO: {m['aviso']}" if m["aviso"] else ""))
     print(f"  Registro de vuelos: {station.registro_modo()[1]} -> {station.registro.estado()['carpeta']}")
+    print(f"  Caja negra: {station.caja_modo()[1]} -> {station.caja.estado()['carpeta']}")
+    if station.grabacion is not None:
+        g = station.grabacion
+        print(f"  REPETICIÓN de {g.ruta}\n    {g.cabecera.get('fecha')}, fuente {g.fuente}, {len(g.tel)} paquetes, "
+              f"{g.t_fin - g.t_ini:.1f} s, velocidad {a.velocidad:g}x"
+              + ("  (archivo cortado: se repite hasta donde se alcanzó a escribir)" if g.fin is None else ""))
     print(f"\n  Estación QDrone 2 ({station.fuente}) en  http://127.0.0.1:{port}\n")
     uvicorn.run(create_app(station), host=host, port=port, log_level="warning")
 

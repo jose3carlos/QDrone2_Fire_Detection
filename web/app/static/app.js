@@ -91,6 +91,7 @@ connect();
 let lastCmdResult = 0, firstSnap = true;
 function render(s) {
   const tel = s.tel;
+  renderRepeticion(s);
   // fuente
   const sel = $('sel-fuente'); if (document.activeElement !== sel) sel.value = s.fuente;
   // chips
@@ -98,8 +99,9 @@ function render(s) {
   chip('chip-bridge', b.fresh ? 'ok' : b.connected ? 'warn' : 'bad', `Puente ${b.rx_hz ?? 0} Hz`,
     `${b.uri}\n${b.connected ? 'conectado' : 'desconectado'}${b.error ? '\n' + b.error : ''}`);
   const c = s.camara || {};
-  chip('chip-cam', c.conectada ? 'ok' : (c.fuente && c.fuente[0] === 'ninguna') ? '' : 'bad', `Video ${c.fps ?? 0} fps`,
-    `fuente: ${(c.fuente || []).join(' ')}${c.dron ? `\ncámara en el dron ${c.dron} (camara.dron)` : ''}${c.error ? '\n' + c.error : ''}`);
+  const enl = enlaceVideo(c);
+  chip('chip-cam', c.conectada ? (enl.cls === 'bad' ? 'warn' : 'ok') : (c.fuente && c.fuente[0] === 'ninguna') ? '' : 'bad', `Video ${c.fps ?? 0} fps`,
+    `fuente: ${(c.fuente || []).join(' ')}${c.dron ? `\ncámara en el dron ${c.dron} (camara.dron)` : ''}${enl.txt ? '\n' + enl.txt : ''}${c.error ? '\n' + c.error : ''}`);
   const v = s.vision || {};
   chip('chip-vision', v.detector && v.detector !== 'ninguno' ? (v.activo ? 'ok' : 'warn') : 'bad', 'Visión',
     `${v.detector}${v.detector_error ? '\n' + v.detector_error : ''}${v.activo ? '\n(detectando)' : '\n(en espera: solo en MISSION)'}`);
@@ -124,7 +126,7 @@ function render(s) {
   // avisos de seguridad (rojo) y de configuración (amarillo)
   $('avisos').innerHTML = (s.avisos || []).map((a) => `<div class="aviso ${a.nivel}">${esc(a.msg)}</div>`).join('');
   renderAlerta(s);
-  $('card-mock').hidden = s.fuente !== 'mock';
+  $('card-mock').hidden = s.fuente !== 'mock' || !!s.repeticion;
   renderMockPruebas(s);
   const solo = esSolo(s);
   $('m-t').textContent = tel ? f2(tel.t, 1) + ' s' : '—';
@@ -175,6 +177,9 @@ function render(s) {
   $('events').innerHTML = (s.eventos || []).map((e) => `<li><time>${esc(e.t)}</time>${esc(e.msg)}</li>`).join('');
   $('cam-info').textContent = `${c.dron ? `dron ${c.dron} (camara.dron)${c.coincide === false ? (c.explorador === c.dron ? ' · explorador ambiguo (misma x)' : ' ≠ explorador ' + c.explorador) : ''} · ` : ''}${(c.fuente || []).join(' ')} · ${c.fps ?? 0} fps · ${v.detector || ''}`;
   $('cam-info').classList.toggle('bad', c.coincide === false);
+  $('cam-enlace').textContent = enl.txt;
+  $('cam-enlace').className = 'hint ' + enl.cls;
+  $('cam-enlace').title = enl.titulo || '';
   map.update(s);
   if (scene3d) scene3d.update(s);
 }
@@ -385,6 +390,47 @@ function registroVueloTxt(r) {
   return t;
 }
 
+// Caja negra (caja_negra.py): archivo abierto y paquetes de telemetría grabados.
+function cajaNegraTxt(c) {
+  if (!c) return '';
+  let t = 'Caja negra: ';
+  if (c.abierto) t += `grabando ${c.archivo} · ${c.n_tel} paquetes`;
+  else if (!c.habilitado) t += c.modo || 'desactivada';
+  else t += (c.ultimo ? `en espera (búfer ${c.buffer_s} s) · último: ${c.ultimo} (${c.ultimo_n_tel} paquetes)` : `en espera (búfer ${c.buffer_s} s) → ${c.carpeta}`);
+  if (c.error) t += ` · ERROR de escritura: ${c.error}`;
+  return t;
+}
+
+// Repetición de una caja negra (python -m app.server --repetir): barra de control y todo en solo lectura.
+let repSaltos = null, repArrastrando = false;
+const fmtT = (t) => (t < 0 ? '−' : '') + `${Math.floor(Math.abs(t) / 60)}:${String(Math.floor(Math.abs(t) % 60)).padStart(2, '0')}`;
+function renderRepeticion(s) {
+  const r = s.repeticion, rep = !!r;
+  $('rep-bar').hidden = !rep; $('chip-rep').hidden = !rep;
+  document.body.classList.toggle('en-repeticion', rep);
+  document.querySelectorAll('[data-cmd]').forEach((b) => { if (rep) { b.disabled = true; b.title = 'Repetición: solo lectura'; } });
+  $('sel-fuente').disabled = rep;
+  if (!rep) return;
+  if (repSaltos !== null && r.saltos !== repSaltos) { map.clearTrails(); scene3d?.clearTrails(); }
+  repSaltos = r.saltos;
+  const sel = $('rep-vel');
+  if (!sel.options.length) sel.innerHTML = (r.velocidades || [1]).map((v) => `<option value="${v}">${v}×</option>`).join('');
+  if (document.activeElement !== sel) sel.value = String(r.velocidad);
+  const rg = $('rep-t');
+  rg.min = r.t_ini; rg.max = r.t_fin;
+  if (!repArrastrando) rg.value = r.t;
+  $('rep-play').textContent = r.fin ? 'Repetir desde el inicio' : r.pausado ? 'Seguir' : 'Pausa';
+  $('rep-tiempo').textContent = `${fmtT(r.t)} / ${fmtT(r.t_fin)} · ${r.hora}${r.pausado ? ' · en pausa' : ''}${r.fin ? ' · fin' : ''}`;
+  $('rep-archivo').textContent = `${r.archivo} · ${r.fecha || ''} · fuente ${r.fuente} · ${r.n_tel} paquetes${r.truncado ? ' · archivo cortado' : ''}`;
+}
+async function repControl(body) {
+  try { await api('/api/repeticion', body); } catch (e) { toast(e.message, true); }
+}
+$('rep-play').addEventListener('click', () => repControl({ accion: S && S.repeticion && (S.repeticion.pausado || S.repeticion.fin) ? 'seguir' : 'pausa' }));
+$('rep-vel').addEventListener('change', (ev) => repControl({ velocidad: Number(ev.target.value) }));
+$('rep-t').addEventListener('input', () => { repArrastrando = true; });
+$('rep-t').addEventListener('change', async (ev) => { await repControl({ t: Number(ev.target.value) }); repArrastrando = false; });
+
 // Objetivo fuera de la envolvente de consignas (mision.limites_x / limites_y): R no llega encima y lo marca desde el
 // punto más cercano dentro (recortar_xy de qd2_mission_step). Solo informa (en solo explorador nadie lo marca).
 function notaEnvolvente(env, t, solo) {
@@ -406,6 +452,7 @@ function renderTargets(s) {
     <td>${f2(t.conf)}</td><td>${t.n ?? '—'}</td><td><span class="pill ${t.estado}">${t.estado}</span>${notaEnvolvente(env, t, solo)}</td>
     <td><span class="origen ${t.origen === 'simulink' ? 'simulink' : ''}"${t.alias_de ? ` title="En Simulink es el objetivo #${t.alias_de}: guardó el id #${t.id} de la estación como alias (mismo lugar)"` : ''}>${ORIGEN[t.origen] || esc(t.origen)}${t.alias_de ? ` (= #${t.alias_de})` : ''}</span></td></tr>`).join('');
   $('registro-vuelo').textContent = registroVueloTxt(s.registro_vuelo);
+  $('caja-negra').textContent = cajaNegraTxt(s.caja_negra);
   const v = s.vision || {};
   const last = v.ultimo || {};
   const desc = v.descartadas || {};
@@ -422,8 +469,25 @@ function renderTargets(s) {
     ${v.error ? `<span>Error</span><b>${esc(v.error)}</b>` : ''}`;
 }
 
+// Enlace del video (cameras.CameraHub se reconecta solo): texto corto para el encabezado de la cámara y el chip.
+// Grabaciones viejas (repetición) no traen los contadores: no se muestra nada.
+function enlaceVideo(c) {
+  if (c.reconexiones === undefined || !c.fuente || c.fuente[0] === 'ninguna') return { txt: '', cls: '' };
+  const cont = `reconexiones ${c.reconexiones} · caídas ${c.caidas} (vuelo ${c.caidas_vuelo})`;
+  const uc = c.ultima_caida;
+  const titulo = 'Reconexión automática del video (espera creciente, tope 2 s; flujo sin frames > 2 s = atascado)' +
+    `\nreconexiones ${c.reconexiones} · fallos de conexión ${c.fallos} · atascos ${c.atascos}` +
+    `\ncaídas: ${c.caidas} desde que se abrió esta fuente, ${c.caidas_vuelo} en el vuelo${c.en_vuelo ? ' (en curso)' : ' (último)'}` +
+    (uc ? `\núltima caída: ${uc.hora}, ${uc.dur_s} s (${uc.motivo})` : '');
+  if (c.caida_s !== null && c.caida_s !== undefined) return { txt: `SIN VIDEO hace ${f2(c.caida_s, 1)} s · reconectando · ${cont}`, cls: 'bad', titulo };
+  if (!c.conectada || c.edad_s === null || c.edad_s === undefined) return { txt: `sin video · reintentando (fallos ${c.fallos}, atascos ${c.atascos})`, cls: 'bad', titulo };
+  if (c.edad_s > 1) return { txt: `último frame hace ${f2(c.edad_s, 1)} s · ${cont}`, cls: 'warn', titulo };
+  return { txt: cont, cls: c.caidas_vuelo ? 'warn' : '', titulo };
+}
+
 function renderInfo(s) {
   const b = s.puente || {}, c = s.camara || {};
+  const uc = c.ultima_caida;
   $('bridge-info').innerHTML = `
     <span>Puente</span><b>${esc(b.uri)} · ${b.connected ? 'conectado' : 'desconectado'}</b>
     <span>Rx / Tx</span><b>${b.rx_hz} Hz / ${b.tx_hz} Hz</b>
@@ -431,6 +495,10 @@ function renderInfo(s) {
     <span>Reconexiones</span><b>${b.reconnects}</b>
     ${b.error ? `<span>Error</span><b>${esc(b.error)}</b>` : ''}
     <span>Video</span><b>${c.dron ? `dron ${c.dron} (camara.dron) · ` : ''}${esc((c.fuente || []).join(' '))} · ${c.conectada ? 'conectado' : 'sin video'}</b>
+    <span>Último frame</span><b>${c.edad_s ?? '—'} s · ${c.fps ?? 0} fps${c.caida_s != null ? ` · SIN VIDEO hace ${f2(c.caida_s, 1)} s` : ''}</b>
+    ${c.reconexiones !== undefined ? `<span title="El video se reconecta solo: espera creciente (tope 2 s); conectado sin frames más de 2 s = atascado">Reconexiones video</span><b>${c.reconexiones} (fallos de conexión ${c.fallos}, atascos ${c.atascos}; próxima espera ${f2(c.espera_s, 2)} s)</b>
+    <span>Caídas del video</span><b>${c.caidas} desde que se abrió la fuente · ${c.caidas_vuelo} en el vuelo${c.en_vuelo ? ' (en curso)' : ' (último)'}</b>` : ''}
+    ${uc ? `<span>Última caída</span><b>${esc(uc.hora)} · ${uc.dur_s} s · ${esc(uc.motivo)}</b>` : ''}
     ${c.error ? `<span>Error video</span><b>${esc(c.error)}</b>` : ''}`;
 }
 
@@ -535,7 +603,10 @@ async function loadCmds() {
       ${rows(d, 'quarc_run', 'Lanzar el modelo ' + esc(r.modelo) + ' en el dron')}
       ${rows(d, 'quarc_stop', 'Detener')}
       ${rows(d, 'ext_mode_args', 'Alternativa desde MATLAB (External mode)')}
-      ${rows(d, 'ssh_camara', `Cámara (solo el dron con la RealSense: camara.dron = ${S?.camara?.dron ?? 1}; en el Jetson)`)}</div>`;
+      ${rows(d, 'scp_camara', `Cámara: copiar el streamer y correr_streamer.sh al Jetson (solo el dron con la RealSense: camara.dron = ${S?.camara?.dron ?? 1})`)}
+      ${rows(d, 'ssh_camara', 'Cámara: lanzar en segundo plano (sobrevive al cierre de ssh y se relanza si muere; log ~/streamer_camara.log)')}
+      ${rows(d, 'ssh_camara_estado', 'Cámara: ¿corre? + últimas líneas del log')}
+      ${rows(d, 'ssh_camara_detener', 'Cámara: detener el streamer')}</div>`;
   }).join('');
 }
 $('btn-net').addEventListener('click', loadNet);
@@ -802,6 +873,7 @@ function renderBotones(s) {
   else if ((s.camara || {}).coincide === false) motivo = s.camara.msg || 'El explorador no es el dron con la cámara (camara.dron)';
   else if (solo && !(tel.drones[n] || {}).tracked) motivo = `El dron ${n} (solo explorador) no está rastreado por OptiTrack`;
   else if (tel.mission_state !== 2) motivo = 'START solo se acepta en ASSIGN_ROLES (roles asignados)';
+  if (s.repeticion) motivo = 'Repetición: solo lectura';
   st.disabled = !!motivo;
   st.title = motivo || (solo ? `Inicia la misión solo explorador con el dron ${n}` : 'Inicia la misión');
 }

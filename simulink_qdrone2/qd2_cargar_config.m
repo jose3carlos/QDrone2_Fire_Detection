@@ -32,6 +32,17 @@ function [cfg, P] = qd2_cargar_config(mdl, ruta_json)
 %   mision.dron_solo no son válidos -> se usa dual, o si es solo explorador
 %   con la versión MPC, que solo está validado en PID).
 %
+%   Sello del build (26-nov): con el modelo cargado (InitFcn de Update
+%   Diagram / Build / Connect, iniciar_tierra_lab) agrega una línea JSON a
+%   <carpeta del .slx>/<modelo>.config_usada.jsonl (gitignored; últimas 30
+%   más la última anterior al <modelo>.rt-win64 actual, la de su build):
+%   hora (t_posix UTC), sha256 y texto del JSON usado, sha256 de lib/*.m +
+%   qd2_cargar_config.m, ruta, modo y rb_ids. web/preflight_lab.py toma la
+%   última línea anterior a la fecha del <modelo>.rt-win64 y compara
+%   CONTENIDOS (git pull cambia las fechas; de la config, solo las claves
+%   que lee el modelo). Si no se puede escribir, solo
+%   un warning (qd2_cargar_config:sello): nunca detiene el modelo.
+%
 %   Nota sobre OptiTrack Trackables (QUARC): 'rigid_body_ids' es un
 %   parámetro evaluado, así que acepta directamente QD2CFG.optitrack.rb_ids.
 %   'calibration_file' y 'rigid_body_file' son parámetros literales (no
@@ -138,7 +149,108 @@ assignin('base', 'QD2P', P);
 % ---- Aplicar al modelo (InitFcn) -------------------------------------------------
 if nargin >= 1 && ~isempty(mdl) && bdIsLoaded(char(mdl))
     aplicar_modelo(char(mdl), cfg);
+    try
+        escribir_sello(char(mdl), cfg, raiz);
+    catch e
+        warning('qd2_cargar_config:sello', 'No pude escribir el sello del build: %s', e.message);
+    end
 end
+end
+
+% =========================================================================
+function escribir_sello(mdl, cfg, raiz)
+% Una línea JSON por llamada en <carpeta del .slx>/<mdl>.config_usada.jsonl (ver la ayuda).
+archivo = get_param(mdl, 'FileName');
+if isempty(archivo)
+    return                                          % modelo sin guardar: no hay carpeta
+end
+sello = fullfile(fileparts(archivo), [mdl '.config_usada.jsonl']);
+e = struct();
+e.formato = 1;
+e.t_posix = posixtime(datetime('now', 'TimeZone', 'UTC'));
+e.fecha = char(datetime('now', 'Format', 'yyyy-MM-dd HH:mm:ss'));
+e.modelo = mdl;
+e.matlab = version('-release');
+e.config = struct('ruta', cfg.archivo_json, 'sha256', sha256_archivo(cfg.archivo_json), ...
+    'texto', texto_archivo(cfg.archivo_json));      % el preflight dice qué clave cambió
+e.modo = cfg.modo_mision;
+e.dron_solo = cfg.dron_solo;
+e.rb_ids = cfg.optitrack.rb_ids;
+e.archivo_motive = cfg.optitrack.archivo_motive;
+d = dir(fullfile(raiz, 'lib', '*.m'));
+rutas = [{'qd2_cargar_config.m'}, strcat('lib/', sort({d.name}))];
+arch = cell(1, numel(rutas));
+for k = 1:numel(rutas)
+    arch{k} = struct('ruta', rutas{k}, 'sha256', sha256_archivo(fullfile(raiz, rutas{k})));
+end
+e.archivos = arch;                                  % celda -> arreglo JSON (aunque sea de 1)
+lineas = {};
+if exist(sello, 'file')
+    fid = fopen(sello, 'r', 'n', 'UTF-8');
+    if fid >= 0
+        txt = fread(fid, inf, '*char')';
+        fclose(fid);
+        lineas = strtrim(splitlines(txt));
+        lineas = lineas(~cellfun(@isempty, lineas));
+        lineas = recortar_sello(lineas, fullfile(fileparts(archivo), [mdl '.rt-win64']));
+    end
+end
+lineas{end + 1} = jsonencode(e);
+fid = fopen(sello, 'w', 'n', 'UTF-8');
+if fid < 0
+    error('qd2_cargar_config:sello', 'No puedo escribir %s', sello);
+end
+fprintf(fid, '%s\n', lineas{:});
+fclose(fid);
+fprintf('qd2_cargar_config: sello %s (config sha256 %s...)\n', sello, e.config.sha256(1:min(12, end)));
+end
+
+function lineas = recortar_sello(lineas, rt)
+% Últimas 29 líneas + la última anterior al .rt-win64 actual (la de su build, la que usa el preflight), aunque
+% desde entonces haya habido muchos Connect / Update Diagram sin recompilar.
+n = numel(lineas);
+quedan = max(1, n - 28):n;
+d = dir(rt);
+if numel(d) == 1 && n > 0
+    t_rt = posixtime(datetime(d.datenum, 'ConvertFrom', 'datenum', 'TimeZone', 'local'));
+    for k = n:-1:1
+        try
+            s = jsondecode(lineas{k});
+            t = double(s.t_posix);
+        catch
+            continue                                % línea ilegible: el preflight también la ignora
+        end
+        if t <= t_rt + 2
+            quedan = unique([k quedan]);
+            break
+        end
+    end
+end
+lineas = lineas(quedan);
+end
+
+function txt = texto_archivo(ruta)
+txt = '';
+fid = fopen(ruta, 'r', 'n', 'UTF-8');
+if fid >= 0
+    txt = fread(fid, inf, '*char')';
+    fclose(fid);
+end
+end
+
+function h = sha256_archivo(ruta)
+fid = fopen(ruta, 'r');
+if fid < 0
+    h = '';
+    return
+end
+b = fread(fid, inf, '*uint8');
+fclose(fid);
+md = java.security.MessageDigest.getInstance('SHA-256');
+if ~isempty(b)
+    md.update(typecast(b, 'int8'));
+end
+h = sprintf('%02x', typecast(md.digest(), 'uint8'));
 end
 
 % =========================================================================
