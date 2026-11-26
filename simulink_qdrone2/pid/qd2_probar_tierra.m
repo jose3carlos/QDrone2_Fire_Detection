@@ -50,6 +50,21 @@ function R = qd2_probar_tierra(ver, t_final, conservar, t_arm_sw, opt)
 %     .config_json ruta de un estacion.json alterno (p. ej. con mision.modo =
 %                 "solo_explorador"): lo usa el InitFcn de la COPIA del modelo
 %                 (qd2_cargar_config(bdroot, ruta)); por defecto config/estacion.json
+%     .slx        ruta de otro .slx de tierra a copiar (p. ej.
+%                 versiones/R2022a/QD2_MissionCtrl_Dual_PID.slx); por defecto
+%                 <ver>/QD2_MissionCtrl_Dual_<ver>.slx. Si su carpeta tiene
+%                 QD2_Mission_Lib.slx (versiones/R2022a), la copia usa ESA
+%                 librería (el par que se compila en el lab), no la de lib/
+%                 (guardada en R2025a): R.lib_slx dice cuál se cargó
+%     .objetivos  K x 6 [t_desde id clase x y conf]: en vez del objetivo único,
+%                 PYTHON STUB publica desde t_desde cada fila (la última de cada
+%                 id gana: refinamiento) en las 3 ranuras, ROTANDO como la
+%                 estación. Si la copia tiene el bloque 'COORDENADAS OBJETOS
+%                 (x,y)' (rama solo-explorador-coordenadas), su entrada pasa a
+%                 PYTHON STUB, su To Host File se comenta y se registran
+%                 R.coords_xy (32 x 2 x N) y R.coords_n; R.coords_src dice de
+%                 dónde salía su entrada en el .slx ('PYTHON BRIDGE/1' y
+%                 R.coords_rama = misma salida que Goto Python Commands)
 
 if nargin < 1, ver = 'PID'; end
 if nargin < 2, t_final = 230; end
@@ -69,14 +84,24 @@ if ~exist(dc, 'dir'), mkdir(dc); end
 Simulink.fileGenControl('set', 'CacheFolder', dc, 'CodeGenFolder', dc);
 json_alt = campo(opt, 'config_json', '');
 qd2_cargar_config([], json_alt);
-src = fullfile(raiz, lower(ver), ['QD2_MissionCtrl_Dual_' ver '.slx']);
+src = campo(opt, 'slx', fullfile(raiz, lower(ver), ['QD2_MissionCtrl_Dual_' ver '.slx']));
 m = ['qd2_tierra_prueba_' lower(ver)];
 dtmp = fullfile(tempdir, ['qd2_tierra_' char(java.util.UUID.randomUUID)]);
 mkdir(dtmp);
 copyfile(src, fullfile(dtmp, [m '.slx']));
 if bdIsLoaded(m), close_system(m, 0); end
+% .slx de otra carpeta con su QD2_Mission_Lib.slx (versiones/R2022a): la copia
+% resuelve sus links con ESA librería (se copia al lado; el PreLoadFcn agrega
+% la carpeta del modelo al path). Sin esto los resuelve lib/QD2_Mission_Lib.slx.
+lib_src = fullfile(fileparts(src), 'QD2_Mission_Lib.slx');
+lib_propia = isfield(opt, 'slx') && isfile(lib_src);
+if lib_propia
+    copyfile(lib_src, fullfile(dtmp, 'QD2_Mission_Lib.slx'));
+    if bdIsLoaded('QD2_Mission_Lib'), close_system('QD2_Mission_Lib', 0); end
+    addpath(dtmp);
+end
+limpiar = onCleanup(@() terminar(m, dtmp, conservar, lib_propia));
 load_system(fullfile(dtmp, [m '.slx']));
-limpiar = onCleanup(@() terminar(m, dtmp, conservar));
 if ~isempty(json_alt)
     % solo en la copia: el InitFcn lee el JSON alterno
     set_param(m, 'InitFcn', sprintf('qd2_cargar_config(bdroot, ''%s'');', strrep(json_alt, '''', '''''')));
@@ -91,16 +116,43 @@ for i = 1:2
 end
 set_param([m '/PYTHON BRIDGE'], 'Commented', 'on');
 lh = get_param([m '/Goto Python Commands'], 'LineHandles');
+src_py = get_param(lh.Inport(1), 'SrcPortHandle');      % PYTHON BRIDGE/1
 delete_line(lh.Inport(1));
 add_block('simulink/Sources/Digital Clock', [m '/Clock Stub'], 'Position', [-1300 900 -1260 920], 'SampleTime', '0.001');
 add_block('simulink/Signal Routing/From', [m '/From Tel Stub'], 'Position', [-1400 940 -1260 960], 'GotoTag', 'Python_Telemetry');
 add_block('simulink/Discrete/Memory', [m '/Memory Stub'], 'Position', [-1230 935 -1200 965]);
 add_block('simulink/User-Defined Functions/MATLAB Function', [m '/PYTHON STUB'], 'Position', [-1150 890 -1000 970]);
-poner_codigo([m '/PYTHON STUB'], codigo_python(campo(opt, 'py_off_t', inf), campo(opt, 'objetivo', [0.6 -0.6])), {'py', '[32 1]'});
+poner_codigo([m '/PYTHON STUB'], codigo_python(campo(opt, 'py_off_t', inf), campo(opt, 'objetivo', [0.6 -0.6]), ...
+    campo(opt, 'objetivos', zeros(0, 6))), {'py', '[32 1]'});
 add_line(m, 'Clock Stub/1', 'PYTHON STUB/1');
 add_line(m, 'From Tel Stub/1', 'Memory Stub/1');
 add_line(m, 'Memory Stub/1', 'PYTHON STUB/2');
 add_line(m, 'PYTHON STUB/1', 'Goto Python Commands/1', 'autorouting', 'smart');
+% bloque 'COORDENADAS OBJETOS (x,y)' (si la copia lo tiene): su rama de
+% Python Cmd sale del PYTHON BRIDGE comentado -> se alimenta de PYTHON STUB
+CO = [m '/COORDENADAS OBJETOS (x,y)'];
+hay_coords = ~isempty(find_system(m, 'SearchDepth', 1, 'Name', 'COORDENADAS OBJETOS (x,y)'));
+coords_src = ''; coords_rama = false;
+if hay_coords
+    lc = get_param(CO, 'LineHandles');
+    if lc.Inport(1) > 0
+        sp = get_param(lc.Inport(1), 'SrcPortHandle');
+        if sp > 0
+            coords_src = sprintf('%s/%d', get_param(get_param(sp, 'Parent'), 'Name'), get_param(sp, 'PortNumber'));
+            coords_rama = sp == src_py;
+        end
+        delete_line(lc.Inport(1));
+    end
+    add_line(m, 'PYTHON STUB/1', 'COORDENADAS OBJETOS (x,y)/1', 'autorouting', 'smart');
+    set_param([m '/To Host File Coordenadas'], 'Commented', 'on');
+    pco = get_param(CO, 'Position');
+    add_block('simulink/Sinks/To Workspace', [m '/Log coords_xy'], 'Position', pco([1 4 1 4]) + [0 40 80 60], ...
+        'VariableName', 'coords_xy', 'SaveFormat', 'Array', 'Decimation', '20');
+    add_block('simulink/Sinks/To Workspace', [m '/Log coords_n'], 'Position', pco([1 4 1 4]) + [0 80 80 100], ...
+        'VariableName', 'coords_n', 'SaveFormat', 'Array', 'Decimation', '20');
+    add_line(m, 'COORDENADAS OBJETOS (x,y)/1', 'Log coords_xy/1', 'autorouting', 'smart');
+    add_line(m, 'COORDENADAS OBJETOS (x,y)/2', 'Log coords_n/1', 'autorouting', 'smart');
+end
 
 % ---------------- MC: OptiTrack -> SIM DRONES -----------------------------
 set_param([MC '/Localization - Optitrack'], 'Commented', 'on');
@@ -184,6 +236,8 @@ add_line(MC, 'Clock Log/1', 'Log t/1');
 set_param(m, 'StopTime', num2str(t_final), 'SimulationMode', 'normal', 'ReturnWorkspaceOutputs', 'on');
 t0 = tic;
 out = sim(m);
+lib_slx = '';                       % la QD2_Mission_Lib con la que se resolvieron los links
+if bdIsLoaded('QD2_Mission_Lib'), lib_slx = get_param('QD2_Mission_Lib', 'FileName'); end
 R.t_reloj = toc(t0);
 R.version = ver;
 R.opt = opt;
@@ -201,6 +255,13 @@ R.cse = col(out.get('cse'));
 R.opreq = filas(out.get('opreq'));
 R.tx1 = filas(out.get('tx1'));
 R.tx2 = filas(out.get('tx2'));
+if hay_coords
+    R.coords_xy = out.get('coords_xy');            % 32 x 2 x N
+    R.coords_n = col(out.get('coords_n'));
+    R.coords_src = coords_src;
+    R.coords_rama = coords_rama;
+end
+R.lib_slx = lib_slx;
 R = resumir(R);
 end
 
@@ -414,8 +475,13 @@ for k = 1:size(tam, 1)
 end
 end
 
-function terminar(m, dtmp, conservar)
+function terminar(m, dtmp, conservar, lib_propia)
 if bdIsLoaded(m), close_system(m, 0); end
+if lib_propia
+    % la QD2_Mission_Lib de la copia no se queda cargada ni en el path
+    if bdIsLoaded('QD2_Mission_Lib'), close_system('QD2_Mission_Lib', 0); end
+    try, rmpath(dtmp); catch, end
+end
 if ~conservar
     try, rmdir(dtmp, 's'); catch, end
 end
@@ -457,7 +523,11 @@ c = sprintf([ ...
     falla(1), falla(2), falla(2), trk2_off(1), trk2_off(2));
 end
 
-function c = codigo_python(t_off, obj)
+function c = codigo_python(t_off, obj, O)
+if nargin >= 3 && ~isempty(O)
+    c = codigo_python_objetivos(t_off, O);
+    return
+end
 c = sprintf([ ...
 'function py = fcn(t, tel)\n' ...
 '%% Estación Python simulada (ARQUITECTURA §3.3).\n' ...
@@ -480,4 +550,51 @@ c = sprintf([ ...
 '    py(4) = 1;\n' ...
 '    py(5:9) = [1; 1; %.17g; %.17g; 0.9];        %% objetivo id 1 (toma) en opt.objetivo\n' ...
 'end\n'], t_off, obj(1), obj(2));
+end
+
+function c = codigo_python_objetivos(t_off, O)
+% Como codigo_python, pero con opt.objetivos (K x 6 [t_desde id clase x y conf]):
+% las filas activas (la última de cada id) van a las 3 ranuras, rotando.
+c = sprintf([ ...
+'function py = fcn(t, tel)\n' ...
+'%% Estación Python simulada (ARQUITECTURA §3.3), varios objetivos rotando.\n' ...
+'persistent t6 seq cmd hb rot\n' ...
+'if isempty(t6), t6 = -1; seq = 0; cmd = 0; hb = 0; rot = 0; end\n' ...
+'py = zeros(32, 1);\n' ...
+'if t < %g\n' ...
+'    hb = floor(t/0.05) + 1;\n' ...
+'end\n' ...
+'py(1) = hb;\n' ...
+'if t >= 6 && seq == 0, seq = 1; cmd = 1; end   %% START\n' ...
+'if tel(2) == 6\n' ...
+'    if t6 < 0, t6 = t; end\n' ...
+'    if t - t6 > 6 && seq == 1, seq = 2; cmd = 3; end   %% LAND ALL\n' ...
+'else\n' ...
+'    t6 = -1;\n' ...
+'end\n' ...
+'py(2) = cmd; py(3) = seq;\n' ...
+'O = %s;\n' ...
+'K = size(O, 1);\n' ...
+'act = zeros(K, 5);\n' ...
+'na = 0;\n' ...
+'for i = 1:K\n' ...
+'    if t >= O(i, 1)\n' ...
+'        k = 0;\n' ...
+'        for j = 1:K\n' ...
+'            if j <= na && act(j, 1) == O(i, 2), k = j; end\n' ...
+'        end\n' ...
+'        if k == 0, na = na + 1; k = na; end\n' ...
+'        for q = 1:5, act(k, q) = O(i, q + 1); end\n' ...
+'    end\n' ...
+'end\n' ...
+'if na > 0\n' ...
+'    py(4) = na;\n' ...
+'    for s = 1:3\n' ...
+'        if s <= na\n' ...
+'            r = mod(rot + s - 1, na) + 1;\n' ...
+'            for q = 1:5, py(4 + 5*(s-1) + q) = act(r, q); end\n' ...
+'        end\n' ...
+'    end\n' ...
+'    if na > 3, rot = mod(rot + 3, na); else, rot = 0; end\n' ...
+'end\n'], t_off, mat2str(O, 17));
 end

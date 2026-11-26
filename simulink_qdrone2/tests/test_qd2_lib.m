@@ -3329,3 +3329,225 @@ tc.verifyGreaterThanOrEqual(R.dh(end), p.d_min_h);
 fprintf('[caido codegen] QD2_MissionCtrl_Dual_PID (copia SIL) con estacion_dual.json: R cae a t=45, en el piso a t=%.2f, alerta 9 %.2f s después (takeoff 0 en el mismo paso), estados %s, DONE t=%.1f, despegues [%d %d], el sano aterriza a %.3f m\n', ...
     R.t(kp), t_det, mat2str(R.estados), R.t_done, R.n_despegues(1), R.n_despegues(2), R.dh(end));
 end
+
+% =========================================================================
+%  Coordenadas (x, y) de todos los objetos (rama solo-explorador-coordenadas):
+%  qd2_coordenadas_objetivos y el bloque 'COORDENADAS OBJETOS (x,y)' de
+%  versiones/R2022a/QD2_MissionCtrl_Dual_PID.slx
+% =========================================================================
+function test_coords_rotacion(tc)
+% 3 fuegos (clase 0) + 3 tomas (clase 1) que la estación va descubriendo y
+% publica en las 3 ranuras ROTANDO (como TargetRotator de web/app/protocol.py):
+% n = 6, filas en el orden en que llegó cada id, el resto de la tabla en 0.
+clear qd2_coordenadas_objetivos
+T = coords_seis();                                   % [id clase x y conf]
+for paso = 1:60
+    nd = min(6, 1 + floor((paso - 1)/8));            % uno nuevo cada 8 mensajes
+    pub = T(1:nd, :);
+    [~, ord] = sort(pub(:, 1));                      % la estación ordena por id
+    pub = pub(ord, :);
+    [xy, n] = qd2_coordenadas_objetivos(coords_py(coords_rotar(pub, paso)));
+end
+tc.verifyEqual(n, 6);
+tc.verifySize(xy, [32 2]);
+tc.verifyEqual(xy(1:6, :), T(:, 3:4), 'AbsTol', 0);  % orden de llegada = orden de descubrimiento
+tc.verifyEqual(xy(7:32, :), zeros(26, 2));
+% los 6 publicados desde el principio: el orden es el de la primera ranura
+% en que aparece cada id
+clear qd2_coordenadas_objetivos
+[~, ord] = sort(T(:, 1));
+pub = T(ord, :);
+llegada = [];
+for paso = 1:4
+    sl = coords_rotar(pub, paso);
+    [xy, n] = qd2_coordenadas_objetivos(coords_py(sl));
+    for j = 1:size(sl, 1)
+        if ~ismember(sl(j, 1), llegada), llegada(end+1) = sl(j, 1); end %#ok<AGROW>
+    end
+end
+tc.verifyEqual(n, 6);
+for k = 1:6
+    tc.verifyEqual(xy(k, :), T(T(:, 1) == llegada(k), 3:4));
+end
+fprintf('[coords rotacion] 3 fuegos + 3 tomas por 3 ranuras rotando: n = %d, xy(1:6,:) = %s\n', n, mat2str(xy(1:6, :), 4));
+end
+
+function test_coords_refinamiento(tc)
+% Un id repetido refina su (x, y) con la última recibida y no agrega fila.
+clear qd2_coordenadas_objetivos
+T = coords_seis();
+for paso = 1:6
+    qd2_coordenadas_objetivos(coords_py(coords_rotar(T, paso)));
+end
+xy_ref = T(:, 3:4);
+xy_ref(2, :) = [-0.47 0.86];
+xy_ref(5, :) = [0.21 -1.18];
+qd2_coordenadas_objetivos(coords_py([T(2, 1:2) -0.50 0.83 0.95; T(5, 1:2) 0.25 -1.20 0.9]));
+[xy, n] = qd2_coordenadas_objetivos(coords_py([T(5, 1:2) 0.21 -1.18 0.97; T(2, 1:2) -0.47 0.86 0.96; 0 0 0 0 0]));
+tc.verifyEqual(n, 6);
+tc.verifyEqual(xy(1:6, :), xy_ref, 'AbsTol', 0);
+% refinar a una posición cercana a otro objeto NO los une (la tabla es por id)
+[xy, n] = qd2_coordenadas_objetivos(coords_py([T(3, 1:2) T(4, 3) + 0.05 T(4, 4) 0.9]));
+tc.verifyEqual(n, 6);
+tc.verifyEqual(xy(3, :), [T(4, 3) + 0.05 T(4, 4)]);
+tc.verifyEqual(xy(4, :), T(4, 3:4));
+fprintf('[coords refinamiento] ids %d y %d refinados, n = %d\n', T(2, 1), T(5, 1), n);
+end
+
+function test_coords_invalidas(tc)
+% Ranuras vacías (id 0), NaN/Inf e ids fuera de 1..32 se ignoran.
+clear qd2_coordenadas_objetivos
+[xy, n] = qd2_coordenadas_objetivos(zeros(32, 1));
+tc.verifyEqual(n, 0);
+tc.verifyEqual(xy, zeros(32, 2));
+malas = [0 1 0.5 0.5 0.9; -1 1 0.5 0.5 0.9; 33 0 0.5 0.5 0.9; 32.6 0 0.5 0.5 0.9; 0.4 1 0.5 0.5 0.9; ...
+         NaN 1 0.5 0.5 0.9; Inf 1 0.5 0.5 0.9; 3 1 NaN 0.5 0.9; 3 1 0.5 -Inf 0.9; 4 0 Inf NaN 0.9];
+for k = 1:size(malas, 1)
+    [xy, n] = qd2_coordenadas_objetivos(coords_py(malas(k, :)));
+end
+tc.verifyEqual(n, 0);
+tc.verifyEqual(xy, zeros(32, 2));
+% la clase y la confianza no importan; id 1.4 -> 1 (round, igual que la misión)
+[xy, n] = qd2_coordenadas_objetivos(coords_py([0 0 0 0 0; 1.4 NaN 0.3 -0.2 NaN; 33 1 9 9 1]));
+tc.verifyEqual(n, 1);
+tc.verifyEqual(xy(1, :), [0.3 -0.2]);
+% una ranura mala no borra ni mueve lo que ya hay
+[xy, n] = qd2_coordenadas_objetivos(coords_py([1 1 NaN 5 0.9; 0 0 0 0 0; 7 1 0.1 0.2 0.9]));
+tc.verifyEqual(n, 2);
+tc.verifyEqual(xy(1:2, :), [0.3 -0.2; 0.1 0.2]);
+% el heartbeat y el resto de los campos (cmd, alturas...) no cambian nada
+py = coords_py([2 0 -0.4 0.4 0.8]);
+py([1 2 3 4 20 21 22 23]) = [77 1 5 3 1.5 1.0 2.0 0.9];
+[xy, n] = qd2_coordenadas_objetivos(py);
+tc.verifyEqual(n, 3);
+tc.verifyEqual(xy(1:3, :), [0.3 -0.2; 0.1 0.2; -0.4 0.4]);
+fprintf('[coords invalidas] %d ranuras malas ignoradas; ids validos n = %d\n', size(malas, 1), n);
+end
+
+function test_coords_tope_32(tc)
+% Como mucho 32 filas (ids 1..32); el 33 no entra; repetir ids no agrega.
+clear qd2_coordenadas_objetivos
+ids = [17:32 1:16];
+for k = 1:3:32
+    sl = zeros(0, 5);
+    for j = k:min(k + 2, 32)
+        sl(end+1, :) = [ids(j) mod(ids(j), 2) ids(j)/10 -ids(j)/20 0.9]; %#ok<AGROW>
+    end
+    [xy, n] = qd2_coordenadas_objetivos(coords_py(sl));
+end
+tc.verifyEqual(n, 32);
+tc.verifyEqual(xy(:, 1), ids'/10);
+tc.verifyEqual(xy(:, 2), -ids'/20);
+[xy2, n2] = qd2_coordenadas_objetivos(coords_py([33 1 9 9 0.9; 40 0 8 8 0.9; 32 1 3.2 -1.6 0.9]));
+tc.verifyEqual(n2, 32);
+tc.verifyEqual(xy2, xy);
+fprintf('[coords tope] 32 ids -> n = %d; ids 33/40 ignorados\n', n2);
+end
+
+function test_coords_igual_mision(tc)
+% Con objetivos separados (> radio_cluster) y sin visitar, la tabla es la
+% misma que guarda el MISSION SUPERVISOR (s.obj_x / s.obj_y) con el mismo py.
+clear qd2_coordenadas_objetivos
+p = tc.TestData.p;
+s = qd2_mission_init(p);
+in = entrada_basica(0, [-1 0 0 0], [1 0 0 0]);
+T = coords_seis();
+T = T([4 1 6 2 5 3], :);
+for paso = 1:40
+    nd = min(6, 1 + floor((paso - 1)/5));
+    in.t = 0.001*paso;
+    in.py = coords_py(coords_rotar(T(1:nd, :), paso));
+    in.py(1) = paso;
+    if paso == 30
+        in.py(5:9) = [T(2, 1:2) T(2, 3) + 0.04 T(2, 4) - 0.03 0.9]';   % refinamiento
+    end
+    s = qd2_mission_step(s, in, p);
+    [xy, n] = qd2_coordenadas_objetivos(in.py);
+end
+tc.verifyEqual(n, 6);
+tc.verifyEqual(n, s.n_obj);
+tc.verifyEqual(xy(1:n, :), [s.obj_x(1:n) s.obj_y(1:n)], 'AbsTol', 0);
+fprintf('[coords = mision] n = %d, max |dif| = %g\n', n, max(abs(xy(1:n, :) - [s.obj_x(1:n) s.obj_y(1:n)]), [], 'all'));
+end
+
+function test_coords_codegen(tc)
+% El par que se compila en el lab: versiones/R2022a/QD2_MissionCtrl_Dual_PID.slx
+% (con el área 'COORDENADAS OBJETOS (x,y)') y versiones/R2022a/QD2_Mission_Lib.slx,
+% ambos en R2022a, en la copia SIL de qd2_probar_tierra (opt.slx: la copia
+% usa la librería de esa carpeta, no la de lib/, guardada en R2025a).
+% - En el .slx, la entrada del bloque sale de PYTHON BRIDGE/1, la misma
+%   salida que va a Goto Python Commands (rama). Solo se revisa la conexión:
+%   el Stream Server no corre sin QUARC, así que en la copia el PYTHON
+%   BRIDGE queda comentado y el bloque se alimenta de PYTHON STUB (1 kHz).
+% - PYTHON STUB publica 3 fuegos + 3 tomas por las 3 ranuras rotando y
+%   refina uno: el bloque compila (codegen SIL) y su salida coords_objetos /
+%   n_objetos da la tabla esperada.
+raiz = fileparts(fileparts(mfilename('fullpath')));
+f = fullfile(raiz, 'versiones', 'R2022a', 'QD2_MissionCtrl_Dual_PID.slx');
+flib = fullfile(raiz, 'versiones', 'R2022a', 'QD2_Mission_Lib.slx');
+mi = Simulink.MDLInfo(f);
+mil = Simulink.MDLInfo(flib);
+tc.verifyEqual(mi.ReleaseName, 'R2022a');
+tc.verifyEqual(mil.ReleaseName, 'R2022a');
+tc.assumeFalse(isMATLABReleaseOlderThan(mi.ReleaseName) || isMATLABReleaseOlderThan(mil.ReleaseName), sprintf( ...
+    'versiones/R2022a: modelo en %s y librería en %s; esta MATLAB es %s (LoadingNewerModel)', ...
+    mi.ReleaseName, mil.ReleaseName, version('-release')));
+T = coords_seis();
+O = [2 + (0:5)' T];                                  % uno nuevo por segundo desde t = 2
+O(end+1, :) = [9 T(2, 1:2) -0.47 0.86 0.97];         % refinamiento del segundo (fuego id 1)
+addpath(fullfile(raiz, 'pid'));
+R = qd2_probar_tierra('PID', 12, false, 0, struct('slx', f, 'objetivos', O));
+tc.assertTrue(isfield(R, 'coords_n'), 'la copia no tiene el bloque COORDENADAS OBJETOS (x,y)');
+[d_lib, n_lib] = fileparts(R.lib_slx);
+tc.verifyEqual(n_lib, 'QD2_Mission_Lib');
+tc.verifyTrue(startsWith(d_lib, fileparts(tempname)), ...         % la copia de versiones/R2022a junto al modelo
+    sprintf('la copia resolvió QD2_Mission_Lib con %s, no con la de versiones/R2022a', R.lib_slx));
+tc.verifyEqual(R.coords_src, 'PYTHON BRIDGE/1');
+tc.verifyTrue(R.coords_rama, 'la entrada del bloque no es la misma salida que va a Goto Python Commands');
+xy_ref = T(:, 3:4);
+xy_ref(2, :) = [-0.47 0.86];
+k1 = find(R.t >= 2.2 & R.t < 3, 1);
+tc.verifyEqual(R.coords_n(k1), 1);
+tc.verifyEqual(R.coords_xy(1, :, k1), T(1, 3:4), 'AbsTol', 1e-12);
+k8 = find(R.t >= 8 & R.t < 9, 1);
+tc.verifyEqual(R.coords_n(k8), 6);
+tc.verifyEqual(R.coords_xy(1:6, :, k8), T(:, 3:4), 'AbsTol', 1e-12);
+tc.verifyEqual(R.coords_n(end), 6);
+tc.verifyEqual(R.coords_xy(1:6, :, end), xy_ref, 'AbsTol', 1e-12);
+tc.verifyEqual(R.coords_xy(7:32, :, end), zeros(26, 2));
+tc.verifyTrue(all(diff(R.coords_n) >= 0));
+fprintf('[coords codegen] versiones/R2022a/QD2_MissionCtrl_Dual_PID.slx + QD2_Mission_Lib.slx (%s/%s, copia SIL; entrada %s): n final = %d, xy final = %s\n', ...
+    mi.ReleaseName, mil.ReleaseName, R.coords_src, R.coords_n(end), mat2str(R.coords_xy(1:6, :, end), 4));
+end
+
+% ---------------- utilidades de coordenadas ------------------------------
+function T = coords_seis()
+% [id clase x y conf]: 3 fuegos (0) y 3 tomas (1) en el orden en que se descubren
+T = [ 3 0  0.46  1.40 0.91;
+      1 0 -0.50  0.80 0.88;
+      6 1  1.00 -0.90 0.93;
+      2 1 -1.10 -0.30 0.86;
+      5 0  0.20 -1.20 0.90;
+      4 1  0.90  0.30 0.95];
+end
+
+function sl = coords_rotar(pub, paso)
+% 3 ranuras rotando sobre la lista publicada (como TargetRotator.next_slots)
+n = size(pub, 1);
+if n <= 3
+    sl = pub;
+    return
+end
+i0 = mod(3*(paso - 1), n);
+sl = pub(mod(i0 + (0:2), n) + 1, :);
+end
+
+function py = coords_py(sl)
+% Python Cmd de 32 doubles (pack_command) con hasta 3 ranuras [id clase x y conf]
+py = zeros(32, 1);
+py(1) = 1;
+py(4) = size(sl, 1);
+for j = 1:min(3, size(sl, 1))
+    py(5 + 5*(j-1) : 9 + 5*(j-1)) = sl(j, :)';
+end
+end

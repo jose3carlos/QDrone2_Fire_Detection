@@ -535,6 +535,79 @@ def test_lib_no_tierra_no_la_alcanzan_los_modelos_de_tierra(pf):
     assert not {"lib/%s.m" % n for n in alcanzadas} & pf.LIB_NO_TIERRA, alcanzadas
 
 
+def test_lib_de_un_modelo_solo_la_llama_ese_modelo(pf):
+    """Cada lib/*.m de LIB_DE_UN_MODELO existe, la llama el .slx de su modelo (versiones/R2022a) y no la llaman los
+    otros .slx de tierra, QD2_Mission_Lib.slx, qd2_cargar_config.m ni las demás lib/*.m."""
+    sq = os.path.join(PROJECT, "simulink_qdrone2")
+    assert pf.LIB_DE_UN_MODELO
+    textos = {}
+    for n in ("QD2_Mission_Lib", "QD2_MissionCtrl_Dual_PID", "QD2_MissionCtrl_Dual_PID_2D", "QD2_MissionCtrl_Dual_MPC"):
+        with zipfile.ZipFile(os.path.join(sq, "versiones", "R2022a", n + ".slx")) as z:
+            textos[n] = "\n".join(z.read(q).decode("utf-8", "replace") for q in z.namelist())
+    with open(os.path.join(sq, "qd2_cargar_config.m"), encoding="utf-8") as f:
+        textos["qd2_cargar_config"] = f.read()
+    for r, mdl in pf.LIB_DE_UN_MODELO.items():
+        assert os.path.exists(os.path.join(sq, r)), r
+        fn = os.path.basename(r)[:-2]
+        otras = {os.path.basename(p)[:-2]: p for p in glob.glob(os.path.join(sq, "lib", "*.m"))}
+        otras.pop(fn)
+        for n, p in otras.items():
+            with open(p, encoding="utf-8", errors="replace") as f:
+                textos["lib/" + n] = f.read()
+        llaman = {n for n, t in textos.items() if re.search(r"\b%s\b" % fn, t)}
+        assert llaman == {mdl}, (r, llaman)
+
+
+def test_build_lib_de_un_modelo_no_cuenta_para_los_otros(arbol):
+    """lib/qd2_coordenadas_objetivos.m (solo la usa QD2_MissionCtrl_Dual_PID): el dual (_PID_2D) compilado sin ella no
+    pide recompilar al aparecer (git checkout de esta rama) ni avisa si el sello la tiene y ya no existe; el solo
+    explorador sí la cuenta (nueva, cambiada o faltante)."""
+    pf = arbol.pf
+    coords = os.path.join(arbol.sq, "lib", "qd2_coordenadas_objetivos.m")
+    assert "lib/qd2_coordenadas_objetivos.m" in pf.LIB_DE_UN_MODELO
+    # dual: config estacion_dual.json (la que lee su InitFcn) con el mismo contenido
+    dual = "QD2_MissionCtrl_Dual_PID_2D"
+    cfg_dual = os.path.join(arbol.raiz, "config", "estacion_dual.json")
+    with open(arbol.cfg, encoding="utf-8") as f:
+        arbol.escribir(cfg_dual, f.read())
+    arch_sin = [{"ruta": r, "sha256": pf.sha256(p)} for r, p in pf.fuentes_build(arbol.sq).items()]
+    arbol.sello = os.path.join(arbol.carpeta, dual + ".config_usada.jsonl")
+    arbol.linea_sello(arbol.t0 + 80, archivos=arch_sin, modelo=dual)
+    arbol.escribir(os.path.join(arbol.carpeta, dual + ".rt-win64"), "binario", arbol.t0 + 100)
+    revisar_dual = lambda: correr(pf.revisar_build, cfg_dual, "PID", False, arbol.carpeta, arbol.sq,  # noqa: E731
+                                  raiz=arbol.raiz)
+    assert not niveles(revisar_dual(), "FALLA")
+    arbol.escribir(coords, "% coords\n", arbol.t0 + 200)
+    assert "lib/qd2_coordenadas_objetivos.m" not in pf.fuentes_build(arbol.sq, dual)
+    assert "lib/qd2_coordenadas_objetivos.m" in pf.fuentes_build(arbol.sq, "QD2_MissionCtrl_Dual_PID")
+    out = revisar_dual()
+    assert not niveles(out, "FALLA") and not niveles(out, "AVISO"), out
+    # sello del dual CON la lib (build en esta rama) y la lib borrada (vuelta a Quique): sin AVISO
+    arbol.linea_sello(arbol.t0 + 300, archivos=arch_sin + [{"ruta": "lib/qd2_coordenadas_objetivos.m",
+                                                            "sha256": pf.sha256(coords)}], modelo=dual)
+    arbol.escribir(os.path.join(arbol.carpeta, dual + ".rt-win64"), "binario", arbol.t0 + 320)
+    os.remove(coords)
+    out = revisar_dual()
+    assert not niveles(out, "FALLA") and not niveles(out, "AVISO"), out
+    # solo explorador: compilado sin ella -> al aparecer, FALLA (nuevo); con ella y borrada -> AVISO
+    arbol.sello = os.path.join(arbol.carpeta, "QD2_MissionCtrl_Dual_PID.config_usada.jsonl")
+    arbol.linea_sello(arbol.t0 + 80, archivos=arch_sin)
+    arbol.build(arbol.t0 + 100)
+    assert not niveles(arbol.revisar(), "FALLA")
+    arbol.escribir(coords, "% coords\n", arbol.t0 + 200)
+    f = niveles(arbol.revisar(), "FALLA")
+    assert len(f) == 1 and "lib/qd2_coordenadas_objetivos.m (nuevo)" in f[0], f
+    arbol.linea_sello(arbol.t0 + 300, archivos=arch_sin + [{"ruta": "lib/qd2_coordenadas_objetivos.m",
+                                                            "sha256": pf.sha256(coords)}])
+    arbol.build(arbol.t0 + 320)
+    assert not niveles(arbol.revisar(), "FALLA")
+    arbol.escribir(coords, "% otra\n", arbol.t0 + 400)
+    assert any("lib/qd2_coordenadas_objetivos.m" in t for t in niveles(arbol.revisar(), "FALLA"))
+    os.remove(coords)
+    a = niveles(arbol.revisar(), "AVISO")
+    assert any("lib/qd2_coordenadas_objetivos.m" in t and "ya no existen" in t for t in a), a
+
+
 def test_build_en_main_con_remoto_no_falla(pf, cfg_path_solo, capsys, monkeypatch, tmp_path):
     monkeypatch.setattr(pf, "SQ", str(tmp_path))                  # sin .rt-win64 aquí
     pf.main(["--config", cfg_path_solo, "--remoto", "10.0.0.9"])

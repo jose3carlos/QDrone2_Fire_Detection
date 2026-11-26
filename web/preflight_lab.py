@@ -300,6 +300,11 @@ CLAVES_MODELO = ("version_control", "red.puerto_dron1", "red.puerto_dron2", "red
 LIB_NO_TIERRA = frozenset("lib/" + n for n in (
     "qd2_downwash.m", "qd2_mpc_init.m", "qd2_mpc_position.m", "qd2_onboard_init.m", "qd2_onboard_step.m",
     "qd2_pid_position.m", "qd2_quad_plant.m", "qd2_wrap_pi.m"))
+# lib/*.m que solo usa UN modelo de tierra: para los demás no cuentan (ni nuevas, ni cambiadas, ni faltantes). Rama
+# solo-explorador-coordenadas: el bloque COORDENADAS OBJETOS (x,y) solo está en el del modo solo explorador, así que el
+# dual (_PID_2D) y el MPC compilados en Quique no piden recompilar por ella. tests/test_preflight_lab.py comprueba que
+# solo ese .slx la llama.
+LIB_DE_UN_MODELO = {"lib/qd2_coordenadas_objetivos.m": "QD2_MissionCtrl_Dual_PID"}
 _FALTA = object()
 
 
@@ -316,12 +321,18 @@ def config_del_modelo(mdl, raiz=None):
     return os.path.join(raiz, "config", "estacion_dual.json" if mdl.endswith("_2D") else "estacion.json")
 
 
-def fuentes_build(sq):
+def lib_ajenas(mdl):
+    """lib/*.m de LIB_DE_UN_MODELO que NO usa ``mdl`` (con mdl None, ninguna)."""
+    return frozenset(r for r, m in LIB_DE_UN_MODELO.items() if mdl is not None and m != mdl)
+
+
+def fuentes_build(sq, mdl=None):
     """{ruta relativa a simulink_qdrone2 (con /): ruta} de lo que entra al build además de la config (sin
-    LIB_NO_TIERRA)."""
+    LIB_NO_TIERRA ni, con ``mdl``, las de LIB_DE_UN_MODELO de otro modelo)."""
     f = {"qd2_cargar_config.m": os.path.join(sq, "qd2_cargar_config.m")}
+    fuera = LIB_NO_TIERRA | lib_ajenas(mdl)
     for p in sorted(glob.glob(os.path.join(sq, "lib", "*.m"))):
-        if "lib/" + os.path.basename(p) not in LIB_NO_TIERRA:
+        if "lib/" + os.path.basename(p) not in fuera:
             f["lib/" + os.path.basename(p)] = p
     return f
 
@@ -440,7 +451,7 @@ def revisar_build(ruta_config, ver, solo, carpeta, sq, rep=None, raiz=None, rele
                      f"HARDWARE -> Monitor & Tune con la carpeta actual en versiones\\{release})")
         return
     t_rt = os.path.getmtime(rt)
-    fuentes = fuentes_build(sq)
+    fuentes = fuentes_build(sq, mdl)
     sello = os.path.join(carpeta, mdl + ".config_usada.jsonl")
     ent, malas = leer_sello(sello)
     if malas:
@@ -480,7 +491,7 @@ def revisar_build(ruta_config, ver, solo, carpeta, sq, rep=None, raiz=None, rele
                     cambios.append(f"{r_} (nuevo)")
                 elif arch[r_] != sha256(p):
                     cambios.append(r_)
-            faltan = sorted(set(arch) - set(fuentes) - LIB_NO_TIERRA)
+            faltan = sorted(set(arch) - set(fuentes) - LIB_NO_TIERRA - lib_ajenas(mdl))
             if faltan:
                 rep("AVISO", f"el build usó {', '.join(faltan)}, que ya no existen: recompila si fue a propósito")
         else:
