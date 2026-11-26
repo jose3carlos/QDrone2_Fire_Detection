@@ -102,6 +102,8 @@ input.mono { font-family: var(--mono); }
 .sw { display: inline-block; width: 10px; height: 10px; border-radius: 3px; margin-right: 5px; vertical-align: -1px; }
 .sw.e { background: var(--explorer); } .sw.r { background: var(--responder); }
 .sw.st-det { background: var(--st-det); } .sw.st-asig { background: var(--st-asig); } .sw.st-vis { background: var(--st-vis); }
+.sw.env { background: transparent; border: 1.5px dashed #a78bfa; border-radius: 1px; width: 8px; height: 8px; }
+.nota-env { display: block; font-size: 11px; color: #a78bfa; white-space: nowrap; }
 .row1 { display: grid; grid-template-columns: minmax(0, 1fr) calc(var(--viewh) + 22px); gap: 12px; }
 .row2 { display: grid; grid-template-columns: minmax(0, 1.25fr) minmax(0, 1fr); gap: 12px; align-items: start; }
 .map2d #map { width: var(--viewh); max-width: 100%; }
@@ -122,11 +124,19 @@ input.mono { font-family: var(--mono); }
 .dcard.no-usado { opacity: .55; filter: grayscale(1); }
 .kv[hidden], .bar-block[hidden], .aviso-remoto[hidden] { display: none; }
 .role.nu { background: var(--line); color: var(--text); }
+.role.cam { background: var(--line); color: var(--text); }
+#cam-info.bad { color: var(--bad); font-weight: 600; }
 .modo-info { font-size: 12px; color: var(--muted); margin: 8px 0; line-height: 1.4; }
 .modo-info b { color: var(--text); }
 .aviso-remoto { margin: 0 0 8px; padding: 6px 8px; border-radius: 8px; font-size: 12px; font-weight: 600;
   color: #fff; background: color-mix(in srgb, var(--bad) 75%, transparent); }
 .btn[disabled] { opacity: .45; cursor: not-allowed; }
+/* pestaña Pista: destino de la captura y aviso (amarillo, no bloquea) de la ruta fuera de la envolvente */
+.sel-destino { width: 100%; margin: 0 0 6px; }
+.aviso-pista { margin: 0 0 8px; padding: 6px 8px; border-radius: 8px; font-size: 12px; font-weight: 600;
+  color: #111; background: var(--warn); }
+.aviso-pista[hidden] { display: none; }
+.tbl tr.fuera td { background: color-mix(in srgb, var(--warn) 22%, transparent); }
 
 /* ---------- barra lateral ---------- */
 .sidebar { background: var(--panel); border: 1px solid var(--line); border-radius: var(--radius); padding: 10px;
@@ -153,6 +163,20 @@ input.mono { font-family: var(--mono); }
 .sep-row small { margin: 0; }
 .sep-row b.bad { color: var(--bad); } .sep-row b.ok { color: var(--ok); }
 .sep-note { font-size: 12px; color: var(--muted); margin-top: 4px; }
+/* batería (solo visualización: la estación no actúa por ella) */
+.bat-block { margin-top: 14px; border: 1px solid var(--line); border-radius: 8px; padding: 8px 10px; }
+.bat-dron + .bat-dron { border-top: 1px solid var(--line); margin-top: 8px; padding-top: 8px; }
+.bat-head { display: flex; align-items: baseline; gap: 10px; flex-wrap: wrap; }
+.bat-name { font-size: 12px; color: var(--muted); }
+.bat-v { font-family: var(--mono); font-size: 24px; font-weight: 700; line-height: 1.1; }
+.bat-estado { font-size: 12px; color: var(--muted); margin-left: auto; }
+.bat-chart { display: block; width: 100%; height: 128px; margin-top: 4px; border-radius: 6px; background: var(--panel-2); }
+.bat-chart[hidden], .bat-sin[hidden], .bat-info[hidden] { display: none; }
+.bat-info { display: grid; grid-template-columns: auto 1fr; gap: 2px 10px; font-size: 12px; margin-top: 6px; }
+.bat-info span { color: var(--muted); } .bat-info b { font-weight: 600; }
+.bat-info b small { display: inline; margin: 0; font-weight: 400; }
+.bat-sin { margin-top: 4px; padding: 6px 8px; border-radius: 6px; font-size: 12px; background: var(--panel-2);
+  border: 1px dashed var(--line); }
 .ver-block { margin-top: 14px; }
 .ver-block label { display: flex; gap: 8px; align-items: center; }
 .card { border: 1px solid var(--line); border-radius: 8px; padding: 10px; margin-bottom: 10px; background: var(--panel-2); }

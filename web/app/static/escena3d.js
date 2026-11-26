@@ -3,7 +3,7 @@
 // (x, y, z)_RSF -> (x, z, -y)_three (rotación propia, conserva la orientación).
 import * as THREE from 'three';
 import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
-import { marcoDeEstado, limitesXY, multiplos, nivelLinea, RETICULA_FINA } from './marco.js';
+import { marcoDeEstado, limitesXY, envolvente, multiplos, nivelLinea, RETICULA_FINA } from './marco.js';
 
 const COL = { e: 0x22d3ee, r: 0xfb923c, none: 0x8b97a6, det: 0xfacc15, asig: 0x60a5fa, vis: 0x4ade80 };
 const STATE_COL = { detectada: COL.det, asignada: COL.asig, visitada: COL.vis };
@@ -187,10 +187,11 @@ export class Escena3D {
     ax(w2t(1, 0, 0).normalize(), 0xef4444); ax(w2t(0, 1, 0).normalize(), 0x22c55e); ax(w2t(0, 0, 1).normalize(), 0x3b82f6);
   }
 
-  // Piso + retícula + borde del marco de la arena (marco.js) y límite de vuelo (mision.limites_xy,
-  // punteado ámbar). Se rehace solo si cambia el marco o el límite; libera geometrías y materiales viejos.
-  _setArena(m, lim) {
-    const key = JSON.stringify([m, lim]);
+  // Piso + retícula + borde del marco de la arena (marco.js), límite de vuelo (mision.limites_xy,
+  // punteado ámbar) y envolvente de las consignas (mision.limites_x/_y, punteado violeta más fino).
+  // Se rehace solo si cambia el marco, el límite o la envolvente; libera geometrías y materiales viejos.
+  _setArena(m, lim, env = null) {
+    const key = JSON.stringify([m, lim, env]);
     if (key === this.arenaKey) return false;
     this.arenaKey = key;
     this.arena.traverse((o) => { if (o.geometry) o.geometry.dispose(); if (o.material) o.material.dispose(); });
@@ -222,6 +223,11 @@ export class Escena3D {
     if (lim) {
       const l = new THREE.Line(new THREE.BufferGeometry().setFromPoints(rect(lim[0], lim[1], lim[0], lim[1], 0.0035)),
         new THREE.LineDashedMaterial({ color: 0xd29922, dashSize: 0.08, gapSize: 0.06, transparent: true, opacity: 0.8 }));
+      l.computeLineDistances(); this.arena.add(l);
+    }
+    if (env) {
+      const l = new THREE.Line(new THREE.BufferGeometry().setFromPoints(rect(env.x0, env.x1, env.y0, env.y1, 0.004)),
+        new THREE.LineDashedMaterial({ color: 0xa78bfa, dashSize: 0.04, gapSize: 0.04, transparent: true, opacity: 0.9 }));
       l.computeLineDistances(); this.arena.add(l);
     }
     return true;
@@ -345,7 +351,7 @@ export class Escena3D {
   update(s) {
     this.marco = marcoDeEstado(s);
     // si el marco cambió (pista nueva, homes que llegan), re-encuadra persp/top; 'follow' no se toca
-    if (this._setArena(this.marco, limitesXY(s)) && this.view !== 'follow') this.setView(this.view);
+    if (this._setArena(this.marco, limitesXY(s), envolvente(s)) && this.view !== 'follow') this.setView(this.view);
     this._setPipe(s.tubos || [], s.pista || []);
     this._setTruth(s.verdad_mock || []);
     const tel = s.tel;

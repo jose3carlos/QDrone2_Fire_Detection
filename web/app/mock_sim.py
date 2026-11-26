@@ -77,7 +77,7 @@ import time
 import numpy as np
 
 from . import protocol as P
-from .config import T_PERDIDA_TRK, mision_modo, mision_t_perdida_aterrizar
+from .config import T_PERDIDA_TRK, mision_envolvente, mision_modo, mision_t_perdida_aterrizar
 
 # Estados de la FSM a bordo (aprox. a los del DroneStack del Equipo2)
 FSM_IDLE, FSM_ARM, FSM_TO_THROTTLE, FSM_TO_HEIGHT, FSM_FLIGHT, FSM_AUTOLAND = 1, 2, 3, 4, 5, 6
@@ -91,7 +91,20 @@ T_ATERRIZADO = 1.0     # s, p.t_aterrizado
 T_ASENTAR = 1.0        # s, p.t_asentar
 T_LAND_MAX = 30.0      # s, p.t_land_max
 T_FALLA_SEP_MAX = 8.0  # s, p.t_falla_sep_max
-XY_MARGEN = 0.15       # m, p.xy_margen (consignas recortadas a limites_xy -/+ margen)
+XY_MARGEN = 0.15       # m, p.xy_margen (consignas recortadas a limites_xy -/+ margen; = config.XY_MARGEN)
+MARGEN_MOCK = 0.10     # m, recorte de la misión simplificada del mock (objetivo de R, evasión y retícula del guard)
+                       #    en los ejes SIN envolvente: limites_xy -/+ 0.10 (±1.4), no -/+ XY_MARGEN (±1.35) como
+                       #    MATLAB. Divergencia conocida que se deja así: cambiarla mueve la retícula del rodeo del
+                       #    guard (puntos cada 0.25 m desde el borde) y con ella las trayectorias de las pruebas.
+# Batería simulada (solo telemetría: el mock NO reacciona a ella, igual que la estación; el corte de 14.0 V es a
+# bordo del dron real y aquí no se simula). Parecida a los logs a bordo del dron PID del Equipo2 (20-nov):
+# ~16.4 V en reposo, ~0.9 V de caída al cargar los motores (armado ~75 % de la carga de vuelo) y ~0.008 V/s de
+# descarga en vuelo (16.41 V en reposo -> ~15.5 V al despegar -> ~14.5 V tras ~2 min de vuelo).
+BAT_V_REPOSO = 16.4    # V al arrancar (LiPo 4S cargada)
+BAT_CAIDA_CARGA = 0.9  # V de caída por carga con los motores a empuje de vuelo
+BAT_DESCARGA = 0.008   # V/s de descarga (voltaje en reposo) con carga de vuelo
+BAT_TAU = 0.5          # s, constante de tiempo de la carga (arranque / paro de motores)
+BAT_V_PISO = 13.5      # V: el valor simulado no baja de aquí (solo para que no se vaya a cero)
 
 
 def flight_state_tierra(fsm, aterrizo):
@@ -221,13 +234,23 @@ class Drone:
         self.yawd = yaw
         self.flying = False
         self.fsm = FSM_IDLE
-        self.battery = 16.4
+        self.battery = BAT_V_REPOSO   # V en terminales (lo que manda la telemetría)
+        self.bat_reposo = BAT_V_REPOSO  # V sin carga (baja con la descarga)
+        self.bat_carga = 0.0          # 0 = motores apagados, 1 = empuje de vuelo
         self.tracked = 1
         self.home = np.array([x, y])
         self.role = P.ROLE_NONE
         self.aterrizo = False      # ya aterrizó después de volar (Flight State de tierra = 3 Land)
 
+    def paso_bateria(self, dt):
+        """Batería simulada: caída por carga (armado / en vuelo) y descarga lenta. Solo cambia ``battery``."""
+        objetivo = 1.0 if self.flying else 0.75 if self.fsm == FSM_ARM else 0.0
+        self.bat_carga += (objetivo - self.bat_carga) * min(1.0, dt / BAT_TAU)
+        self.bat_reposo -= (BAT_DESCARGA * self.bat_carga + 0.00002) * dt
+        self.battery = max(BAT_V_PISO, self.bat_reposo - BAT_CAIDA_CARGA * self.bat_carga)
+
     def step(self, dt, vmax_xy=0.55, vmax_z=0.5, tau=0.35):
+        self.paso_bateria(dt)
         if not self.flying and self.sp[2] <= 0.0 and self.p[2] <= 0.01:
             self.v[:] = 0.0
             self.a[:] = 0.0
@@ -248,7 +271,6 @@ class Drone:
             self.a[2] = 0.0
         e = math.atan2(math.sin(self.yawd - self.yaw), math.cos(self.yawd - self.yaw))
         self.yaw += max(-1.0 * dt, min(1.0 * dt, e))
-        self.battery = max(13.5, self.battery - (0.0009 if self.flying else 0.00002) * dt)
 
 
 class MockMission:
@@ -267,7 +289,20 @@ class MockMission:
         self.tol_z = float(m.get("tol_z", 0.12))
         self.auto_land = bool(m.get("auto_land", False))
         lim = m.get("limites_xy", [-1.5, 1.5])
-        self.lim = (float(lim[0]) + 0.1, float(lim[1]) - 0.1)
+        # Envolvente por eje (mision.limites_x / limites_y, = qd2_limites_xy): env_lo / env_hi = límite EFECTIVO
+        # [x, y] de MATLAB (con envolvente: ese valor tal cual; sin ella: limites_xy -/+ XY_MARGEN). La misión
+        # simplificada del mock recorta a lim_lo / lim_hi: la envolvente en los ejes que la tienen y
+        # limites_xy -/+ MARGEN_MOCK en los demás (sin envolvente, exactamente lo de antes).
+        env = mision_envolvente(cfg)
+        self.envolvente = env
+        self.aviso_envolvente = env["aviso"]
+        base = (float(lim[0]) + MARGEN_MOCK, float(lim[1]) - MARGEN_MOCK)
+        self.lim_lo = np.array([env[e][0] if env[e] else base[0] for e in ("x", "y")])
+        self.lim_hi = np.array([env[e][1] if env[e] else base[1] for e in ("x", "y")])
+        # recorte FINAL de las consignas (recortar_sp de MATLAB): solo en los ejes con envolvente (en los demás el
+        # mock nunca recortó la consigna final: un hold del guard puede quedar en la pose, p. ej. x = -1.414)
+        self.sp_lo = np.array([env[e][0] if env[e] else -math.inf for e in ("x", "y")])
+        self.sp_hi = np.array([env[e][1] if env[e] else math.inf for e in ("x", "y")])
         self.version = 2 if str(cfg.get("version_control", "PID")).upper() == "MPC" else 1
         self.vertices = cfg.get("pista", {}).get("vertices", [[-1.2, 1.2], [1.2, 1.2], [-1.2, -1.2], [1.2, -1.2]])
         self.drones = {1: Drone(*homes[0]), 2: Drone(*homes[1])}
@@ -324,7 +359,8 @@ class MockMission:
         tp = mision_t_perdida_aterrizar(cfg)
         self.t_perdida_aterrizar = tp["valor"]
         self.aviso_t_perdida = tp["aviso"]
-        self.xy_lo, self.xy_hi = float(lim[0]) + XY_MARGEN, float(lim[1]) - XY_MARGEN
+        # recorte de los caminos portados de MATLAB (reacción a falla, aterrizaje, rodeo): qd2_limites_xy por eje
+        self.xy_lo, self.xy_hi = np.array(env["lo"], dtype=float), np.array(env["hi"], dtype=float)
         self.ventanas_sin_rastreo = []          # (dron, t1, t2): OptiTrack no lo ve para t1 <= t < t2
         self.t_trk = {1: 0.0, 2: 0.0}           # último instante con rastreo válido (s.t_trk)
         self.vista = {k: d.p.copy() for k, d in self.drones.items()}   # última pose vista (s.pose_ok)
@@ -500,7 +536,7 @@ class MockMission:
             # solo: basta el dron solo rastreado 1 s; sin chequeo de distancia entre homes (nunca alerta 1)
             self.track_t = self.track_t + dt if dE.tracked else 0.0
             if self.track_t >= 1.0:
-                dE.home = dE.p[:2].copy()
+                dE.home = self._clamp_sp(dE.p)[:2]     # recortado a la envolvente (como qd2_mission_step)
                 dE.role = P.ROLE_EXPLORER
                 self.home_ok, self.alerta = True, 0
                 self._goto(P.ASSIGN_ROLES)
@@ -511,7 +547,7 @@ class MockMission:
                 d1, d2 = self.drones[1], self.drones[2]
                 self.E, self.R = (1, 2) if d1.p[0] < d2.p[0] else (2, 1)
                 for k, d in self.drones.items():
-                    d.home = d.p[:2].copy()
+                    d.home = self._clamp_sp(d.p)[:2]   # recortado a la envolvente (como qd2_mission_step)
                     d.role = P.ROLE_EXPLORER if k == self.E else P.ROLE_RESPONDER
                 d_min = D_HOME_MIN_MPC if self.version == 2 else self.d_min_h + self.guard_margin
                 self.home_ok = hdist(d1.home, d2.home) >= d_min
@@ -545,7 +581,7 @@ class MockMission:
                 self._mission_step(dE, dR, dt)
         elif s in (P.RETURN_HOME, P.ABORT) and self.solo:
             # solo: E directo a su home a z_E (sin orden de regreso ni guard)
-            dE.sp = np.array([dE.home[0], dE.home[1], self.z_E])
+            dE.sp = self._clamp_sp(np.array([dE.home[0], dE.home[1], self.z_E]))
             self.last_sp_E = dE.sp.copy()
             if (hdist(dE.p, dE.home) < self.tol_xy and s == P.RETURN_HOME and self.auto_land
                     and self.state_t > 2.0):
@@ -555,8 +591,8 @@ class MockMission:
             spR = np.array([dR.home[0], dR.home[1], self.z_R])
             if self.version == 1:  # E regresa primero; R cede el paso
                 spE, spR = self._guard(dE, dR, spE, spR, False, False)
-            dE.sp, dR.sp = spE, spR
-            self.last_sp_E = spE.copy()
+            dE.sp, dR.sp = self._clamp_sp(spE), self._clamp_sp(spR)    # recortar_sp (envolvente)
+            self.last_sp_E = dE.sp.copy()
             at_home = all(hdist(d.p, d.home) < self.tol_xy for d in (dE, dR))
             if at_home and s == P.RETURN_HOME and self.auto_land and self.state_t > 2.0:
                 self._goto(P.LANDING)
@@ -590,7 +626,13 @@ class MockMission:
         return items[:1] if self.solo else items
 
     def _clamp(self, xy):
-        return np.clip(np.asarray(xy, dtype=float), self.lim[0], self.lim[1])
+        """Recorte de la misión simplificada (por eje: envolvente o limites_xy -/+ MARGEN_MOCK)."""
+        return np.clip(np.asarray(xy, dtype=float), self.lim_lo, self.lim_hi)
+
+    def _clamp_sp(self, sp):
+        """Consigna final [x, y, z] con xy recortado a la envolvente (``recortar_sp``; sin envolvente no cambia)."""
+        xy = np.clip(np.asarray(sp[:2], dtype=float), self.sp_lo, self.sp_hi)
+        return np.array([xy[0], xy[1], sp[2]])
 
     def _mission_step_solo(self, dE):
         """Solo explorador: E recorre la N y regresa; los objetivos se registran pero nadie los visita."""
@@ -606,8 +648,8 @@ class MockMission:
                     self.events.append((round(self.t, 2), "explorador terminó la N"))
         else:
             spE = np.array([dE.home[0], dE.home[1], self.z_E])
-        dE.sp = spE
-        self.last_sp_E = spE.copy()
+        dE.sp = self._clamp_sp(spE)                                     # recortar_sp (envolvente)
+        self.last_sp_E = dE.sp.copy()
         if self.explorer_done and self.t - self.t_e_done >= 2.0:
             self._goto(P.RETURN_HOME)
 
@@ -653,8 +695,8 @@ class MockMission:
         # --- separation guard (solo PID)
         if self.version == 1:
             spE, spR = self._guard(dE, dR, spE, spR, marking, self.explorer_done)
-        dE.sp, dR.sp = spE, spR
-        self.last_sp_E = spE.copy()
+        dE.sp, dR.sp = self._clamp_sp(spE), self._clamp_sp(spR)        # recortar_sp (envolvente)
+        self.last_sp_E = dE.sp.copy()
         # --- fin de misión (como Simulink: 2 s de gracia por objetivos tardíos, cola vacía y R libre)
         if self.explorer_done and self.t - self.t_e_done >= 2.0 and not self.queue and self.current == 0:
             self._goto(P.RETURN_HOME)
@@ -770,8 +812,8 @@ class MockMission:
 
     def _via_grid(self, pB, target, danger, groups, dist):
         best, best_len = None, None
-        for x in np.arange(self.lim[0], self.lim[1] + 1e-6, 0.25):
-            for y in np.arange(self.lim[0], self.lim[1] + 1e-6, 0.25):
+        for x in np.arange(self.lim_lo[0], self.lim_hi[0] + 1e-6, 0.25):
+            for y in np.arange(self.lim_lo[1], self.lim_hi[1] + 1e-6, 0.25):
                 c = np.array([x, y])
                 if _min_dist(c, danger) < dist:
                     continue
@@ -1011,7 +1053,7 @@ class MockMission:
                 if costo < mejor:
                     mejor, c_ok = costo, c
         if not math.isfinite(mejor):
-            esquinas = [np.array(e, dtype=float) for e in ((lo, lo), (lo, hi), (hi, lo), (hi, hi))]
+            esquinas = [np.array(e, dtype=float) for e in ((lo[0], lo[1]), (lo[0], hi[1]), (hi[0], lo[1]), (hi[0], hi[1]))]
             c_ok = max(esquinas, key=lambda e: hdist(e, pf))
         return c_ok
 
@@ -1323,7 +1365,8 @@ class MockMission:
             tel["drones"][k] = {
                 "tracked": d.tracked, "fsm_state": fsm, "x": d.p[0], "y": d.p[1], "z": d.p[2], "yaw": d.yaw,
                 "xd": d.sp[0], "yd": d.sp[1], "zd": d.sp[2], "yawd": d.yawd,
-                "vx": d.v[0], "vy": d.v[1], "vz": d.v[2], "battery_V": d.battery,
+                # PID: como el modelo de tierra real, NaN (el dron PID del Equipo2 no devuelve la batería)
+                "vx": d.v[0], "vy": d.v[1], "vz": d.v[2], "battery_V": d.battery if self.version == 2 else None,
                 "home_x": d.home[0], "home_y": d.home[1], "role": d.role, "comm_ok": 1,
             }
             if not d.tracked:

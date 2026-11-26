@@ -260,6 +260,9 @@ def test_mock_dual_igual(cfg_path, version):
     """En dual el mock nuevo da EXACTAMENTE la misma telemetría (512 bytes en cada paso) que el de HEAD."""
     head = _mock_head()
     cfg = dict(_cfg(cfg_path), version_control=version)
+    # sin la envolvente por eje (mision.limites_x / limites_y): el mock de HEAD no la conoce (sin las claves el
+    # mock nuevo es idéntico; con ellas recorta distinto a propósito, test_envolvente.py)
+    cfg["mision"] = {k: v for k, v in cfg["mision"].items() if k not in ("limites_x", "limites_y")}
     assert mision_modo(cfg)["modo"] == "dual"
     nuevo, viejo = Driver(cfg), Driver(cfg)
     viejo.m = head.MockMission(cfg)
@@ -272,7 +275,13 @@ def test_mock_dual_igual(cfg_path, version):
         if k == int(20 / DT):
             nuevo.set_targets(anom), viejo.set_targets(anom)
         nuevo.step(), viejo.step()
-        a, b = P.pack_telemetry(nuevo.m.telemetry()), P.pack_telemetry(viejo.m.telemetry())
+        tn, tv = nuevo.m.telemetry(), viejo.m.telemetry()
+        # battery_V (o+14) es lo único que cambia a propósito: el mock simula la caída por carga y la descarga en
+        # vuelo (test_bateria.py); el resto de los 512 bytes debe ser idéntico
+        for t_ in (tn, tv):
+            for dd in t_["drones"].values():
+                dd["battery_V"] = 0.0
+        a, b = P.pack_telemetry(tn), P.pack_telemetry(tv)
         assert a == b, f"paso {k}: la telemetría dual cambió"
         n_ok += 1
     assert nuevo.m.state in (P.MISSION, P.RETURN_HOME) and nuevo.m.visited

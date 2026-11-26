@@ -2461,3 +2461,221 @@ for k = 1:n
     K.dh(k) = norm(P(1,1:2) - P(2,1:2));
 end
 end
+
+% =========================================================================
+%  Envolvente por eje de las consignas xy (mision.limites_x / limites_y,
+%  25-nov): R llega en y+ hasta 1.2 y en y- hasta -1.4; una toma fuera se
+%  marca desde el punto más cercano dentro (qd2_limites_xy)
+% =========================================================================
+function test_envolvente_config(tc)
+% Reglas de qd2_params_from_config (mismos casos que
+% web/tests/test_envolvente.py::test_reglas_config) y límite efectivo de
+% qd2_limites_xy: el eje con envolvente la usa TAL CUAL (sin xy_margen); el
+% otro, xy_lim -/+ xy_margen. Sin claves, P idéntico a qd2_params().
+N = [NaN NaN];
+casos = { ...
+    '{}',                                            N,      N,          '';
+    '{"limites_y": null}',                           N,      N,          '';
+    '{"limites_y": []}',                             N,      N,          '';
+    '{"limites_y": [-1.4, 1.2]}',                    N,      [-1.4 1.2], '';
+    '{"limites_y": [-1.6, 1.2], "limites_x": [-1, 1]}', [-1 1], [-1.5 1.2], 'se sale de mision.limites_xy';
+    '{"limites_y": [1.2, -1.4]}',                    N,      N,          'inválido';
+    '{"limites_y": [1]}',                            N,      N,          'inválido';
+    '{"limites_y": "a"}',                            N,      N,          'inválido';
+    '{"limites_y": [true, false]}',                  N,      N,          'inválido';
+    '{"limites_y": [-1.4, null]}',                   N,      N,          'inválido';
+    '{"limites_y": [[-1.4, 1.2]]}',                  N,      N,          'inválido';
+    '{"limites_y": [2, 3]}',                         N,      N,          'queda fuera'};
+for k = 1:size(casos, 1)
+    [p, aviso] = qd2_params_from_config(jsondecode(['{"mision": ' casos{k,1} '}']));
+    tc.verifyTrue(isequaln(p.env_x, casos{k,2}) && isequaln(p.env_y, casos{k,3}), casos{k,1});
+    if isempty(casos{k,4})
+        tc.verifyEmpty(aviso, casos{k,1});
+    else
+        tc.verifyTrue(contains(aviso, casos{k,4}), sprintf('%s -> aviso "%s"', casos{k,1}, aviso));
+    end
+    [lo, hi] = qd2_limites_xy(p);
+    ex = [casos{k,2}; casos{k,3}];
+    for i = 1:2
+        if isnan(ex(i,1)), ex(i,:) = [-1.5 + 0.15, 1.5 - 0.15]; end
+    end
+    tc.verifyEqual([lo; hi]', ex, casos{k,1});
+end
+% sin claves: mismo P que qd2_params() y el mismo recorte que antes
+p0 = qd2_params();
+p1 = qd2_params_from_config(struct('mision', struct('limites_xy', [-1.5 1.5])));
+tc.verifyTrue(isequaln(p0, p1));
+[lo, hi] = qd2_limites_xy(p0);
+tc.verifyEqual([lo hi], [p0.xy_lim(1) + p0.xy_margen, p0.xy_lim(1) + p0.xy_margen, ...
+    p0.xy_lim(2) - p0.xy_margen, p0.xy_lim(2) - p0.xy_margen]);
+% configs del repo: envolvente del usuario, sin aviso, ruta dentro
+raiz = fileparts(fileparts(fileparts(mfilename('fullpath'))));
+for nombre = {'estacion.json', 'estacion_dual.json'}
+    [p, aviso] = qd2_params_from_config(fullfile(raiz, 'config', nombre{1}));
+    tc.verifyEmpty(aviso, nombre{1});
+    tc.verifyEqual(p.env_y, [-1.4 1.2], nombre{1});
+    tc.verifyTrue(all(isnan(p.env_x)), nombre{1});
+    [lo, hi] = qd2_limites_xy(p);
+    V = p.vertices(1:p.n_vertices, :);
+    tc.verifyTrue(all(V >= lo - 1e-9 & V <= hi + 1e-9, 'all'), [nombre{1} ': ruta fuera de la envolvente']);
+end
+fprintf('[envolvente config] %d casos de mision.limites_x / limites_y; sin claves P == qd2_params(); configs del repo: y en [-1.4 1.2]\n', size(casos, 1));
+end
+
+function test_envolvente_guard_y_home(tc)
+% (1) El guard corre después de recortar_sp: si el dron que cede se queda
+% en su pose (sobretiro fuera de la envolvente), su consigna se recorta a
+% la envolvente; sin envolvente, igual que antes (la pose).
+% (2) Home fuera de la envolvente (limites_x hasta 1.1, home en x = 1.25):
+% se recorta al capturarlo, así que el regreso llega "en home" y la misión
+% termina (antes se quedaba en RETURN_HOME), en dual y en solo explorador.
+raiz = fileparts(fileparts(fileparts(mfilename('fullpath'))));
+p = qd2_params_from_config(fullfile(raiz, 'config', 'estacion_dual.json'));
+pE = [-1 0 1.5]; pR = [0.3 1.26 0.5];
+ctx = [0 0 p.d_min_h 0 NaN NaN];
+[a, b, act, gs] = qd2_separation_guard(pE, pR, [1 0 1.5 0], [0.3 -1.0 0.5 0], p, qd2_guard_init(), ctx);
+tc.verifyEqual(act, 1);
+tc.verifyEqual(gs.modoB, 1);                          % R espera (cruzaría el camino de E)
+tc.verifyEqual(b, [0.3 1.2 0.5 0], 'AbsTol', 1e-12);  % en el borde, no en su pose y = 1.26
+tc.verifyEqual(gs.holdB, [0.3 1.2], 'AbsTol', 1e-12);
+tc.verifyEqual(a, [1 0 1.5 0]);
+[~, b0] = qd2_separation_guard(pE, pR, [1 0 1.5 0], [0.3 -1.0 0.5 0], qd2_params(), qd2_guard_init(), ctx);
+tc.verifyEqual(b0, [0.3 1.26 0.5 0], 'AbsTol', 1e-12);
+c = jsondecode(fileread(fullfile(raiz, 'config', 'estacion_dual.json')));
+c.mision.limites_x = [-1.35; 1.1];
+[pd, aviso] = qd2_params_from_config(c);
+tc.assertEmpty(aviso);
+L = qd2_sim_lazo_cerrado(struct('version', 1, 'p', pd, 'home2', [1.25 -0.3], 't_final', 300));
+tc.verifyEqual(L.estado(end), 8, 'dual: home fuera de la envolvente, no llegó a DONE');
+c = jsondecode(fileread(fullfile(raiz, 'config', 'estacion.json')));
+c.mision.limites_x = [-1.35; 1.1];
+[ps, aviso] = qd2_params_from_config(c);
+tc.assertEmpty(aviso);
+tc.assertEqual(ps.modo_mision, 1);
+Ls = qd2_sim_lazo_cerrado(struct('version', 1, 'p', ps, 'home1', [1.25 0], 'home2', [-1 0], ...
+    'objetivos', zeros(0, 2), 't_final', 300));
+tc.verifyEqual(Ls.estado(end), 8, 'solo: home fuera de la envolvente, no llegó a DONE');
+fprintf('[envolvente guard/home] consigna de R en espera y %.3f (pose 1.26); dual home2 x 1.25 -> DONE t=%.1f; solo home x 1.25 -> DONE t=%.1f\n', ...
+    b(2), L.t(numel(L.estado)), Ls.t(numel(Ls.estado)));
+end
+
+function test_envolvente_recorte(tc)
+% Lazo cerrado (qd2_sim_lazo_cerrado, PID y MPC) con la ruta real y la
+% envolvente de config/estacion_dual.json y las 4 anomalías sobre los tubos
+% reales (2 fuera: y = 1.40 y -1.476). Las consignas de los DOS drones
+% (misión y tras el limitador) quedan dentro; la posición de R no pasa de
+% y 1.2 / -1.4 más una tolerancia; las 4 quedan visitadas.
+raiz = fileparts(fileparts(fileparts(mfilename('fullpath'))));
+[p, aviso] = qd2_params_from_config(fullfile(raiz, 'config', 'estacion_dual.json'));
+tc.assertEmpty(aviso);
+tc.assertEqual(p.modo_mision, 0);
+[lo, hi] = qd2_limites_xy(p);
+tc.assertEqual([lo hi], [-1.5 + 0.15, -1.4, 1.5 - 0.15, 1.2]);
+obj = [0.46 1.40; -0.91 1.176; 0.962 -1.347; -0.313 -1.476];
+tol_pos = 0.10;
+for v = 1:2
+    L = qd2_sim_lazo_cerrado(struct('version', v, 'p', p, 'objetivos', obj, 't_final', 500));
+    tc.verifyEqual(L.estado(end), 8, sprintf('v%d: no llegó a DONE', v));
+    tc.verifyEqual(max(L.n_vis), 4, sprintf('v%d: visitados', v));
+    for i = 1:2
+        for campo = {'sp_mision', 'sp'}
+            xy = L.(campo{1})(1:2, :, i);
+            xy = xy(:, all(isfinite(xy), 1));
+            tc.verifyTrue(all(xy >= lo' - 1e-12 & xy <= hi' + 1e-12, 'all'), sprintf('v%d dron %d: %s fuera', v, i, campo{1}));
+        end
+    end
+    ri = L.responder_id(1:numel(L.estado));
+    yR = nan(1, numel(ri)); spR = nan(1, numel(ri));
+    for k = 1:numel(ri)
+        if ri(k) >= 1 && L.pos(3, k, ri(k)) > 0.2
+            yR(k) = L.pos(2, k, ri(k));
+            spR(k) = L.sp_mision(2, k, ri(k));
+        end
+    end
+    tc.verifyLessThanOrEqual(max(yR), 1.2 + tol_pos);
+    tc.verifyGreaterThanOrEqual(min(yR), -1.4 - tol_pos);
+    tc.verifyEqual(max(spR), 1.2, 'AbsTol', 1e-12);          % llegó a la orilla (marca desde ahí)
+    tc.verifyEqual(min(spR), -1.4, 'AbsTol', 1e-12);
+    fprintf('[envolvente lazo] v%d: R consigna y [%+.3f %+.3f], posición y [%+.3f %+.3f]; visitados %d/4; DONE t=%.1f; dh mín en el aire %.3f m\n', ...
+        v, min(spR), max(spR), min(yR), max(yR), max(L.n_vis), L.t(numel(L.estado)), L.min_dh_aire);
+end
+end
+
+function test_envolvente_sin_claves_igual(tc)
+% Sin mision.limites_x / limites_y (p.env_x = p.env_y = [NaN NaN]) la
+% librería da EXACTAMENTE lo mismo que la de antes de la envolvente (commit
+% eabc19e, sacada con git): misión con objetivos fuera de ±1.35, falla
+% apilada (MPC), pérdida de rastreo (reacción de falla, aterrizaje con
+% desvío) y la ruta real de config/estacion_dual.json sin limites_y.
+raiz = fileparts(fileparts(fileparts(mfilename('fullpath'))));
+c = jsondecode(fileread(fullfile(raiz, 'config', 'estacion_dual.json')));
+c.mision = rmfield(c.mision, 'limites_y');
+p_real = qd2_params_from_config(c);
+tc.assertTrue(all(isnan([p_real.env_x p_real.env_y])));
+base = 'eabc19e';
+[st, tipo] = system(sprintf('git -C "%s" cat-file -t %s', raiz, base));
+tc.assumeTrue(st == 0 && strcmp(strtrim(tipo), 'commit'), 'sin git o sin el commit base');
+[~, lista] = system(sprintf('git -C "%s" ls-tree --name-only %s simulink_qdrone2/lib/', raiz, base));
+lista = strtrim(strsplit(strtrim(lista), newline));
+lista = lista(endsWith(lista, '.m'));
+tc.assertNotEmpty(lista);
+d = tempname;
+mkdir(d);
+nombres = cell(1, numel(lista));
+for k = 1:numel(lista)
+    [~, nombres{k}] = fileparts(lista{k});
+    st = system(sprintf('git -C "%s" show %s:%s > "%s"', raiz, base, lista{k}, fullfile(d, [nombres{k} '.m'])));
+    tc.assertEqual(st, 0);
+end
+limpiar = onCleanup(@() restaurar_lib(d, nombres)); %#ok<NASGU>
+obj_real = [0.46 1.40; -0.91 1.176; 0.962 -1.347; -0.313 -1.476];
+ops = {struct('version', 1, 'objetivos', [0.2 1.45; 1.45 -1.45; -0.4 -1.2], 't_final', 400), ...
+       struct('version', 2, 'objetivos', [0.5 0.5; -0.4 -1.2; 0.6 -1.2], 'inyectar', [15 0.96 1.2], 't_final', 300, 'falla_apilado', 1), ...
+       struct('version', 1, 'objetivos', [0 1.2; 0.5 0.5], 'trk_off', [2 40 1e6], 't_final', 200), ...
+       struct('version', 2, 'objetivos', [0 1.2; 0.5 0.5], 'trk_off', [1 45 1e6], 't_final', 200), ...
+       struct('version', 1, 'p', p_real, 'objetivos', obj_real, 't_final', 500), ...
+       struct('version', 1, 'p', p_real, 'objetivos', obj_real, 'trk_off', [2 60 1e6], 't_final', 300)};
+campos = {'estado', 'sp', 'sp_mision', 'arm', 'takeoff', 'pos', 'alerta', 'guard', 'y64', 'falla', 'falla_fase', 'escape', 'fsm'};
+Ln = cell(size(ops));
+for j = 1:numel(ops)
+    Ln{j} = qd2_sim_lazo_cerrado(ops{j});
+end
+addpath(d, '-begin');
+clear(nombres{:});
+tc.assertTrue(startsWith(which('qd2_mission_step'), d));
+for j = 1:numel(ops)
+    Lb = qd2_sim_lazo_cerrado(ops{j});
+    for c = campos
+        tc.verifyTrue(isequal(Ln{j}.(c{1}), Lb.(c{1})), sprintf('escenario %d: %s distinto', j, c{1}));
+    end
+    tc.verifyEqual(Ln{j}.estado(end), 8);
+    fprintf('[envolvente sin claves = %s] escenario %d (v%d): %d pasos, estados %s, DONE t=%.2f, %d campos iguales bit a bit\n', ...
+        base, j, ops{j}.version, numel(Lb.t), mat2str(unique(Lb.estado(isfinite(Lb.estado)))), Lb.t(end), numel(campos));
+end
+end
+
+function test_envolvente_codegen(tc)
+% El modelo de tierra PID REAL (copia SIL de qd2_probar_tierra) compilado
+% con config/estacion_dual.json (envolvente y en [-1.4 1.2], ruta real) y
+% la toma de la orilla y+ (0.46, 1.40): R la marca desde (0.46, 1.2); las
+% consignas de los dos drones nunca pasan de y 1.2 ni de -1.4.
+raiz = fileparts(fileparts(fileparts(mfilename('fullpath'))));
+f = fullfile(raiz, 'config', 'estacion_dual.json');
+c = jsondecode(fileread(f));
+tc.assertEqual(c.mision.limites_y(:)', [-1.4 1.2]);
+addpath(fullfile(fileparts(fileparts(mfilename('fullpath'))), 'pid'));
+R = qd2_probar_tierra('PID', 160, false, 0, struct('config_json', f, 'objetivo', [0.46 1.40]));
+tc.verifyEqual(R.n_visitados, 1);
+tc.verifyTrue(isfinite(R.t_done));
+tc.verifyFalse(R.choque);
+yd = [R.des1(:, 2) R.des2(:, 2)];
+tc.verifyLessThanOrEqual(max(yd(:)), 1.2 + 1e-12);
+tc.verifyGreaterThanOrEqual(min(yd(:)), -1.4 - 1e-12);
+rid = R.tel(:, 5);
+yR = nan(size(rid));
+yR(rid == 1) = R.des1(rid == 1, 2);
+yR(rid == 2) = R.des2(rid == 2, 2);
+tc.verifyEqual(max(yR), 1.2, 'AbsTol', 1e-9);           % llegó a la orilla
+fprintf('[envolvente codegen] QD2_MissionCtrl_Dual_PID (copia SIL) con estacion_dual.json: toma en (0.46, 1.40) visitada (%d), consigna y de R máx %.4f, consignas y [%+.3f %+.3f], DONE t=%.1f, dh mín en el aire %.3f m\n', ...
+    R.n_visitados, max(yR), min(yd(:)), max(yd(:)), R.t_done, R.dh_min_aire);
+end

@@ -6,6 +6,8 @@
 //   OptiTrack cae siempre en una línea de la retícula). Sin datos: el marco ±1.5 de siempre.
 // Retícula: líneas finas cada 0.25 m, marcadas cada 0.5 m y más marcadas cada 1 m.
 // limites_xy se dibuja aparte como "límite de vuelo" (punteado ámbar), distinto del borde del piso.
+// La envolvente de las consignas (mision.limites_x / limites_y, s.envolvente de la estación = qd2_limites_xy)
+// se dibuja en punteado violeta; no entra al marco (siempre queda dentro de limites_xy).
 export const MARCO_MARGEN = 0.25;    // m
 export const MARCO_PASO = 0.5;       // m
 export const RETICULA_FINA = 0.25;   // m
@@ -18,6 +20,28 @@ const ok = (v) => typeof v === 'number' && Number.isFinite(v) && Math.abs(v) <= 
 export function limitesXY(s) {
   const l = s && s.mision && s.mision.limites_xy;
   return Array.isArray(l) && l.length === 2 && ok(l[0]) && ok(l[1]) && l[0] < l[1] ? [l[0], l[1]] : null;
+}
+
+// envolvente EFECTIVA de las consignas xy ({ x0, x1, y0, y1 } en m) o null sin envolvente (sin las claves)
+export function envolvente(s) {
+  const e = s && s.envolvente;
+  const par = (l) => Array.isArray(l) && l.length === 2 && ok(l[0]) && ok(l[1]) && l[0] < l[1];
+  return e && par(e.x) && par(e.y) ? { x0: e.x[0], x1: e.x[1], y0: e.y[0], y1: e.y[1] } : null;
+}
+
+// límite EFECTIVO de las consignas xy ({ x0, x1, y0, y1 }, = qd2_limites_xy): la envolvente si existe; si no,
+// mision.limites_xy -/+ XY_MARGEN (±1.35 con ±1.5). La ruta de vuelo debe quedar dentro (zona con rastreo).
+export const XY_MARGEN = 0.15;       // m, = p.xy_margen
+export function limiteConsignas(s) {
+  const e = envolvente(s);
+  if (e) return e;
+  const l = limitesXY(s) || [-1.5, 1.5];
+  return { x0: l[0] + XY_MARGEN, x1: l[1] - XY_MARGEN, y0: l[0] + XY_MARGEN, y1: l[1] - XY_MARGEN };
+}
+
+// punto [x, y] recortado a la envolvente (desde donde R marca un objetivo; = recortar_xy de qd2_mission_step)
+export function recortarEnvolvente(env, x, y) {
+  return [Math.min(Math.max(x, env.x0), env.x1), Math.min(Math.max(y, env.y0), env.y1)];
 }
 
 // homes conocidos de la telemetría (t.home_x/home_y), lista de [x, y]

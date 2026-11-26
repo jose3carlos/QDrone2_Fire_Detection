@@ -487,6 +487,10 @@ switch s.estado
     case 2  % ASSIGN_ROLES (se reevalúa hasta START)
         s.arm = [0 0]; s.takeoff = [0 0];
         [eid, rid, h1, h2, ok] = qd2_assign_roles(pose1, pose2, double(val1), double(val2));
+        % home = pose en el piso recortada a la envolvente (qd2_limites_xy):
+        % es el punto al que de verdad van las consignas (recortar_sp), así
+        % que "en home" (regreso, aterrizaje, falla) y la separación de los
+        % home se miden contra él; un home fuera nunca contaría como alcanzado
         if solo
             % sin respondedor ni chequeo de homes: basta el dron ds rastreado
             % (el home del ausente es solo informativo)
@@ -495,6 +499,11 @@ switch s.estado
                 s.responder_id = 0;
                 s.home1 = [pose1(1) pose1(2)];
                 s.home2 = [pose2(1) pose2(2)];
+                if ds == 1                     % (el del ausente queda tal cual)
+                    s.home1 = recortar_xy(s.home1, p);
+                else
+                    s.home2 = recortar_xy(s.home2, p);
+                end
                 s.roles_ok = 1;
                 s.home_ok = 1;
                 if s.alerta == 1, s.alerta = 0; end
@@ -505,6 +514,8 @@ switch s.estado
                 s = entrar(s, 1, t);
             end
         elseif ok > 0.5
+            h1 = recortar_xy(h1, p);
+            h2 = recortar_xy(h2, p);
             s.explorer_id = eid;
             s.responder_id = rid;
             s.home1 = h1;
@@ -880,8 +891,8 @@ end
 end
 
 function xy = recortar_xy(xy, p)
-lo = p.xy_lim(1) + p.xy_margen;
-hi = p.xy_lim(2) - p.xy_margen;
+% recorte a la envolvente por eje (qd2_limites_xy: xy_lim -/+ xy_margen o mision.limites_x/_y)
+[lo, hi] = qd2_limites_xy(p);
 xy = min(max(xy, lo), hi);
 end
 
@@ -920,10 +931,9 @@ for i = 1:4
         end
     end
 end
-lo = p.xy_lim(1) + p.xy_margen;
-hi = p.xy_lim(2) - p.xy_margen;
-sp(1) = min(max(sp(1), lo), hi);
-sp(2) = min(max(sp(2), lo), hi);
+[lo, hi] = qd2_limites_xy(p);
+sp(1) = min(max(sp(1), lo(1)), hi(1));
+sp(2) = min(max(sp(2), lo(2)), hi(2));
 sp(3) = min(max(sp(3), 0), p.z_max);
 end
 
@@ -1077,14 +1087,14 @@ if norm(pR(1:2) - hE) >= r
     end
 end
 % estacionamiento para R: libre de pE, hE y hR, camino recto sin acercarse a E
-lo = p.xy_lim(1) + p.xy_margen;
-hi = p.xy_lim(2) - p.xy_margen;
+% (retícula 9x9 sobre la envolvente por eje, qd2_limites_xy)
+[lo, hi] = qd2_limites_xy(p);
 mejor = inf;
 c_ok = [0 0];
 dR = norm(pR(1:2) - pE(1:2));
 for i = 1:9
     for j = 1:9
-        c = [lo + (hi - lo)*(i-1)/8, lo + (hi - lo)*(j-1)/8];
+        c = [lo(1) + (hi(1) - lo(1))*(i-1)/8, lo(2) + (hi(2) - lo(2))*(j-1)/8];
         if norm(c - pE(1:2)) >= r && norm(c - hE) >= r && ...
                 qd2_dist_punto_segmento(c, pE(1:2), hE) >= r && ...
                 qd2_dist_punto_segmento(pE(1:2), pR(1:2), c) >= min(r, dR) - 1e-9
@@ -1203,8 +1213,7 @@ elseif norm(hE - xyR) >= r
 else
     xyE = [pE(1) pE(2)];
     mejor = inf;
-    lo = p.xy_lim(1) + p.xy_margen;
-    hi = p.xy_lim(2) - p.xy_margen;
+    [lo, hi] = qd2_limites_xy(p);
     for k = 1:16
         ang = 2*pi*(k-1)/16;
         c = min(max(xyR + (r + 0.1)*[cos(ang) sin(ang)], lo), hi);
@@ -1414,9 +1423,9 @@ end
 function c_ok = punto_separacion(ph, pf, hh, r, p)
 % Punto a >= r (en horizontal) del dron en falla pf, lo más cerca posible
 % del dron sano ph (se aparta en línea recta, alejándose de pf) y dentro de
-% la arena. Si ya está a >= r, se queda donde está.
-lo = p.xy_lim(1) + p.xy_margen;
-hi = p.xy_lim(2) - p.xy_margen;
+% la arena (envolvente por eje, qd2_limites_xy). Si ya está a >= r, se queda
+% donde está.
+[lo, hi] = qd2_limites_xy(p);
 ph = [ph(1) ph(2)];
 pf = [pf(1) pf(2)];
 hh = [hh(1) hh(2)];
@@ -1448,7 +1457,7 @@ end
 if ~isfinite(mejor)
     % (no pasa en una arena de 3 x 3 m con r ~ 1.1 m) la esquina más lejana
     dmax = -1;
-    esquinas = [lo lo; lo hi; hi lo; hi hi];
+    esquinas = [lo(1) lo(2); lo(1) hi(2); hi(1) lo(2); hi(1) hi(2)];
     for k = 1:4
         if norm(esquinas(k,:) - pf) > dmax
             dmax = norm(esquinas(k,:) - pf);

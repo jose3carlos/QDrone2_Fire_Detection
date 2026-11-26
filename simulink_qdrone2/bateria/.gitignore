@@ -1,0 +1,2 @@
+# Los logs a bordo (log_*_QDrone2.mat, ~70 MB) nunca se suben: solo resultados/
+*.mat

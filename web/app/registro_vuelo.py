@@ -13,8 +13,12 @@ Formato (una línea JSON por renglón, ``FORMATO`` = 1):
   por observación con conf >= ``vision.confianza_min`` y punto en el piso, aceptada (``motivo`` = null) o descartada
   por tamaño / lejos del tubo / inclinación. ``tubo`` = tubo más cercano (``geo.tubo_cercano``: pieza, tramo, punto,
   desplazamiento con signo, + = a la izquierda del sentido del tramo). Las de conf < confianza_min solo se cuentan.
-* ``{"tipo": "resumen", ...}``: al cerrar, conteos por clase y motivo, n bajo umbral, duración y los objetivos y
-  candidatos finales de la estación.
+* ``{"tipo": "bateria", "t", "dron", "V", "fsm", "estado_mision", "z"}``: ~1 por segundo y por dron activo mientras
+  el vuelo está abierto (``bateria.HistorialBateria``: media de 1 s de ``battery_V``), SOLO si el valor es finito
+  (en vuelos PID con el modelo del Equipo2 no llega la batería: no hay líneas). Solo registro: nada actúa por ella.
+* ``{"tipo": "resumen", ...}``: al cerrar, conteos por clase y motivo, n bajo umbral, duración, los objetivos y
+  candidatos finales de la estación y ``bateria`` = por dron ("1", "2") ``{"v_inicial", "v_final",
+  "v_min_suavizada", "n_muestras"}`` (V de las medias de 1 s) o null si nunca hubo dato.
 
 Cuándo: el vuelo se abre cuando el gate de la visión (``Station._vision_gate``: MISSION/PAUSED, explorador
 rastreado sobre ``web.z_min_deteccion``) pasa a activo, y se cierra cuando la misión sale de MISSION/PAUSED
@@ -168,7 +172,7 @@ class RegistroVuelos:
                    "t0": round(now, 3), "fuente": fuente}
             cab.update(cabecera or {})
             v = {"ruta": ruta, "t0": now, "t_tick": now, "gate_s": 0.0, "gate_prev": True, "lineas": [],
-                 "materializado": False, "n_lineas": 0, "n_obs": 0, "n_bajo": 0, "conteos": {}}
+                 "materializado": False, "n_lineas": 0, "n_obs": 0, "n_bajo": 0, "conteos": {}, "bateria": {}}
             self._vuelo = v
             self._agregar(v, cab)
         self._arrancar_hilo()
@@ -191,6 +195,30 @@ class RegistroVuelos:
             self._quizas_materializar(v)
         return True
 
+    def bateria(self, muestras):
+        """Muestras de 1 s de la batería (``bateria.HistorialBateria.agregar``: dicts con ``t`` de reloj, ``dron``,
+        ``V``, ``fsm``, ``estado_mision``, ``z``). Solo se guardan las de V finito; sin vuelo abierto se ignoran
+        (False). No abren ni cierran vuelos ni hacen que un vuelo deje archivo."""
+        with self._lock:
+            v = self._vuelo
+            if v is None:
+                return False
+            for m in muestras:
+                V = m.get("V")
+                if isinstance(V, bool) or not isinstance(V, (int, float)) or not math.isfinite(V):
+                    continue
+                dron = str(int(m["dron"]))
+                b = v["bateria"].get(dron)
+                if b is None:
+                    b = v["bateria"][dron] = {"v_inicial": V, "v_final": V, "v_min_suavizada": V, "n_muestras": 0}
+                b["v_final"] = V
+                b["v_min_suavizada"] = min(b["v_min_suavizada"], V)
+                b["n_muestras"] += 1
+                self._agregar(v, {"tipo": "bateria", "t": round(float(m["t"]) - v["t0"], 3), "dron": int(dron),
+                                  "V": round(float(V), 3), "fsm": m.get("fsm"), "estado_mision": m.get("estado_mision"),
+                                  "z": m.get("z")})
+        return True
+
     def cerrar(self, motivo="cerrado"):
         """Cierra el vuelo abierto: agrega el resumen (si el vuelo deja archivo) y pide escribir ya."""
         with self._lock:
@@ -207,7 +235,8 @@ class RegistroVuelos:
         now = self.reloj()
         res = {"tipo": "resumen", "motivo_cierre": motivo, "duracion_s": round(now - v["t0"], 2),
                "duracion_gate_s": round(v["gate_s"], 2), "n_obs": v["n_obs"], "n_bajo_umbral": v["n_bajo"],
-               "conteos": v["conteos"]}
+               "conteos": v["conteos"],
+               "bateria": {d: (dict(v["bateria"][d]) if d in v["bateria"] else None) for d in ("1", "2")}}
         res.update(extra)
         with self._lock:
             self._quizas_materializar(v)

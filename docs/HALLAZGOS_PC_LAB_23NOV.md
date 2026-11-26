@@ -48,3 +48,13 @@ Falta (necesita la arena): un `.motive` con el rigid body **real** del dron 2 (I
 ## 24-nov: pérdida de rastreo en vuelo → aterrizar (librería de misión)
 
 Vuelos 2, 3 y 4 (explorador solo, PID): OptiTrack perdió el dron en la franja x ~1.3, y >= 1.0 a 1.5 m; la misión pasó a PAUSED (alerta 2), pero sin pose el dron derivó ~0.5 m hacia +y y cayó fuera de la arena. Ahora, si un dron en el aire sigue sin rastreo más de `mision.t_perdida_aterrizar_s` (0.2 s, en `config/estacion*.json`: el mismo umbral con el que la FSM a bordo del Equipo2 ya pasa a 7, así que no hay PAUSED intermedio), la misión le baja takeoff (aterriza en su sitio) y nunca se lo vuelve a dar; en dual el otro se aparta, regresa a su home y aterriza. Con 0.3 s (primera versión de este cambio) una pérdida de 0.2-0.3 s, o intermitente, dejaba la misión en PAUSED (RESUME posible) con un dron que ya caía; por eso quedó en 0.2 s. Solo cambian las `.m` de `simulink_qdrone2/lib` (y `P`): para que el modelo de tierra lo use hay que **recompilar** (Build) `versiones/R2022a/QD2_MissionCtrl_Dual_PID.slx` en la PC del laboratorio; los `.slx` no cambian. El dron perdido sigue entrando a la emergencia a bordo (estado 7, rampa) a los 0.2 s: hay que relanzar su modelo.
+
+## 25-nov: envolvente del respondedor (`mision.limites_y`)
+
+Por la misma franja sin rastreo (x ~1.3, y ≥ 1.0) y porque hacia y− OptiTrack rastrea más lejos, `config/estacion.json` y `config/estacion_dual.json` traen `"limites_y": [-1.4, 1.2]`: ninguna consigna xy de los dos drones pasa de y = 1.2 ni baja de y = −1.4 (es el límite efectivo; el margen de 0.15 m de `limites_xy` no se le aplica). Una toma fuera (las orillas en y ≈ +1.40 y −1.48) la marca R desde el punto más cercano dentro; la pestaña Anomalías lo indica con "se marca desde (x, y)" y el mapa 2D y la vista 3D dibujan la envolvente en punteado violeta. Detalles en `simulink_qdrone2/lib/README.md` ("Envolvente por eje").
+
+Solo cambian las `.m` de `simulink_qdrone2/lib` (nueva `qd2_limites_xy.m`) y `P`: para que el modelo de tierra la use hay que **RECOMPILAR** (Build) en la PC del laboratorio, con el `estacion*.json` ya copiado:
+- `versiones/R2022a/QD2_MissionCtrl_Dual_PID.slx` (solo explorador, lee `config/estacion.json`);
+- `versiones/R2022a/QD2_MissionCtrl_Dual_PID_2D.slx` (dual, lee `config/estacion_dual.json`).
+
+Sin recompilar, el modelo sigue recortando a ±1.35 en y (R podría ir a y = 1.35, dentro de la franja sin rastreo). Al abrir/compilar, `qd2_cargar_config` debe imprimir `envolvente de consignas x [-1.35 1.35], y [-1.40 1.20] m`; si no sale, la librería es vieja (copiar la carpeta `lib` de nuevo), y si sale un warning, `limites_y` es inválido. Los `.slx` no cambian. Sin las claves todo es bit a bit como antes (probado).

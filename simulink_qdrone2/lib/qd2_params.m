@@ -29,6 +29,14 @@ p.T_max_fisico = 43.16;     % N  (Max Throttle HQ 7 inch = 4 x 10.79 N)
 % ---------------- Arena y misión ------------------------------------------
 p.xy_lim     = [-1.5 1.5];  % m, arena 3x3 centrada en (0,0)
 p.xy_margen  = 0.15;        % m, las consignas se recortan a xy_lim -/+ margen
+% Envolvente por eje (config mision.limites_x / mision.limites_y, ver qd2_params_from_config):
+% límite EFECTIVO [lo hi] de TODAS las consignas xy de los dos drones en ese eje (objetivo de R,
+% evasión del guard, regreso, aterrizaje y reacción a falla). Sustituye en ese eje a
+% xy_lim -/+ xy_margen (el margen NO se le aplica). [NaN NaN] = sin envolvente en ese eje
+% (xy_lim -/+ xy_margen, como antes). Ver qd2_limites_xy.
+p.env_x      = [NaN NaN];   % m
+p.env_y      = [NaN NaN];   % m (p. ej. [-1.4 1.2]: OptiTrack pierde el dron en y >= ~1.0 cerca
+                            %    de x ~1.3, vuelos 2-4 del 24-nov; hacia y- rastrea más lejos)
 p.z_E        = 1.5;         % m, altura del EXPLORADOR
 p.z_R        = 0.5;         % m, altura del RESPONDEDOR
 p.z_max      = 2.0;         % m, techo de consignas (el dron declara "too high" en 2.5)

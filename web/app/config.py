@@ -144,6 +144,24 @@ def mision_modo(cfg):
     return dict(dual, aviso=f"mision.dron_solo inválido ('{_txt(d)}'): se usa dual")
 
 
+def camara_dron(cfg):
+    """``{"dron": 1|2, "aviso": str|None}``: dron que lleva la RealSense abajo (``cfg['camara']['dron']``). El video
+    QDF1 se conecta SIEMPRE a ``red.ip_dron{dron}`` (no al explorador de turno, que ASSIGN_ROLES reevalúa antes del
+    START) y START se bloquea si el explorador no es este dron (``Station.command``).
+
+    * ausente, null o [] -> 1 sin aviso;
+    * número real finito (no bool) igual a 1 o 2 (1.0 vale) -> ese dron;
+    * cualquier otro valor (0, 3, 1.5, "2", true, NaN, [1, 2]) -> 1 con aviso."""
+    c = cfg.get("camara") if isinstance(cfg, dict) else None
+    c = c if isinstance(c, dict) else {}
+    d = c.get("dron")
+    if d is None or (isinstance(d, list) and not d):
+        return {"dron": 1, "aviso": None}
+    if _es_num(d) and float(d) in (1.0, 2.0):
+        return {"dron": int(float(d)), "aviso": None}
+    return {"dron": 1, "aviso": f"camara.dron inválido ('{_txt(d)}'; 1 o 2): se usa el dron 1"}
+
+
 # Pérdida de rastreo sostenida en el aire -> ese dron aterriza (qd2_params.m / qd2_params_from_config.m).
 T_PERDIDA_TRK = 0.2              # s, = p.t_perdida_trk (umbral de la FSM a bordo del Equipo2 y de PAUSED)
 T_PERDIDA_ATERRIZAR_DEF = 0.2    # s, = p.t_perdida_aterrizar_s por defecto
@@ -176,6 +194,99 @@ def mision_t_perdida_aterrizar(cfg):
     return dict(dflt, aviso=(f"mision.t_perdida_aterrizar_s inválido ('{_txt(raw)}'; válido "
                              f"{T_PERDIDA_TRK:.1f} a {T_PERDIDA_ATERRIZAR_MAX:.1f} s): se usa "
                              f"{T_PERDIDA_ATERRIZAR_DEF:.2f} s"))
+
+
+# Envolvente por eje de las consignas xy (mision.limites_x / mision.limites_y; qd2_params_from_config.m y
+# qd2_limites_xy.m). Sin la clave, ese eje usa limites_xy -/+ XY_MARGEN (±1.35 m con ±1.5).
+XY_MARGEN = 0.15                 # m, = p.xy_margen
+LIMITES_XY_DEF = (-1.5, 1.5)     # m, = p.xy_lim
+
+
+def _es_num(v):
+    return not isinstance(v, bool) and isinstance(v, (int, float)) and math.isfinite(float(v))
+
+
+def mision_limites_xy(cfg):
+    """``(lo, hi)`` de ``mision.limites_xy`` como lo toma ``qd2_params_from_config`` (2 números) o ±1.5."""
+    m = cfg.get("mision") if isinstance(cfg, dict) else None
+    lim = (m if isinstance(m, dict) else {}).get("limites_xy")
+    if isinstance(lim, list) and len(lim) == 2 and all(_es_num(v) for v in lim):
+        return float(lim[0]), float(lim[1])
+    return LIMITES_XY_DEF
+
+
+def mision_envolvente(cfg):
+    """Envolvente de las consignas xy, mismas reglas que ``envolvente`` de ``qd2_params_from_config.m`` y el
+    recorte de ``qd2_limites_xy.m``. Devuelve ``{"x": [lo, hi]|None, "y": [lo, hi]|None, "lo": [x, y],
+    "hi": [x, y], "definida": bool, "aviso": str|None}``:
+
+    * ``x`` / ``y``: ``mision.limites_x`` / ``mision.limites_y`` aceptados (ausente, null o [] -> None sin aviso;
+      dos números reales finitos (no bool) con lo < hi -> recortados a ``limites_xy`` SIN margen (aviso si se
+      recortó; None con aviso si no queda nada); cualquier otra cosa -> None con aviso);
+    * ``lo`` / ``hi``: límite EFECTIVO de las consignas por eje: la envolvente de ese eje TAL CUAL (el margen no se
+      le aplica) o, sin ella, ``limites_xy`` -/+ ``XY_MARGEN`` (mismo cálculo que MATLAB: ±1.35 con ±1.5)."""
+    m = cfg.get("mision") if isinstance(cfg, dict) else None
+    m = m if isinstance(m, dict) else {}
+    l0, l1 = mision_limites_xy(cfg)
+    lo0, hi0 = l0 + XY_MARGEN, l1 - XY_MARGEN
+    out = {"x": None, "y": None, "lo": [lo0, lo0], "hi": [hi0, hi0], "definida": False, "aviso": None}
+    avisos = []
+    for i, eje in enumerate(("x", "y")):
+        clave = f"limites_{eje}"
+        if clave not in m:
+            continue
+        raw = m[clave]
+        if raw is None or (isinstance(raw, list) and not raw):
+            continue                                  # null o [] = no definido
+        if not (isinstance(raw, list) and len(raw) == 2 and all(_es_num(v) for v in raw)
+                and float(raw[0]) < float(raw[1])):
+            avisos.append(f"mision.{clave} inválido ('{_txt(raw)}'; se espera [lo, hi] con lo < hi): "
+                          f"sin envolvente en ese eje")
+            continue
+        x = [float(raw[0]), float(raw[1])]
+        r = [max(x[0], l0), min(x[1], l1)]
+        if r[0] >= r[1]:
+            avisos.append(f"mision.{clave} {_txt(raw)} queda fuera de mision.limites_xy [{l0:g}, {l1:g}]: "
+                          f"sin envolvente en ese eje")
+            continue
+        if r != x:
+            avisos.append(f"mision.{clave} {_txt(raw)} se sale de mision.limites_xy [{l0:g}, {l1:g}]: "
+                          f"se usa [{r[0]:g}, {r[1]:g}]")
+        out[eje] = r
+        out["lo"][i], out["hi"][i] = r
+        out["definida"] = True
+    out["aviso"] = "; ".join(avisos) or None
+    return out
+
+
+def vertices_fuera_envolvente(cfg):
+    """Vértices de la ruta (``pista.vertices``) fuera de la envolvente DEFINIDA (``mision.limites_x`` / ``_y``):
+    la consigna del explorador se recorta y, si queda a más de ``tol_xy`` del waypoint, E nunca lo alcanza y se queda
+    en hover ahí (MISSION no avanza). Lista de ``[x, y]`` (vacía sin envolvente)."""
+    env = mision_envolvente(cfg)
+    if not env["definida"]:
+        return []
+    pista = cfg.get("pista") if isinstance(cfg, dict) else None
+    verts = (pista if isinstance(pista, dict) else {}).get("vertices") or []
+    fuera = []
+    for v in verts:
+        if isinstance(v, list) and len(v) == 2 and all(_es_num(q) for q in v) and any(
+                not (env["lo"][i] - 1e-9 <= float(v[i]) <= env["hi"][i] + 1e-9) for i in (0, 1)):
+            fuera.append([float(v[0]), float(v[1])])
+    return fuera
+
+
+def puntos_fuera_limite_consignas(cfg, puntos):
+    """Puntos ``[x, y]`` de ``puntos`` fuera del límite EFECTIVO de las consignas (``mision_envolvente`` lo/hi: la
+    envolvente si existe; si no, ``limites_xy`` -/+ ``XY_MARGEN``). Para el aviso de la pestaña Pista al guardar la
+    ruta (no bloquea): la ruta debe quedar dentro de la zona con rastreo."""
+    env = mision_envolvente(cfg)
+    fuera = []
+    for v in puntos or []:
+        if isinstance(v, (list, tuple)) and len(v) == 2 and all(_es_num(q) for q in v) and any(
+                not (env["lo"][i] - 1e-9 <= float(v[i]) <= env["hi"][i] + 1e-9) for i in (0, 1)):
+            fuera.append([float(v[0]), float(v[1])])
+    return fuera
 
 
 def _txt(v):

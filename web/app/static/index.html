@@ -77,6 +77,7 @@
           <span><i class="sw e"></i>Explorador</span><span><i class="sw r"></i>Respondedor</span>
           <span><i class="sw st-det"></i>Detectada</span><span><i class="sw st-asig"></i>Asignada</span><span><i class="sw st-vis"></i>Visitada</span>
           <span>◇ consigna · ▢ home · línea = estela</span>
+          <span id="lg-env" hidden title="mision.limites_x / limites_y: límite efectivo de las consignas xy de los dos drones (R marca desde el punto más cercano dentro); el punteado ámbar es mision.limites_xy"><i class="sw env"></i>Envolvente de consignas</span>
         </div>
       </div>
       <div class="panel map2d">
@@ -90,7 +91,7 @@
     <div class="row2">
       <div class="panel cam">
         <div class="panel-head">
-          <h2>Cámara del explorador</h2>
+          <h2 title="Video del dron con la RealSense (camara.dron); debe ser el explorador">Cámara del explorador</h2>
           <span class="hint" id="cam-info">—</span>
         </div>
         <div class="camwrap"><img id="video" alt="Video de la cámara del explorador" src="/video.mjpg"></div>
@@ -135,6 +136,10 @@
         <div class="sep-row"><span>Horizontal</span><b id="s-dh">—</b><small id="s-dh-th"></small></div>
         <div class="sep-row"><span>Vertical</span><b id="s-dz">—</b><small id="s-dz-th"></small></div>
         <div class="sep-note" id="s-note"></div>
+      </div>
+      <div class="bat-block" id="bat-block">
+        <div class="sep-title" title="Solo visualización: la estación no actúa por la batería. El único corte automático es a bordo del dron (V <= 14.0 V durante 0.3 s -> AUTOLAND).">Batería</div>
+        <div id="bat-drones"></div>
       </div>
       <div class="modo-info" id="modo-info"></div>
       <div class="ver-block">
@@ -267,19 +272,24 @@
 
     <!-- PISTA -->
     <section class="tabpane" id="tab-pista">
-      <div class="aviso-remoto" id="pista-remoto" hidden>Guardar pista cambia el estacion.json de ESTA laptop;
-        cópialo a la PC y recompila (Build) para que el dron la vuele.</div>
+      <div class="aviso-remoto" id="pista-remoto" hidden>Guardar cambia el estacion.json de ESTA laptop;
+        cópialo a la PC y recompila (Build) para que el dron vuele la ruta nueva.</div>
       <div class="card">
-        <div class="card-title">Vértices de la N (m, marco OptiTrack)</div>
-        <small class="note">Máximo 16 vértices (límite de Simulink). Simulink lee la pista al compilar / iniciar el
-          modelo (InitFcn): después de guardar, vuelve a correr el modelo de tierra o el simulador para que la N que
-          vuela sea la misma que ves aquí.</small>
+        <div class="card-title">Qué se edita</div>
+        <select id="pista-destino" class="sel-destino" title="Arreglo de estacion.json que se edita, captura y guarda">
+          <option value="ruta">Ruta de vuelo (pista.vertices · requiere recompilar)</option>
+        </select>
+        <small class="note" id="pista-nota"></small>
+      </div>
+      <div class="card">
+        <div class="card-title" id="pista-titulo">Ruta de vuelo: pista.vertices (m, marco OptiTrack)</div>
+        <div class="aviso-pista" id="pista-aviso" hidden></div>
         <table class="tbl" id="tbl-verts"><thead><tr><th>#</th><th>x</th><th>y</th><th></th></tr></thead><tbody></tbody></table>
         <div class="row-inline">
           <button class="btn sm ghost" id="btn-v-add">+ vértice</button>
           <button class="btn sm ghost" id="btn-v-reload">Restaurar</button>
           <span class="spacer"></span>
-          <button class="btn sm" id="btn-v-save">Guardar pista</button>
+          <button class="btn sm" id="btn-v-save">Guardar ruta</button>
         </div>
       </div>
       <div class="card">
@@ -289,7 +299,8 @@
           <select id="cap-target"><option value="-1">agregar al final</option></select>
           <button class="btn sm" id="btn-cap">Capturar vértice</button>
         </div>
-        <small id="cap-msg">Coloca el dron (apagado) sobre cada extremo del tubo y captura. Requiere telemetría del puente.</small>
+        <small class="note" id="cap-ayuda"></small>
+        <small id="cap-msg"></small>
       </div>
     </section>
 

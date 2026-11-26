@@ -1,0 +1,3 @@
+﻿log,etiqueta,fecha_vuelo,con_fases,duracion_registro_s,t_aire_s,mAh_total,Wh_total,mAh_aire,mAh_por_min_aire,pct_electronica,P_vuelo_W,V_reposo_antes,V_reposo_despues,V_final_registro,caida_bajo_carga_V,V_min_aire_0p3s,condicion_14V_0p3s_en_log,fecha_analisis
+"log_20-Nov-2026_19-59-41_QDrone2","Equipo2 PID, misma batería, uno tras otro","20-Nov-2026 19:59:41",1,157.10,131.86,916.7,13.78,895.9,407.7,1.75,367.4,16.413,,14.818,1.385,14.627,0,"2026-11-25 20:44:39"
+"log_20-Nov-2026_20-05-50_QDrone2","Equipo2 PID, misma batería, uno tras otro","20-Nov-2026 20:05:50",1,143.97,125.77,886.6,12.84,846.0,403.6,1.64,352.1,15.536,,14.508,1.063,14.235,0,"2026-11-25 20:44:49"

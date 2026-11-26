@@ -1,9 +1,10 @@
 // Mapa 2D cenital (canvas). x hacia la derecha, y hacia arriba (marco OptiTrack RSF).
-import { marcoDeEstado, limitesXY, multiplos, nivelLinea, RETICULA_FINA } from './marco.js';
+import { marcoDeEstado, limitesXY, envolvente, multiplos, nivelLinea, RETICULA_FINA } from './marco.js';
 
 const COL = { e: '#22d3ee', r: '#fb923c', none: '#8b97a6', detectada: '#facc15', asignada: '#60a5fa', visitada: '#4ade80' };
 const RETICULA = ['#161c24', '#222a34', '#2e3744'];   // líneas de 0.25 / 0.5 / 1 m (nivelLinea)
 const LIMITE = 'rgba(210,153,34,.85)';                 // límite de vuelo (mision.limites_xy), punteado ámbar
+const ENVOLVENTE = 'rgba(167,139,250,.9)';             // envolvente de consignas (mision.limites_x/_y), punteado violeta
 
 export class Mapa2D {
   constructor(canvas) {
@@ -11,9 +12,12 @@ export class Mapa2D {
     this.g = canvas.getContext('2d');
     this.marco = { x0: -1.5, x1: 1.5, y0: -1.5, y1: 1.5 };   // marco de la arena (marco.js)
     this.lim = null;             // mision.limites_xy
+    this.env = null;             // envolvente de consignas { x0, x1, y0, y1 } (marco.js) o null
     this._encuadre();
     this.trails = { 1: [], 2: [] };
-    this.draft = null;           // vértices en edición (pestaña Pista)
+    this.draft = null;           // puntos en edición (pestaña Pista): ruta de vuelo o una pieza de tubo
+    this.draftTipo = 'ruta';     // 'ruta' (pista.vertices) | 'tubo' (una pieza de pista.tubos)
+    this.draftCtx = null;        // { ruta, tubos } que no se editan, dibujados tenues como referencia
     this.hover = null;
     this.onClick = null;
     this.state = null;
@@ -51,7 +55,7 @@ export class Mapa2D {
 
   update(s) {
     this.state = s;
-    this.marco = marcoDeEstado(s); this.lim = limitesXY(s); this._encuadre();
+    this.marco = marcoDeEstado(s); this.lim = limitesXY(s); this.env = envolvente(s); this._encuadre();
     const tel = s.tel;
     if (tel) for (const id of [1, 2]) {
       const d = tel.drones[id];
@@ -73,10 +77,22 @@ export class Mapa2D {
     if (!S) return;
     // pista
     const verts = this.draft || S.pista || [];
+    const linea = (P) => { g.beginPath(); P.forEach(([x, y], i) => { const [u, v] = this.px(x, y); i ? g.lineTo(u, v) : g.moveTo(u, v); }); g.stroke(); };
+    if (this.draft) {
+      // contexto tenue: lo que no se está editando (tubos reales en blanco, ruta de vuelo punteada celeste)
+      const ctx = this.draftCtx || {};
+      g.globalAlpha = 0.35; g.strokeStyle = '#f1f3f5'; g.lineWidth = Math.max(2, 0.0267 * s); g.setLineDash([]);
+      for (const P of ctx.tubos || []) if (P.length >= 2) linea(P);
+      if (ctx.ruta && ctx.ruta.length >= 2) {
+        g.strokeStyle = '#38bdf8'; g.lineWidth = 1.5 * lw; g.setLineDash([5 * lw, 5 * lw]); linea(ctx.ruta);
+      }
+      g.globalAlpha = 1; g.setLineDash([]);
+    }
     if (verts.length) {
-      const linea = (P) => { g.beginPath(); P.forEach(([x, y], i) => { const [u, v] = this.px(x, y); i ? g.lineTo(u, v) : g.moveTo(u, v); }); g.stroke(); };
       if (this.draft) {
-        g.strokeStyle = '#facc15'; g.lineWidth = Math.max(2, 0.0267 * s); g.setLineDash([8 * lw, 6 * lw]);
+        // en edición, amarillo: la ruta punteada (como la ruta de vuelo), una pieza de tubo continua (como un tubo)
+        g.strokeStyle = '#facc15'; g.lineWidth = Math.max(2, 0.0267 * s);
+        g.setLineDash(this.draftTipo === 'tubo' ? [] : [8 * lw, 6 * lw]);
         linea(verts);
       } else {
         // tubos REALES (S.tubos = pista.tubos o la ruta sin los tramos_sin_tubo): línea gruesa blanca
@@ -198,6 +214,15 @@ export class Mapa2D {
       const [l0, l1] = this.lim, [u0, v0] = this.px(l0, l1), [u1, v1] = this.px(l1, l0);
       g.strokeStyle = LIMITE; g.lineWidth = 1.3 * lw; g.setLineDash([7 * lw, 5 * lw]);
       g.strokeRect(u0, v0, u1 - u0, v1 - v0); g.setLineDash([]);
+    }
+    if (this.env) {               // envolvente: guiones cortos violeta (distinta del límite de vuelo y del piso)
+      const e = this.env, [u0, v0] = this.px(e.x0, e.y1), [u1, v1] = this.px(e.x1, e.y0);
+      g.strokeStyle = ENVOLVENTE; g.lineWidth = 1.3 * lw; g.setLineDash([3 * lw, 3 * lw]);
+      g.strokeRect(u0, v0, u1 - u0, v1 - v0); g.setLineDash([]);
+      g.fillStyle = ENVOLVENTE; g.font = `${10 * lw}px Segoe UI, sans-serif`;
+      g.textAlign = 'right'; g.textBaseline = 'bottom';
+      g.fillText('envolvente', u1 - 3 * lw, v0 - 2 * lw);
+      g.textAlign = 'start'; g.textBaseline = 'alphabetic';
     }
     // metros: x abajo, y a la izquierda (cada 0.5 m; cada 1 m si el marco pasa de 5 m)
     const paso = Math.max(m.x1 - m.x0, m.y1 - m.y0) > 5 ? 1 : 0.5;

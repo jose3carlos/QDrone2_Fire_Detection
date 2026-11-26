@@ -38,10 +38,12 @@ import numpy as np
 
 from . import netinfo
 from . import protocol as P
+from .bateria import HistorialBateria
 from .bridge import BridgeClient, PuenteNoListo
 from .cameras import CameraHub, FolderCamera, OpenCVCamera, QDF1Client, SyntheticCamera
-from .config import (DEFAULT_PATH, PROJECT_DIR, WEB_DIR, Config, actitud_vision, es_loopback, filtros_vision,
-                     mision_modo, mision_t_perdida_aterrizar, validar_host_puente, validar_ip)
+from .config import (DEFAULT_PATH, PROJECT_DIR, WEB_DIR, Config, actitud_vision, camara_dron, es_loopback,
+                     filtros_vision, mision_envolvente, mision_modo, mision_t_perdida_aterrizar,
+                     puntos_fuera_limite_consignas, validar_host_puente, validar_ip, vertices_fuera_envolvente)
 from .geo import CameraModel, corregir_actitud, tramos_sin_tubo, tubo_cercano, tubos_pista
 from .mock_sim import MockServer, contar_waypoints
 from .mock_world import anomalias_mock, render_view
@@ -53,13 +55,23 @@ DATA_DIR = os.path.join(WEB_DIR, "datos")
 FUENTES = ("mock", "simulink", "sim3d")
 COMMANDS_UI = ("START", "PAUSE", "RESUME", "ABORT", "LAND_ALL")
 MAX_VERTICES = 16  # = p.max_vertices de simulink_qdrone2/lib/qd2_params.m
+# pista.tubos (tubos REALES en el piso; solo estación: filtro de tomas y dibujo, Simulink no lo lee)
+MAX_PIEZAS_TUBO = 16
+MAX_PUNTOS_PIEZA = 32
+TUBO_COORD_MAX = 3.0  # m; un punto más lejos del origen OptiTrack no está en la arena (captura o tecleo erróneo)
 SIM_TTL_S = 5.0    # s sin ver un objetivo en y(56:60) (con telemetría fresca) -> deja de mostrarse
 CHOQUE_ID_M = 0.5  # m: mismo id en la estación y en Simulink pero tan lejos -> choque de ids
 REGISTRO_CLI = {"auto": "auto", "si": True, "no": False}   # --registro-vuelos -> valor de web.registro_vuelos
+SIN_VIDEO_S = 2.0  # s sin frames de la cámara con el gate de visión activo -> aviso rojo "Sin video del explorador"
+DX_ROLES_MIN = 0.05  # m: en dual, |x1 - x2| menor en ASSIGN_ROLES -> explorador ambiguo (el ruido lo puede voltear)
 
 
 class ModoDistinto(PuenteNoListo):
     """START rechazado: el modo de misión de la config local no coincide con el del modelo de tierra (y(64))."""
+
+
+class CamaraDistinta(PuenteNoListo):
+    """START rechazado: el explorador (y(4) en dual, dron_solo en solo) no es el dron con la cámara (camara.dron)."""
 
 
 class Station:
@@ -99,6 +111,7 @@ class Station:
         # alerta 2 (pérdida de rastreo): drones vistos con tracked = 0 mientras dura (el número del dron no viaja
         # en y(1..64); ver protocol.texto_alerta_rastreo). Se olvida cuando la alerta deja de ser 2.
         self._perdida_vista = frozenset()
+        self._sin_video_visto = False   # para registrar en eventos cuándo aparece / se va el aviso "Sin video"
         # con el estacion.json real se guarda en web/datos; con otro (pruebas) junto a ese archivo
         same = os.path.abspath(config_path) == os.path.abspath(DEFAULT_PATH)
         self._persist_path = os.path.join(DATA_DIR if same else os.path.dirname(os.path.abspath(config_path)),
@@ -112,6 +125,8 @@ class Station:
         self._registro_bloqueado = bool(os.environ.get("PYTEST_CURRENT_TEST")) and _dentro(carpeta, DATA_DIR)
         self.registro = RegistroVuelos(carpeta, lambda: self.fuente, lambda: self.registro_modo()[0], log_fn=self.log,
                                        resumen_fn=self._resumen_vuelo, base_rel=PROJECT_DIR)
+        # Batería (bateria.py): SOLO se muestra y se registra; la estación no actúa por ella (el corte es a bordo)
+        self.bateria = HistorialBateria()
         self.camera = CameraHub(self._camera_key, self._camera_factory)
         det, name, err = self._make_detector()
         self.vision = VisionService(self.camera, self.poses, self._vision_gate, self._publish_targets,
@@ -185,6 +200,7 @@ class Station:
                 self.mock.stop()
                 self.mock = None
             self.registro.cerrar("cambio de fuente")
+            self.bateria.reiniciar()
             self.fuente = fuente
             self.poses.clear()
             self.vision.reset()
@@ -350,6 +366,7 @@ class Station:
             self.log(f"Estado de misión: {P.MISSION_STATES_ES.get(st, st)}")
             self._last_state = st
         self._tick_registro(tel)
+        self._registrar_bateria(tel, stamp)
 
     def _registrar_fallas(self, tel):
         """MPC: recuerda qué dron reportó una falla a bordo (7/8, o 9 debiendo volar) en esta corrida."""
@@ -401,6 +418,13 @@ class Station:
                 raise ModoDistinto("START rechazado: el modo de la config local no coincide con el del modelo de "
                                    f"tierra (config: {_modo_txt(m['config'])}; modelo: {_modo_txt(m['tel'])}). "
                                    "Copia estacion.json a la PC y recompila (Build).")
+        if name == "START":
+            # el video llega SOLO del dron con la RealSense (camara.dron): si el explorador es el otro, no se detecta
+            # nada en todo el vuelo. Mismo patrón que el modo: solo START; ABORT, LAND, PAUSE y RESUME siempre pasan
+            ci = self.camara_info()
+            if ci["aplica"] and not ci["coincide"]:
+                self.log("START rechazado: " + ci["msg"])
+                raise CamaraDistinta("START rechazado: " + ci["msg"])
         seq = self.bridge.send_command(name)
         self.log(f"Comando {name} " + (f"enviado (cmd_seq {seq})" if seq else "en cola"))
         return seq
@@ -425,9 +449,10 @@ class Station:
         if src == "sintetica" and not self._synthetic_allowed():
             return ("ninguna",)   # bloqueada: ver avisos()
         if src == "dron":
-            tel = self.bridge.telemetry if self.bridge else None
-            e = tel.get("explorer_id", 0) if tel else 0
-            e = e if e in (1, 2) else 1
+            # SIEMPRE el dron con la RealSense (camara.dron), no el explorador de turno: antes del START,
+            # ASSIGN_ROLES reevalúa los roles (menor x) y el video saltaría entre IPs. Si el explorador no es
+            # este dron, START queda bloqueado (camara_info).
+            e = camara_dron(self.cfg.data)["dron"]
             ip = self.cfg.get("red", f"ip_dron{e}", default="")
             return ("dron", ip, int(self.cfg.get("red", "puerto_video", default=18800))) if ip else ("ninguna",)
         return (src,)
@@ -473,6 +498,81 @@ class Station:
         return {"config": mc, "tel": mt, "fresca": fresca, "efectivo": efectivo, "dron_solo": ds,
                 "coincide": coincide, "host_puente": host, "remoto": self.puente_remoto() is not None}
 
+    def camara_info(self):
+        """Dron con la cámara (``camara.dron``) frente al explorador, para el bloqueo de START y el aviso rojo.
+
+        * ``explorador``: en solo explorador, el ``dron_solo`` efectivo (telemetría fresca o, sin ella, la config;
+          y(4) = y(64)); en dual, y(4) de la telemetría fresca (en ASSIGN_ROLES Simulink lo reevalúa: el de menor x);
+          None si no se sabe (dual sin telemetría fresca o todavía sin roles).
+        * ``aplica``: la cámara es la física del dron (``camara.fuente`` = "dron") y la fuente no es el mock (la
+          cámara sintética sigue al explorador, sea cual sea).
+        * ``coincide``: False si se sabe el explorador y no es ``camara.dron`` o, en dual en ASSIGN_ROLES, si las x
+          de los dos drones difieren menos de DX_ROLES_MIN (explorador ambiguo); ``msg`` = el motivo."""
+        cd = camara_dron(self.cfg.data)
+        m = self.modo_info()
+        tel = self.bridge.telemetry if self.bridge else None
+        e = None
+        if m["efectivo"] == "solo_explorador" and m["dron_solo"] in (1, 2):
+            e = m["dron_solo"]
+        elif m["fresca"] and tel and tel.get("explorer_id") in (1, 2):
+            e = tel["explorer_id"]
+        aplica = self.fuente != "mock" and str(self.cfg.get("camara", "fuente", default="dron")) == "dron"
+        coincide = e is None or e == cd["dron"]
+        msg = None
+        if coincide and e is not None and m["efectivo"] == "dual" and tel.get("mission_state") == P.ASSIGN_ROLES:
+            # Simulink reevalúa el de menor x en cada tick hasta procesar START: con las x casi iguales el ruido de
+            # OptiTrack puede voltear el explorador entre el paquete que revisa la estación y el START
+            d1, d2 = (tel.get("drones") or {}).get(1) or {}, (tel.get("drones") or {}).get(2) or {}
+            try:
+                dx = abs(float(d1["x"]) - float(d2["x"]))
+            except (KeyError, TypeError, ValueError):
+                dx = None
+            if dx is not None and math.isfinite(dx) and dx < DX_ROLES_MIN:
+                coincide = False
+                msg = (f"Los dos drones tienen casi la misma x (|x1 - x2| = {dx * 100:.1f} cm < "
+                       f"{DX_ROLES_MIN * 100:g} cm): el explorador (el de menor x) puede cambiar al dar START; "
+                       f"deja el dron {cd['dron']} (cámara) al menos {DX_ROLES_MIN * 100:g} cm más atrás en x")
+        if not coincide and msg is None:
+            msg = f"El explorador es el dron {e} pero la cámara está en el dron {cd['dron']}: "
+            if m["efectivo"] == "solo_explorador":
+                msg += (f"vuela con el dron {cd['dron']} (mision.dron_solo; copia estacion.json a la PC y recompila) "
+                        "o cambia camara.dron")
+            else:
+                msg += "reacomoda los drones (el explorador es el de menor x) o cambia camara.dron"
+        return {"dron": cd["dron"], "aviso": cd["aviso"], "explorador": e, "aplica": aplica, "coincide": coincide,
+                "msg": msg}
+
+    def sin_video(self):
+        """True si la visión está explorando (gate activo) y la cámara no entrega frames hace más de SIN_VIDEO_S."""
+        if not self._vision_gate():
+            return False
+        _, _, stamp = self.camera.latest()
+        return not stamp or time.time() - stamp > SIN_VIDEO_S
+
+    def _avisos_camara(self):
+        out = []
+        ci = self.camara_info()
+        if ci["aplica"] and not ci["coincide"]:
+            out.append({"nivel": "rojo", "msg": ci["msg"] + ". START queda bloqueado hasta que coincidan."})
+        if ci["aviso"]:
+            out.append({"nivel": "amarillo", "msg": "estacion.json: " + ci["aviso"]})
+        sv = self.sin_video()
+        if sv:
+            out.append({"nivel": "rojo", "msg": "Sin video del explorador: no se detecta nada (sin frames de la cámara "
+                        f"del dron {ci['dron']} hace más de {SIN_VIDEO_S:g} s; revisa el streamer y red.ip_dron"
+                        f"{ci['dron']})."})
+        if sv and not self._sin_video_visto:
+            self._sin_video_visto = True
+            self.log("Sin video del explorador con la visión activa")
+        elif self._sin_video_visto and not sv:
+            # "de vuelta" solo si de verdad llegan frames: si el aviso se quitó porque se cerró el gate (fin de la
+            # misión, telemetría vieja, bajo z_min_deteccion) el video sigue sin llegar y no se registra nada
+            _, _, stamp = self.camera.latest()
+            if stamp and time.time() - stamp <= SIN_VIDEO_S:
+                self._sin_video_visto = False
+                self.log("Video del explorador de vuelta")
+        return out
+
     def _avisos_modo(self, tel):
         out = []
         m = self.modo_info()
@@ -498,6 +598,15 @@ class Station:
                             "PC y recompila."})
         if mc["aviso"]:
             out.append({"nivel": "amarillo", "msg": "estacion.json: " + mc["aviso"]})
+        env = mision_envolvente(self.cfg.data)
+        if env["aviso"]:
+            out.append({"nivel": "amarillo", "msg": "estacion.json: " + env["aviso"]})
+        fuera = vertices_fuera_envolvente(self.cfg.data)
+        if fuera:
+            out.append({"nivel": "amarillo", "msg": "Ruta fuera de la envolvente de consignas (mision.limites_x / "
+                        "limites_y): " + ", ".join(f"({x:+.2f}, {y:+.2f})" for x, y in fuera) + ". Simulink recorta "
+                        "la consigna del explorador y, si el waypoint queda a más de tol_xy, no lo alcanza y se queda "
+                        "en hover ahí. Mueve esos vértices dentro."})
         tp = mision_t_perdida_aterrizar(self.cfg.data)
         if tp["aviso"]:
             out.append({"nivel": "amarillo", "msg": "estacion.json: " + tp["aviso"]})
@@ -578,8 +687,21 @@ class Station:
             out.append({"nivel": "amarillo", "msg": "Actitud del explorador no disponible (y(63) = 0): la "
                         "geolocalización supone el dron nivelado (5° de inclinación ≈ 0.13 m de error a 1.5 m). "
                         "¿Modelo de Simulink sin y(61:63)? Regenera los modelos (construir_modelos)."})
+        out.extend(self._avisos_camara())
         out.extend(self._avisos_modo(tel))
         return out
+
+    def envolvente_ui(self):
+        """Envolvente de las consignas xy (mision.limites_x / limites_y, = qd2_limites_xy) para el mapa, la vista 3D
+        y la pestaña Anomalías: ``None`` sin envolvente (sin las claves); si no ``{"x": [lo, hi], "y": [lo, hi]}`` =
+        límite EFECTIVO por eje (el eje sin clave queda en limites_xy -/+ 0.15, como en MATLAB) y ``ejes`` = los
+        que vienen de la config. Solo se dibuja e informa: la estación no bloquea nada por ella."""
+        env = mision_envolvente(self.cfg.data)
+        if not env["definida"]:
+            return None
+        r = lambda v: round(v, 4)
+        return {"x": [r(env["lo"][0]), r(env["hi"][0])], "y": [r(env["lo"][1]), r(env["hi"][1])],
+                "ejes": [e for e in ("x", "y") if env[e]]}
 
     def _cam_model(self):
         """Modelo de la cámara con la resolución configurada (huella en el mapa y cámara sintética)."""
@@ -670,6 +792,25 @@ class Station:
         except Exception as exc:          # el registro nunca debe afectar al puente
             self.registro.error = f"{type(exc).__name__}: {exc}"
 
+    def _registrar_bateria(self, tel, stamp):
+        """Media de 1 s de battery_V de cada dron: historia de la UI y, con vuelo abierto, líneas ``bateria`` del
+        registro (solo de los drones activos: en modo solo, el dron solo de y(64)). Solo visualización y registro."""
+        try:
+            muestras = self.bateria.agregar(tel, stamp)
+            ds = tel.get("dron_solo")
+            activos = (ds,) if ds in (1, 2) else (1, 2)
+            muestras = [m for m in muestras if m["dron"] in activos]
+            if muestras:
+                self.registro.bateria(muestras)
+        except Exception as exc:          # nunca debe afectar al puente
+            self.registro.error = f"{type(exc).__name__}: {exc}"
+
+    def bateria_ui(self, tel):
+        """Bloque ``bateria`` del snapshot: los drones activos (modo solo: solo el dron solo)."""
+        m = self.modo_info()
+        activos = (m["dron_solo"],) if m["efectivo"] == "solo_explorador" and m["dron_solo"] in (1, 2) else (1, 2)
+        return self.bateria.estado(tel, activos, time.time())
+
     def _obs_vuelo(self, stamp, lineas, n_bajo):
         """Observaciones del hilo de visión (gate activo). Si la telemetría que abrió el gate todavía no pasó por
         ``_tick_registro``, el vuelo se abre aquí."""
@@ -705,6 +846,7 @@ class Station:
                           "tubos_de": "pista.tubos" if isinstance(tubos_cfg, list) and tubos_cfg else "pista.vertices",
                           "tramos_sin_tubo": sorted(tramos_sin_tubo(pista))},
                 "limites_xy": (cfg.get("mision") or {}).get("limites_xy"),
+                "envolvente": self.envolvente_ui(),
                 "filtros": filtros_vision(cfg), "confianza_min": vis.get("confianza_min"),
                 "radio_cluster_m": vis.get("radio_cluster_m"), "min_observaciones": vis.get("min_observaciones"),
                 "actitud": {k: vis.get(k) for k in ("usar_actitud", "actitud_signos", "actitud_offset_deg")},
@@ -807,6 +949,12 @@ class Station:
                                     actitud_vision(self.cfg.data))
         return self._cam_model().footprint(*pose_geo, z_plane=0.02)
 
+    def _camara_ui(self):
+        """Estado del video para la UI más ``dron`` (camara.dron), ``explorador`` y ``coincide`` (camara_info)."""
+        ci = self.camara_info()
+        return dict(self.camera.status(), dron=ci["dron"], explorador=ci["explorador"],
+                    coincide=ci["coincide"] or not ci["aplica"], msg=ci["msg"] if ci["aplica"] else None)
+
     def snapshot(self):
         tel, stamp = self.bridge.latest() if self.bridge else (None, 0.0)
         tel = self._tel_ui(tel)
@@ -820,16 +968,18 @@ class Station:
             "tel": tel, "tel_edad_s": round(time.time() - stamp, 2) if stamp else None,
             "objetivos": targets, "candidatos": [{**c, "x": round(c["x"], 3), "y": round(c["y"], 3)} for c in pending],
             "objetivos_sin_id": len(self.vision.blocked()),
-            "huella": foot, "camara": self.camera.status(), "vision": self.vision.status(),
+            "huella": foot, "camara": self._camara_ui(), "vision": self.vision.status(),
             "actitud_explorador": self.actitud_ui(),
             "pista": cfg.get("pista", {}).get("vertices", []),
             "pista_sin_tubo": sorted(tramos_sin_tubo(cfg.get("pista"))),
             "tubos": tubos_pista(cfg.get("pista")),   # tubos reales (pista.tubos o la ruta sin los huecos)
             "mision": cfg.get("mision", {}), "version_config": cfg.get("version_control", "PID"),
+            "envolvente": self.envolvente_ui(),
             "verdad_mock": self.world if self.fuente == "mock" else [],
             "mock": self.mock.estado_pruebas() if self.mock is not None else None,
             "eventos": list(self.events)[:15], "avisos": self.avisos(), "modo": self.modo_info(),
             "registro_vuelo": dict(self.registro.estado(), modo=self.registro_modo()[1]),
+            "bateria": self.bateria_ui(tel),
         }
 
 
@@ -892,6 +1042,7 @@ def create_app(station: Station, start=True):
             raise HTTPException(400, "solo disponible con la fuente mock")
         station.mock.reset()
         station.registro.cerrar("mock reiniciado")
+        station.bateria.reiniciar()
         station.vision.reset()
         station.poses.clear()
         with station.lock:
@@ -1064,12 +1215,51 @@ def create_app(station: Station, start=True):
             fh.write(data)
         return {"ok": True, "ruta": dest, "tipo": ext[1:]}
 
+    def _pares(lista, nombre):
+        try:
+            return [[round(float(a), 4), round(float(b), 4)] for a, b in lista]
+        except (TypeError, ValueError):
+            raise HTTPException(400, f"{nombre} debe ser una lista de pares [x, y]")
+
     @app.post("/api/config/pista")
     def set_pista(body: dict = Body(...)):
-        try:
-            verts = [[round(float(a), 4), round(float(b), 4)] for a, b in body["vertices"]]
-        except (KeyError, TypeError, ValueError):
+        """Guarda UN arreglo de la pista según ``destino`` (el resto de estacion.json queda byte a byte):
+
+        * ``"vertices"`` (por defecto): ``pista.vertices`` = ruta de VUELO que compila Simulink (requiere recompilar);
+          2-16 vértices dentro de ``mision.limites_xy``. Responde ``fuera_envolvente`` = vértices fuera del límite
+          efectivo de las consignas (envolvente o limites_xy -/+ 0.15): solo aviso, no bloquea;
+        * ``"tubos"``: ``pista.tubos`` = tubos REALES en el piso (filtro de tomas y dibujo; Simulink no lo lee), lista de
+          piezas, cada una con 2 o más puntos [x, y]. Una lista VACÍA quita los tubos reales (``"tubos": []``): el
+          filtro y el dibujo vuelven a usar la ruta partida en ``tramos_sin_tubo`` (como sin la clave)."""
+        destino = body.get("destino", "vertices")
+        if destino == "tubos":
+            tubos = body.get("tubos")
+            if not isinstance(tubos, list):
+                raise HTTPException(400, "tubos debe ser una lista de piezas (cada una, lista de puntos [x, y]); "
+                                         "una lista vacía quita los tubos reales")
+            if len(tubos) > MAX_PIEZAS_TUBO:
+                raise HTTPException(400, f"como máximo {MAX_PIEZAS_TUBO} piezas de tubo")
+            piezas = []
+            for k, pieza in enumerate(tubos, 1):
+                P_ = _pares(pieza if isinstance(pieza, list) else None, f"la pieza {k} de tubos")
+                if len(P_) < 2:
+                    raise HTTPException(400, f"la pieza {k} de tubos tiene {len(P_)} punto(s): cada pieza necesita "
+                                             "al menos 2 (sus extremos)")
+                if len(P_) > MAX_PUNTOS_PIEZA:
+                    raise HTTPException(400, f"la pieza {k} de tubos tiene más de {MAX_PUNTOS_PIEZA} puntos")
+                if any(not (math.isfinite(v) and abs(v) <= TUBO_COORD_MAX) for p in P_ for v in p):
+                    raise HTTPException(400, f"la pieza {k} de tubos tiene puntos fuera de ±{TUBO_COORD_MAX:g} m")
+                piezas.append(P_)
+            station.cfg.update({"pista": {"tubos": piezas}})
+            station.log(f"Tubos reales guardados (pista.tubos: {len(piezas)} pieza(s), "
+                        f"{sum(len(p) for p in piezas)} puntos)" if piezas else
+                        "Tubos reales quitados (pista.tubos = []): el filtro de tomas vuelve a usar la ruta")
+            return {"ok": True, "destino": "tubos", "tubos": piezas}
+        if destino != "vertices":
+            raise HTTPException(400, "destino debe ser 'vertices' (ruta de vuelo) o 'tubos' (tubos reales)")
+        if not isinstance(body.get("vertices"), list):
             raise HTTPException(400, "vertices debe ser una lista de pares [x, y]")
+        verts = _pares(body["vertices"], "vertices")
         lim = station.cfg.get("mision", "limites_xy", default=[-1.5, 1.5])
         # qd2_params_from_config de Simulink usa como máximo p.max_vertices = 16
         if len(verts) < 2 or len(verts) > MAX_VERTICES:
@@ -1077,8 +1267,10 @@ def create_app(station: Station, start=True):
         if any(not (lim[0] <= v <= lim[1]) for p in verts for v in p):
             raise HTTPException(400, f"todos los vértices deben estar dentro de {lim}")
         station.cfg.update({"pista": {"vertices": verts}})
-        station.log(f"Pista guardada ({len(verts)} vértices)")
-        return {"ok": True, "vertices": verts}
+        fuera = puntos_fuera_limite_consignas(station.cfg.data, verts)
+        station.log(f"Pista guardada ({len(verts)} vértices)"
+                    + (f"; {len(fuera)} fuera de la envolvente de consignas" if fuera else ""))
+        return {"ok": True, "destino": "vertices", "vertices": verts, "fuera_envolvente": fuera}
 
     @app.post("/api/pista/capturar")
     def capturar(body: dict = Body(...)):

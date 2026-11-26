@@ -1,7 +1,8 @@
 """Fuentes de imagen de la estación. Todas entregan frames BGR uint8 (alto x ancho x 3).
 
-* ``dron``      : video QDF1 del **explorador** (``drone/qdrone2_camera_streamer.py`` en :18800).
-                  La IP se toma de ``red.ip_dron{explorer_id}``; si cambia el explorador, se reconecta.
+* ``dron``      : video QDF1 del dron con la RealSense (``drone/qdrone2_camera_streamer.py`` en :18800).
+                  La IP se toma de ``red.ip_dron{camara.dron}`` (fija: no sigue al explorador de turno; START
+                  se bloquea si el explorador no es ``camara.dron``, ver ``Station.camara_info``).
 * ``sintetica`` : cámara virtual renderizada desde la pose del explorador (mock y simulador MATLAB).
 * ``opencv:N``  : webcam local N (para probar el detector con las piezas reales en la mano).
 * ``carpeta``   : recorre ``web/datos/imagenes_prueba``.

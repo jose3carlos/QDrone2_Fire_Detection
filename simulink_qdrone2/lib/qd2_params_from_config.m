@@ -5,15 +5,30 @@ function [p, aviso] = qd2_params_from_config(cfg)
 %   p = qd2_params_from_config(cfg_struct)  (ya decodificado con jsondecode)
 %   [p, aviso] = qd2_params_from_config(...)   aviso = '' o el texto del
 %                                              problema con mision.modo / dron_solo
-%                                              / t_perdida_aterrizar_s (varios: '; ')
+%                                              / t_perdida_aterrizar_s / limites_x /
+%                                              limites_y (varios: '; ')
 %
 %   Solo MATLAB (usa jsondecode): llamarla en InitFcn / en el script de
 %   construcción y pasar 'p' a los bloques MATLAB Function como parámetro
 %   (o usar sus valores para generar constantes). No es para codegen.
 %   Claves usadas: mision.{z_explorador, z_respondedor, t_mark, d_min_h,
 %   dz_min, espaciado_waypoints, tol_xy, tol_z, auto_land, limites_xy,
-%   modo, dron_solo, t_perdida_aterrizar_s}, pista.vertices (máx. 16) y
-%   vision.radio_cluster_m.
+%   limites_x, limites_y, modo, dron_solo, t_perdida_aterrizar_s},
+%   pista.vertices (máx. 16) y vision.radio_cluster_m.
+%
+%   mision.limites_x / mision.limites_y (m, opcionales): ENVOLVENTE de las
+%     consignas xy de los dos drones en ese eje, [lo, hi] = límite EFECTIVO
+%     (el xy_margen NO se le aplica; sin la clave ese eje sigue con
+%     limites_xy -/+ xy_margen, ±1.35 m). Recorta todo lo que recortaba
+%     limites_xy: objetivo de R (si una toma queda fuera, R la marca desde el
+%     punto más cercano dentro), evasión del guard, regreso, aterrizaje y
+%     reacción a falla (ver qd2_limites_xy). Ausente, null o [] -> sin
+%     envolvente sin aviso. Dos números reales finitos con lo < hi (lista
+%     plana; en un struct, columna 2x1 como la deja jsondecode) -> se usa,
+%     recortada a limites_xy (sin margen; con aviso si se recortó). Otro valor
+%     (un número, 3 números, [[lo, hi]], lo >= hi, NaN, texto, true...) -> sin
+%     envolvente con aviso. Ej.: "limites_y": [-1.4, 1.2] (OptiTrack pierde
+%     el dron en y >= ~1.0 cerca de x ~1.3; hacia y- rastrea más lejos).
 %
 %   mision.t_perdida_aterrizar_s (s): pérdida de rastreo sostenida en el aire
 %     tras la cual ese dron aterriza (ver qd2_params). Ausente, null o [] ->
@@ -82,13 +97,56 @@ end
 p.modo_mision = modo;
 p.dron_solo = ds;
 [p.t_perdida_aterrizar_s, aviso_t] = t_aterrizar(m, p);
-if ~isempty(aviso_t)
+aviso = juntar(aviso, aviso_t);
+% envolvente por eje (después de limites_xy: se recorta a p.xy_lim)
+[p.env_x, aviso_t] = envolvente(m, 'limites_x', p);
+aviso = juntar(aviso, aviso_t);
+[p.env_y, aviso_t] = envolvente(m, 'limites_y', p);
+aviso = juntar(aviso, aviso_t);
+end
+
+function aviso = juntar(aviso, nuevo)
+if ~isempty(nuevo)
     if isempty(aviso)
-        aviso = aviso_t;
+        aviso = nuevo;
     else
-        aviso = [aviso '; ' aviso_t];
+        aviso = [aviso '; ' nuevo];
     end
 end
+end
+
+function [v, aviso] = envolvente(m, clave, p)
+% mision.limites_x / limites_y: [lo hi] reales finitos con lo < hi, recortados a
+% p.xy_lim (sin margen); si no, [NaN NaN] = sin envolvente (con aviso salvo
+% ausente/null/[]). Mismas reglas que config.mision_envolvente de la estación.
+v = [NaN NaN];
+aviso = '';
+if ~isfield(m, clave)
+    return;
+end
+x = m.(clave);
+if isempty(x) && (isnumeric(x) || iscell(x))
+    return;                                       % null o [] = no definido
+end
+% lista plana de JSON = columna 2x1 tras jsondecode; [[lo, hi]] (fila 1x2) se
+% rechaza como en la estación ([[lo], [hi]] da también 2x1: no se distingue)
+if ~(isnumeric(x) && ~islogical(x) && isequal(size(x), [2 1]) && isreal(x) && all(isfinite(x(:))) && x(1) < x(2))
+    aviso = sprintf('mision.%s inválido (''%s''; se espera [lo, hi] con lo < hi): sin envolvente en ese eje', ...
+        clave, texto_valor(x));
+    return;
+end
+x = reshape(double(x), 1, 2);
+r = [max(x(1), p.xy_lim(1)) min(x(2), p.xy_lim(2))];
+if r(1) >= r(2)
+    aviso = sprintf('mision.%s %s queda fuera de mision.limites_xy %s: sin envolvente en ese eje', ...
+        clave, mat2str(x), mat2str(p.xy_lim));
+    return;
+end
+if ~isequal(r, x)
+    aviso = sprintf('mision.%s %s se sale de mision.limites_xy %s: se usa %s', ...
+        clave, mat2str(x), mat2str(p.xy_lim), mat2str(r));
+end
+v = r;
 end
 
 function [v, aviso] = t_aterrizar(m, p)

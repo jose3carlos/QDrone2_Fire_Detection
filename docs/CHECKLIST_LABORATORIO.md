@@ -96,15 +96,17 @@ Sigue `impresion3d/README.md`, sección "Soporte de la cámara". La pieza A tard
   4. Girar el dron 90° en sentido antihorario visto desde arriba: ψ ≈ +90°.
   - Si φ o θ sale con el signo contrario, poner −1 en esa posición de `vision.actitud_signos` (p. ej. `[1, -1]` si el pitch sale invertido) y reiniciar la estación. No hay que recompilar ni tocar código. Anotarlo en "Anotar lo que falló".
   - Después de cambiar `actitud_signos` o `actitud_offset_deg`, la fila *actitud (cruda)* **no cambia** (sigue mostrando y(61:62)). La corrección se confirma en la fila **actitud usada** que aparece debajo, en la misma tarjeta: nivelado ≈ 0°, y con el libro los signos ya positivos. Con video, la misma actitud usada sale en Anomalías → Visión → *Actitud*.
-- [ ] **Pista:** con la tubería ya fija, poner un dron sobre cada extremo de tubo → **Capturar vértice** → Guardar (máx. 16 vértices, dentro de ±1.5 m).
-- [ ] **Vértices medidos ANTES de cualquier vuelo con anomalías.** Hoy `pista.vertices` es una estimación desde fotos. La estación descarta toda toma a más de `vision.dist_max_tubo_toma_m` (0.25 m) de esa polilínea ("lejos del tubo"): con vértices mal puestos se descartarían las tomas reales. Comprobar en la pestaña **Pista** que los vértices guardados están en el orden del recorrido de la N y que en el mapa 2D la N cae sobre el tubo real (error < 0.05 m en cada extremo). Vértices medidos: ______________________.
+- [ ] **Tubos reales (`pista.tubos`), medidos ANTES de cualquier vuelo con anomalías.** Con la tubería ya fija, en la pestaña **Pista** elegir en *Qué se edita* **Tubo real (pista.tubos) — pieza N** (o *pieza nueva*), poner un dron (apagado) en el piso sobre cada extremo/esquina de esa pieza, en orden a lo largo del tubo → **Capturar vértice** → **Guardar tubos** (cada pieza con ≥ 2 puntos; no requiere recompilar: Simulink no lee `pista.tubos`). La estación descarta toda toma a más de `vision.dist_max_tubo_toma_m` (0.25 m) de los tubos reales (`pista.tubos`; sin esa clave, de la ruta partida en `tramos_sin_tubo`) ("lejos del tubo"): con tubos mal puestos se descartarían las tomas reales. Comprobar en el mapa 2D que la línea blanca cae sobre el tubo real (error < 0.05 m en cada extremo). Tubos medidos: ______________________.
+- [ ] **Ruta de vuelo (`pista.vertices`) dentro de la zona con rastreo.** NO capturar la ruta sobre los extremos del tubo: los tubos de las orillas (y ≈ ±1.4) quedan en el borde o fuera de la envolvente (`mision.limites_y` = [−1.4, 1.2]); del lado y+ OptiTrack pierde al dron en vuelo en la franja x ~1.3, y ≥ 1.0 (vuelos 2-4 del 24-nov), mientras que hacia y− el rastreo llega más lejos (R vuela hasta y = −1.4 para marcar las tomas de ese borde). La ruta se edita con *Qué se edita* = **Ruta de vuelo (pista.vertices · requiere recompilar)** (máx. 16 vértices, en el orden del recorrido) y debe quedar dentro de la envolvente (punteado violeta en el mapa 2D); un vértice fuera sale en amarillo en la tabla (aviso, no bloquea). Si se cambia: **Guardar ruta** y recompilar (siguiente punto).
 - [ ] **Stop** del modelo de tierra (ningún dron vuela) → **Build de nuevo**: la pista y el bias se leen **al compilar**. Connect → Start.
+- [ ] **Envolvente de consignas (`mision.limites_y` = [−1.4, 1.2], 25-nov): RECOMPILAR** `versiones\R2022a\QD2_MissionCtrl_Dual_PID.slx` (solo explorador, `estacion.json`) y, para dual, `QD2_MissionCtrl_Dual_PID_2D.slx` (`estacion_dual.json`) con la carpeta `simulink_qdrone2\lib` del día (trae `qd2_limites_xy.m`). Al abrir/compilar la consola debe decir `qd2_cargar_config: envolvente de consignas x [-1.35 1.35], y [-1.40 1.20] m`. Sin recompilar, R puede ir hasta y = 1.35 (franja donde OptiTrack pierde el dron). `web\preflight_lab.py` dice "envolvente de consignas … la ruta queda dentro"; en el mapa 2D y la vista 3D se ve en punteado violeta.
 
 **SEGUIR si:** los dos rigid bodies se rastrean sin cortes en toda la arena, z ≈ 0 en el piso, los ejes cuadran y la actitud del explorador llega con los signos correctos (o corregidos en `vision.actitud_signos`). **NO SEGUIR si:** un dron se pierde en alguna zona de la arena, o los ejes o el yaw están invertidos (revisar la orientación con que se creó el rigid body).
 
 ## Etapa 5. Cámara del explorador — 25 min (y fotos reales en paralelo)
 
 - [ ] El explorador (el que lleva la D435i hacia abajo) se coloca **siempre en la menor x**.
+- [ ] **`camara.dron`** de `estacion.json` = número del dron que lleva la D435i (por defecto 1). La estación toma el video SIEMPRE de `ip_dron{camara.dron}` y **bloquea START** (409, aviso rojo "El explorador es el dron N pero la cámara está en el dron M") si el explorador es el otro: en dual, reacomodar los drones (el de la cámara con la **menor x**) o cambiar `camara.dron`; en solo explorador, `mision.dron_solo` debe ser igual a `camara.dron` (`preflight_lab.py` da FALLA si no). La cabecera de la cámara dice `dron M (camara.dron)` y la tarjeta de ese dron lleva **CÁMARA**.
 - [ ] **Soporte de la cámara** (`impresion3d/README.md`, sección "Soporte de la cámara"). La impresión y el montaje se hacen en la **sesión previa** (al inicio de este checklist); aquí solo se verifica:
   - Variante montada: A / B. Cámara con 2 M3×6 (**nunca M3×8**): lentes abajo, rejilla hacia adelante y USB a la derecha (lado de la muesca en V) → `rotacion_montaje = 0`.
   - Con el dron en el piso, la cara de las lentes queda a ≥ 10 mm del piso: ______ mm. Las hélices giran a mano sin tocar nada y el cable USB no está tenso.
@@ -152,10 +154,13 @@ Orden de arranque, **siempre**: tierra Start → estación → drones.
 
 **Antes de CADA vuelo (repetir):**
 - [ ] Baterías recién cargadas en los dos.
+  (En **PID** la estación no recibe la batería en vivo: el dron del Equipo2 solo devuelve el eco del timestamp. Se
+  revisa **después** del vuelo con los logs a bordo y `simulink_qdrone2/bateria/qd2_bateria.m`. En MPC sale en vivo
+  en Misión → Batería.)
 - [ ] Arena despejada, observador listo, una mano en el switch Takeoff/Land.
 - [ ] Tierra: Stop → Start (el Flight Plan se queda en 3/9 después de un vuelo; si cambió `estacion.json`, **Build**).
 - [ ] Drones: "Detener" y relanzar con `quarc_run` (después de tierra).
-- [ ] Explorador en la menor x, los dos mirando a +x, homes marcados con cinta.
+- [ ] Explorador en la menor x, los dos mirando a +x, homes marcados con cinta. El explorador debe ser el dron de `camara.dron` (etiqueta **CÁMARA**), al menos **5 cm más atrás en x** que el otro (con |x1 − x2| < 5 cm los roles pueden invertirse por el ruido de OptiTrack): si no, START sale rechazado con aviso rojo; reacomodar los drones.
 
 ## Etapa 7. Primer vuelo: cada dron solo (PID, modo MANUAL del Equipo2) — 45 min
 
@@ -176,7 +181,7 @@ No hay misión con un solo dron. Se usa el modo MANUAL original: Command Source 
 ## Etapa 7-bis. Misión SOLO EXPLORADOR (PID, un solo QDrone) — 40 min
 
 Un solo dron recorre la pista con la misión completa (despegue, N a `z_E`, detecciones, regreso, aterrizaje). El otro no se usa y nunca recibe arm/takeoff. No probado aún en vuelo real.
-- [ ] `config/estacion.json` (la de la laptop y **la misma copiada a la PC**): `mision.modo = "solo_explorador"`, `mision.dron_solo = 1`, la pista del día (`pista.vertices`, medida con **Capturar vértice**) y `red.ip_pc` = IP de la PC.
+- [ ] `config/estacion.json` (la de la laptop y **la misma copiada a la PC**): `mision.modo = "solo_explorador"`, `mision.dron_solo = 1` (= `camara.dron`: el dron solo es el que lleva la D435i; si no, START queda bloqueado), la ruta del día (`pista.vertices`, dentro de la envolvente) y los tubos reales (`pista.tubos`, medidos con **Capturar vértice** en *Tubo real*) y `red.ip_pc` = IP de la PC.
 - [ ] Motive: rigid body del explorador con el ID de `optitrack.rigid_body_dron1` (en el piso mirando a +x); `rigid_body_dron2` = otro ID distinto. **[NO VERIFICADO]** si el Build/Start falla porque el rigid body 2 no está en el `.motive`, crear uno auxiliar con ese ID y dejarlo fuera del volumen. El segundo QDrone **fuera de la arena** o sin marcadores visibles.
 - [ ] MATLAB (PC): al abrir `QD2_MissionCtrl_Dual_PID.slx` la consola dice `qd2_cargar_config: MODO SOLO EXPLORADOR -> dron 1 (rigid body …, Stream Server :18001)`. Si dice `modo dual`, la config de la PC no es la nueva: copiarla y volver a abrir. La "Roles & Homes Preview" no aplica.
 - [ ] **Command Source = 0**; Arm, Takeoff y E-Stop abajo → **Build** → Connect → Start (cambiar el modo o la pista obliga a recompilar).
@@ -193,6 +198,7 @@ Un solo dron recorre la pista con la misión completa (despegue, N a `z_E`, dete
 
 8a. **Sin anomalías** (pista sin piezas). Command Source = 0.
 - [ ] Switches Arm y Takeoff **arriba** (permiso) → START en la UI → TAKEOFF → HOVER_READY → MISSION.
+- [ ] Ya en MISSION, sin aviso rojo "Sin video del explorador: no se detecta nada" (sale si no llegan frames en > 2 s con la visión activa; solo avisa: si aparece, revisar la terminal del streamer y `red.ip_dron{camara.dron}`, y decidir si se aborta).
 - [ ] En la UI, Δh entre E y R **siempre ≥ 0.9 m** (`d_min_h`). "GUARD ACTIVO" cuando se acercan.
 - [ ] PAUSE (los dos hacen hover) → RESUME.
 - [ ] RETURN_HOME → esperar **"en home"** en las dos tarjetas → LAND ALL. Los dos en el suelo a < 0.15 m de su home, DONE, y el modelo de tierra se detiene solo (Stop Allowed).
@@ -202,6 +208,7 @@ Un solo dron recorre la pista con la misión completa (despegue, N a `z_E`, dete
 8b. **Con anomalías:** primero 1 fuego y 1 toma; después 3 y 3.
 - [ ] Cada pieza sale detectada → "ambos" (Simulink la confirmó) → asignada → visitada (R hace hover 3 s encima).
 - [ ] Error de posición de cada objetivo < 0.15 m. Falsos positivos sobre distractores: ______.
+- [ ] Piezas en las orillas (y > 1.2 o y < −1.4): en Anomalías dicen "se marca desde (x, y)" y R hace el hover en ese punto (orilla de la envolvente), no encima de la pieza. R nunca pasa de y = 1.2: si se acerca a la franja x ~1.3, y ≥ 1.0 y pierde el rastreo, aterriza ahí y E se aparta (≥ 1.60 m), regresa y aterriza.
 
 **SEGUIR si:** las piezas se visitan y no hay objetivos falsos que manden a R a otro lado. **NO SEGUIR si:** hay falsos positivos repetidos (subir `vision.confianza_min` o usar `mejor_lab.pt`), o no detecta tomas.
 

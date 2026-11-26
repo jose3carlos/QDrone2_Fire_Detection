@@ -66,6 +66,7 @@ Eventos). La web sigue escuchando solo en `127.0.0.1` de la laptop.
 ## Qué hay en la pantalla
 - **Vista 3D** (three.js r160 desde CDN): arena 3×3, la N, los dos QDrone 2 (modelo low-poly con las 4 guardas, color por rol: cian = explorador, naranja = respondedor), consignas (◇), estelas, home (▢), huella y pirámide de la cámara del explorador, anillo `d_min_h` y anomalías (llama = fuego, válvula = toma; el anillo indica el estado: amarillo detectada, azul asignada, verde visitada). Si no hay internet para el CDN, sigue funcionando el mapa 2D.
 - **Mapa 2D**: lo mismo visto desde arriba (x a la derecha, y hacia arriba), con coordenadas bajo el cursor.
+- **Envolvente de consignas** (`mision.limites_x` / `mision.limites_y`, hoy `"limites_y": [-1.4, 1.2]`): límite efectivo de las consignas xy de los dos drones en Simulink (`qd2_limites_xy`, sin el margen de `limites_xy`). El mapa 2D y la vista 3D la dibujan en punteado violeta (el límite de vuelo `limites_xy` sigue en punteado ámbar y el piso en gris) y en **Anomalías** un objetivo fuera lleva "se marca desde (x, y)": R lo marca desde el punto más cercano dentro (en dual). Solo informa, no bloquea nada; avisa si la clave es inválida o si un vértice de la ruta queda fuera (el explorador no alcanzaría ese waypoint). El mock recorta igual en los ejes con envolvente. Simulink la toma al **recompilar**.
 - **Cámara del explorador** con las cajas del detector y la posición geolocalizada de cada una.
 - **Controles**: START, PAUSE, RESUME, ABORT/RTH y LAND ALL (START, ABORT y LAND ALL piden confirmación). También se muestran Δh/Δz entre E y R y el indicador del SEPARATION GUARD.
 - **Seguridad de los comandos**:
@@ -78,11 +79,13 @@ Eventos). La web sigue escuchando solo en `127.0.0.1` de la laptop.
 - **Estado de cada dron**: en PID es el *Flight State de tierra* del Equipo2 (0 Idle, 1 Armed, 2 Takeoff, 3 Land, 9 MS Stop), porque el dron PID no reporta su FSM; en MPC es la *FSM a bordo* (1..9; 7 y 8 en rojo). Se decide con y(3). El 9 (DISABLE / MS Stop) es el fin normal de un vuelo: solo sale en rojo si el dron debería estar en el aire (TAKEOFF, HOVER_READY, MISSION, RETURN_HOME, ABORT, PAUSED) o si hay alerta 9. Un y(55) NaN/inf sale como alerta grave (código interno −1, `protocol.ALERTA_NO_FINITA`), no como "nada"; un código > 10 o negativo sale como "alerta desconocida" (grave). La alerta 9 es global: en MPC la estación recuerda qué dron vio fallar (7/8, o 9 debiendo volar) en la corrida actual de Simulink y, con ese historial, solo ese sale en rojo; el 9 del dron sano al aterrizar queda como "fin de vuelo" (sin historial, los dos en rojo, como dice el contrato). La tarjeta de cada dron muestra la distancia a su home y **en home** (< `mision.tol_xy`): en LANDING cada dron baja en su sitio, así que da LAND ALL cuando los dos marquen *en home*.
 - **Barra de avisos** (roja / amarilla): cámara sintética con un puente que no es el mock, detector que no detecta tomas, imagen girada sin `giro_en_dron`, geolocalización sin intrínsecos, actitud del explorador no disponible en misión (y(63) = 0: modelo de Simulink sin y(61:63), se geolocaliza nivelado), o modelo corriendo (y(3)) distinto de `version_control` de `estacion.json` (los comandos `quarc_run` de **Conexiones** lanzarían el binario del dron equivocado).
 - **Pestañas**:
-  - **Misión**: progreso de la N, cola, marcado y separación.
+  - **Misión**: progreso de la N, cola, marcado, separación y **Batería** (ver [Batería](#batería)).
   - **Anomalías**: lista, alta manual haciendo clic en el mapa y estado del detector. La lista une lo que publicó la estación con lo que Simulink reporta en y(56:60), por id y por cercanía (un objetivo de Simulink con otro id a menos de `vision.radio_cluster_m` es el alias que guardó Simulink: una sola fila, con "= #N"), sin duplicar. El puente procesa cada mensaje aunque lleguen varios juntos, así no se pierde ningún objetivo rotando. Columna **Origen**: *estación*, *ambos* (publicado aquí y confirmado por Simulink) o *Simulink* (lo conoce Simulink pero no lo publicó esta estación; p. ej. el detector interno del simulador 3D). En el mapa 2D, los de solo Simulink llevan anillo punteado. Con la fuente mock hay una tarjeta **Pruebas con el mock** para forzar y(55) (muestra la alerta forzada actual) y agregar objetivos "de Simulink".
   - **Conexiones**: IPs de la PC por interfaz (resalta la antena Alfa *Wi-Fi 2*, RTL8811AU), IPs de los drones que se guardan en `estacion.json` y comandos `quarc_run` / `-URI_Host` con botón **Copiar**.
   - **Motive**: navega la carpeta de OptiTrack o sube un archivo `.cal` / `.motive`, y asigna los rigid bodies a los drones.
-  - **Pista**: edita los vértices de la N (máximo 16, el límite de Simulink) o usa **Capturar vértice** con la pose en vivo de un dron. Simulink lee la pista al compilar o iniciar el modelo, así que después de guardar hay que volver a correr el modelo de tierra o el simulador.
+  - **Pista**: el selector *Qué se edita* elige el arreglo que se edita, se llena con **Capturar vértice** (pose en vivo de un dron) y se guarda (`POST /api/config/pista` con `destino`; solo cambia ese arreglo de `estacion.json`):
+    - **Ruta de vuelo (`pista.vertices` · requiere recompilar)**: máximo 16 vértices (el límite de Simulink). Simulink la lee al compilar o iniciar el modelo, así que después de **Guardar ruta** hay que volver a correr el modelo de tierra o el simulador. Debe quedar dentro de la zona con rastreo: un vértice fuera del límite de consignas (envolvente `mision.limites_x`/`limites_y` o, sin ella, `limites_xy` ∓ 0.15) sale en amarillo (aviso, no bloquea).
+    - **Tubo real (`pista.tubos`) — pieza N / pieza nueva**: con el dron en el piso sobre cada extremo/esquina del tubo, en orden. **Guardar tubos** escribe todas las piezas (cada una con ≥ 2 puntos; una pieza vacía se descarta); no requiere recompilar (Simulink no lee `pista.tubos`).
   - **Eventos**.
 - Se puede abrir una pestaña directamente desde la URL, por ejemplo `http://127.0.0.1:8080/#conexiones`.
 
@@ -104,7 +107,22 @@ El mock emite además, igual que el modelo real:
 - `mock.reset()` cierra la conexión, como un reinicio real de Simulink.
 
 **Video** (`camara.fuente` en `estacion.json`):
-- `dron`: se conecta a `ip_dron{explorer_id}:18800` y cambia solo si cambia el explorador.
+- `dron`: se conecta SIEMPRE a `ip_dron{camara.dron}:18800`. `camara.dron` (1 o 2, por defecto 1; otro valor → 1
+  con aviso amarillo) es el dron que lleva la RealSense abajo. No sigue al explorador de turno: en ASSIGN_ROLES Simulink
+  reevalúa los roles (el de menor x es el explorador) y el video saltaría de IP antes del START.
+  - **Explorador ≠ cámara** (dual: y(4) de la telemetría fresca; solo explorador: `dron_solo`, también sin telemetría):
+    aviso rojo *"El explorador es el dron N pero la cámara está en el dron M: reacomoda los drones (el explorador es el
+    de menor x) o cambia camara.dron"* (en solo: vuela con ese dron o cambia `camara.dron`) y **START responde 409**
+    con ese motivo (`CamaraDistinta`, mismo patrón que el modo distinto, que se revisa primero). PAUSE, RESUME, ABORT
+    y LAND_ALL nunca se bloquean, y en vuelo no cambia nada. No aplica con el mock ni con `camara.fuente` distinta de
+    `dron` (la cámara sintética sigue al explorador). `preflight_lab.py`: FALLA en solo si `dron_solo` ≠ `camara.dron`;
+    en dual, INFO "coloca ese dron con MENOR x". En dual, con ASSIGN_ROLES y |x1 − x2| < 5 cm (`DX_ROLES_MIN`) también
+    se rechaza START: Simulink reevalúa los roles en cada paso y el ruido podría darle el explorador al otro dron.
+  - **Sin video:** con la visión activa (gate: MISSION/PAUSED, explorador rastreado sobre `web.z_min_deteccion`) y sin
+    frames de la cámara hace más de 2 s (`SIN_VIDEO_S`), aviso rojo *"Sin video del explorador: no se detecta nada"*.
+    Solo avisa (nada automático) y se va solo cuando vuelve el video; Eventos registra cuándo aparece y cuándo se va.
+  - UI: la cabecera de la cámara dice `dron M (camara.dron)` (en rojo con `≠ explorador N`), la tarjeta de ese dron
+    lleva la etiqueta **CÁMARA** y `snapshot.camara` trae `dron`, `explorador` y `coincide`.
 - `sintetica`: cámara virtual que dibuja anomalías **inventadas**. Solo se permite con `mock` o `sim3d`. Con `simulink` queda bloqueada (aviso rojo), porque mandaría objetivos falsos a los drones reales. Para usarla a propósito con QD2_Sim_Dual, pon `web.permitir_sintetica_en_simulink: true`.
   - **Ruta y tubos** (como en el laboratorio del 24-nov): el explorador (mock o simulador) vuela `pista.vertices`, la ruta que compila Simulink, y la cámara sintética dibuja la tubería **real**: `geo.tubos_pista(pista)` = `pista.tubos` si la config los trae o, si no, la ruta partida en `pista.tramos_sin_tubo` (el mismo criterio del filtro de tomas y del mapa; sin huecos ni tubos es la ruta completa, como antes). Las anomalías son `web.mock_anomalias` o, si no hay, `mock_world.anomalias_mock`: con `pista.tubos` van **sobre los tubos reales**, 2 por pieza a 0.35 y 0.75 de su longitud alternando toma/fuego (con la pista del 24-nov: toma (0.46, 1.40), fuego (−0.91, 1.176), toma (0.962, −1.347) y fuego (−0.313, −1.476), en el eje del tubo y a 0.23/0.07/0.33/0.35 m de la ruta, orillas incluidas); sin `pista.tubos`, las 3 de siempre a 8 cm de la ruta. La e2e usa la misma verdad (`anomalias_mock`).
 - `opencv:0`: webcam local, para probar el detector con las piezas en la mano.
@@ -153,7 +171,10 @@ Los tubos del laboratorio se mueven (espacio compartido): una toma real puede qu
   descartada (tamaño, lejos del tubo, inclinación), con `xy`, `dist_tubo_m`, el tubo más cercano (pieza, tramo,
   punto y desplazamiento con signo, + = izquierda del sentido del tramo), tamaño, pose y actitud. Las de confianza
   menor solo se cuentan;
-- última línea `resumen`: conteos por clase y motivo, n bajo umbral, duración y objetivos finales.
+- una línea `bateria` por segundo y por dron activo (`t`, `dron`, `V`, `fsm`, `estado_mision`, `z`; V = media de
+  1 s de `battery_V`), solo si el valor es finito: en PID con el modelo del Equipo2 no hay;
+- última línea `resumen`: conteos por clase y motivo, n bajo umbral, duración, objetivos finales y `bateria` por dron
+  (`v_inicial`, `v_final`, `v_min_suavizada`, `n_muestras`, o null si nunca hubo dato).
 
 El vuelo se abre cuando el gate de la visión se activa (MISSION/PAUSED con el explorador rastreado y sobre
 `web.z_min_deteccion`) y se cierra al salir de MISSION/PAUSED, al reiniciar objetivos o al detener la estación (una
@@ -176,9 +197,27 @@ cluster más allá de un extremo alarga ese extremo. Nunca toca `pista.vertices`
 Avisa si los vuelos se registraron con tubos distintos (el cálculo siempre es contra la config actual, con las xy
 registradas). Opciones: `--config`, `--umbral`, `--min-clusters`, `--n-fuerte`, `--max-desp`, `--margen`.
 
+## Batería
+Pestaña **Misión → Batería** (`app/bateria.py`), por dron activo (en solo explorador, solo el dron solo): voltaje
+actual, gráfica de los últimos 5 min (medias de 1 s; banda cian = en el aire), estado (en reposo / armado / bajo
+carga), caída desde el despegue (contra el último dato en reposo) y una estimación **informativa**
+"≈ N min hasta 14.0 V a este ritmo" (recta del voltaje en vuelo del último minuto; solo con > 20 s en el aire).
+Las dos líneas de la gráfica son referencias que ya existían, **no límites de la estación**:
+- **14.0 V: aterrizaje automático a bordo (0.3 s)**: en todos los modelos del dron (Equipo2 PID y MPC), "Check
+  Battery level" enclava low_battery con V ≤ 14.0 V durante ≥ 0.3 s; en vuelo pasa a AUTOLAND y en tierra no arma.
+  (14.8 V es el voltaje *nominal* de una LiPo 4S, 3.7 V/celda; no hay ningún corte a 14.8 V.)
+- **15.5 V: mínimo recomendado para despegar (checklist)**: recomendación de `docs/CHECKLIST_LABORATORIO.md`, nada
+  automático.
+
+La estación **no actúa por la batería**: no manda comandos, no levanta alertas ni avisos y no cambia la misión
+(`tests/test_bateria.py` lo revisa). El mock simula ~16.4 V en reposo, ~0.9 V de caída con carga y ~0.008 V/s en
+vuelo, sin reaccionar a ella, y solo la manda en MPC (en PID manda NaN, como el real). **En PID no hay dato en vivo**: el modelo de tierra pone NaN porque el dron PID del
+Equipo2 solo devuelve el eco del timestamp; la UI lo dice y la batería se revisa después del vuelo con los logs a
+bordo y `simulink_qdrone2/bateria/qd2_bateria.m`. En MPC llega en vivo y queda en el registro de vuelo.
+
 ## Configuración (`config/estacion.json`)
 - Es la única fuente de verdad. Al arrancar **no se escribe nada**: los valores por defecto de `web` viven en memoria. Cuando guardas algo desde la página, el archivo conserva el formato, los números tal como estaban escritos (`0.20` sigue siendo `0.20`) y los finales de línea (CRLF). Así `git diff` solo muestra lo que cambió.
-- Claves que agregó la estación (todas opcionales): `web.*` (fuente, host, detector, `cmd_timeout_s`, latencia de video, puertos QUARC, `permitir_sintetica_en_simulink`), `camara.intrinsecos`, `camara.giro_en_dron` y los filtros `vision.tam_max_m`, `vision.tam_min_m`, `vision.dist_max_tubo_toma_m`, `vision.dist_max_tubo_fuego_m` (ver **Filtros físicos de la estación**; Simulink no los lee).
+- Claves que agregó la estación (todas opcionales): `web.*` (fuente, host, detector, `cmd_timeout_s`, latencia de video, puertos QUARC, `permitir_sintetica_en_simulink`), `camara.dron` (dron con la RealSense, por defecto 1), `camara.intrinsecos`, `camara.giro_en_dron` y los filtros `vision.tam_max_m`, `vision.tam_min_m`, `vision.dist_max_tubo_toma_m`, `vision.dist_max_tubo_fuego_m` (ver **Filtros físicos de la estación**; Simulink no los lee).
 - Valores existentes que modifica:
   - `red.ip_*`
   - `optitrack.*`
@@ -228,6 +267,9 @@ Son 229 pruebas (227 y 2 saltadas si no están `vision/datos/sintetico_smoke` ni
   líneas, apertura/cierre por gate y estado de la misión, flush, error de disco, habilitación y que pytest no
   escriba en `web/datos`; `tests/test_ajustar_tubos.py`: tubo 2 desplazado 0.2 m hacia y- → corrimiento correcto
   (±3 cm) sin mover el tubo 1, alargue de un extremo y `--aplicar` sobre una copia (solo `pista.tubos`, CRLF);
+- batería (`tests/test_bateria.py`): medias de 1 s solo con valores finitos, caída desde el reposo, estimación
+  con > 20 s en el aire, panel "sin dato" en PID y en modo solo, líneas `bateria` y resumen del registro, mock
+  descendente que no reacciona, y que ningún comando, alerta, aviso ni cambio de misión dependa de `battery_V`;
 - API REST y WebSocket;
 - video QDF1 entre el streamer y el cliente;
 - detector FOMO;
@@ -235,6 +277,10 @@ Son 229 pruebas (227 y 2 saltadas si no están `vision/datos/sintetico_smoke` ni
   vieja, mock solo hasta DONE con el dron 1 y con el dron 2 sin tocar al otro, ABORT/pausa/auto_land, mock dual
   idéntico byte a byte al de `HEAD` (PID y MPC), avisos y START 409, aviso de pista distinta, `--host-puente`
   (sin abrir sockets), comandos con PC remota, `preflight_lab.py --remoto` y `snapshot.modo`;
+- cámara del explorador (`tests/test_camara_dron.py`): tabla de `camara.dron`, video conectado a `ip_dron{camara.dron}`
+  aunque cambie el explorador, START 409 con explorador ≠ cámara (dual y solo) y START ok cuando coinciden, ABORT/LAND
+  /PAUSE nunca bloqueados, sin bloqueo con el mock o la cámara sintética, aviso "Sin video" que aparece y se va
+  (también con el mock real, donde nunca sale) y `preflight_lab.py`;
 - ruta y tubos reales separados (`tests/test_tubos_reales.py`): anomalías por defecto sobre `pista.tubos` (orillas
   incluidas) y sin tubos idénticas a las de antes, la cámara sintética (también la de `Station`) dibuja los tubos
   reales y no la ruta, confianza del detector falso (completa ≥ 0.9, cortada < 0.6), la toma de la orilla pasa el
@@ -260,7 +306,8 @@ N de 4 vértices y `cfg_path_solo` una en solo (dron 1) con la pista de 7 vérti
 | `app/mock_world.py` | Anomalías simuladas, cámara virtual, detector falso por color |
 | `app/geo.py` | Modelo de cámara, rayo → suelo, huella, clusters |
 | `app/vision_service.py` | Detector enchufable + geolocalización + publicación |
-| `app/registro_vuelo.py` | Registro JSON Lines de las observaciones de cada vuelo (`web/datos/vuelos`) |
+| `app/registro_vuelo.py` | Registro JSON Lines de las observaciones (y la batería) de cada vuelo (`web/datos/vuelos`) |
+| `app/bateria.py` | Batería por dron para la UI y el registro (solo visualización; nada actúa por ella) |
 | `herramientas/ajustar_tubos.py` | Propone (y con `--aplicar` escribe) `pista.tubos` a partir de los registros |
 | `app/cameras.py` | Fuentes de video (cliente QDF1, sintética, webcam, carpeta) |
 | `app/netinfo.py` | IPs por interfaz y comandos `quarc_run` |

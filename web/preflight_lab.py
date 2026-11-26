@@ -184,6 +184,20 @@ def main(argv=None):
         rep("FALLA", f"camara.fuente = {cam.get('fuente')!r}: con drones reales debe ser 'dron'")
     else:
         rep("OK", "camara.fuente = dron")
+    # camara.dron: dron con la RealSense; el video sale SIEMPRE de ip_dron{camara.dron} y la estación bloquea START
+    # si el explorador es el otro (mismas reglas que la estación: app.config.camara_dron)
+    from app.config import camara_dron  # noqa: WPS433
+    cd = camara_dron(c)
+    if cd["aviso"]:
+        rep("AVISO", "estacion.json: " + cd["aviso"])
+    if solo and ds in (1, 2) and ds != cd["dron"]:
+        rep("FALLA", f"camara.dron = {cd['dron']} pero el dron solo es el {ds}: la estación bloquea START (el "
+                     "explorador no lleva la cámara). Cambia mision.dron_solo o camara.dron")
+    elif solo:
+        rep("OK", f"camara.dron = {cd['dron']} = dron solo")
+    else:
+        rep("INFO", f"camara.dron = {cd['dron']}: coloca ese dron con MENOR x que el otro (ASSIGN_ROLES lo hace "
+                    "explorador), al menos 5 cm más atrás; si no, la estación bloquea START")
     if get(c, "web", "permitir_sintetica_en_simulink", default=False):
         rep("FALLA", "web.permitir_sintetica_en_simulink = true: mandaría objetivos inventados a los drones reales")
     res_cam = "%dx%d" % tuple(cam.get("resolucion", [640, 480]))
@@ -233,6 +247,19 @@ def main(argv=None):
         rep("FALLA", f"algún vértice de la pista fuera de {lim}")
     else:
         rep("OK", f"pista: {len(v)} vértices dentro de {lim}")
+    # envolvente de consignas (mision.limites_x / limites_y; Simulink la toma al COMPILAR)
+    from app.config import mision_envolvente, vertices_fuera_envolvente  # noqa: WPS433
+    env = mision_envolvente(c)
+    if env["aviso"]:
+        rep("AVISO", "estacion.json: " + env["aviso"])
+    if env["definida"]:
+        fuera = vertices_fuera_envolvente(c)
+        txt = f"x {env['lo'][0]:g}..{env['hi'][0]:g}, y {env['lo'][1]:g}..{env['hi'][1]:g} m"
+        if fuera:
+            rep("AVISO", f"vértice(s) de la ruta fuera de la envolvente de consignas ({txt}): {fuera}; el explorador "
+                "no alcanza ese waypoint (consigna recortada) y se queda en hover ahí")
+        else:
+            rep("OK", f"envolvente de consignas {txt}: la ruta queda dentro (recompila tierra para que la tome)")
 
     # ---------------------------------------------------------------- red
     red = get(c, "red", default={})

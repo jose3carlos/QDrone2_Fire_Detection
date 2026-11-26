@@ -8,7 +8,8 @@ function [via, n_via, ok] = qd2_ruta_desvio(A, B, O, r, p)
 %   ok    = 0 : no se encontró ruta (via = B); el llamador decide.
 %   Si A o B ya están a menos de r de O, la holgura exigida en ese extremo
 %   es la distancia que ya tienen (no se puede exigir más).
-%   Los puntos de paso se recortan a la arena (p.xy_lim -/+ p.xy_margen).
+%   Los puntos de paso se recortan a la arena (envolvente por eje,
+%   qd2_limites_xy: p.xy_lim -/+ p.xy_margen o mision.limites_x / _y).
 %#codegen
 
 a = [A(1) A(2)];
@@ -23,8 +24,7 @@ d0 = qd2_dist_punto_segmento(o, a, b);
 if d0 >= min([r, dA, dB]) - 1e-9
     return;
 end
-lo = p.xy_lim(1) + p.xy_margen;
-hi = p.xy_lim(2) - p.xy_margen;
+[lo, hi] = qd2_limites_xy(p);       % envolvente por eje (1x2: [x y])
 mejor = inf;
 nd = 24;
 ok = 0;

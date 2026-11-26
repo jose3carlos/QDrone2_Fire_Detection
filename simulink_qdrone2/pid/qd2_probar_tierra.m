@@ -45,6 +45,8 @@ function R = qd2_probar_tierra(ver, t_final, conservar, t_arm_sw, opt)
 %                 Stream Server retiene la última respuesta (eco congelado, el
 %                 loopback crece) y el dron, sin paquetes, pasa a Error a los
 %                 0.5 s y cae sin obedecer (tierra nunca ve esa FSM 7)
+%     .objetivo   [x y]: posición del objetivo (toma, id 1) que publica PYTHON
+%                 STUB a los 30 s; por defecto [0.6 -0.6]
 %     .config_json ruta de un estacion.json alterno (p. ej. con mision.modo =
 %                 "solo_explorador"): lo usa el InitFcn de la COPIA del modelo
 %                 (qd2_cargar_config(bdroot, ruta)); por defecto config/estacion.json
@@ -94,7 +96,7 @@ add_block('simulink/Sources/Digital Clock', [m '/Clock Stub'], 'Position', [-130
 add_block('simulink/Signal Routing/From', [m '/From Tel Stub'], 'Position', [-1400 940 -1260 960], 'GotoTag', 'Python_Telemetry');
 add_block('simulink/Discrete/Memory', [m '/Memory Stub'], 'Position', [-1230 935 -1200 965]);
 add_block('simulink/User-Defined Functions/MATLAB Function', [m '/PYTHON STUB'], 'Position', [-1150 890 -1000 970]);
-poner_codigo([m '/PYTHON STUB'], codigo_python(campo(opt, 'py_off_t', inf)), {'py', '[32 1]'});
+poner_codigo([m '/PYTHON STUB'], codigo_python(campo(opt, 'py_off_t', inf), campo(opt, 'objetivo', [0.6 -0.6])), {'py', '[32 1]'});
 add_line(m, 'Clock Stub/1', 'PYTHON STUB/1');
 add_line(m, 'From Tel Stub/1', 'Memory Stub/1');
 add_line(m, 'Memory Stub/1', 'PYTHON STUB/2');
@@ -455,7 +457,7 @@ c = sprintf([ ...
     falla(1), falla(2), falla(2), trk2_off(1), trk2_off(2));
 end
 
-function c = codigo_python(t_off)
+function c = codigo_python(t_off, obj)
 c = sprintf([ ...
 'function py = fcn(t, tel)\n' ...
 '%% Estación Python simulada (ARQUITECTURA §3.3).\n' ...
@@ -476,6 +478,6 @@ c = sprintf([ ...
 'py(2) = cmd; py(3) = seq;\n' ...
 'if t >= 30\n' ...
 '    py(4) = 1;\n' ...
-'    py(5:9) = [1; 1; 0.6; -0.6; 0.9];        %% objetivo id 1 (toma) en (0.6, -0.6)\n' ...
-'end\n'], t_off);
+'    py(5:9) = [1; 1; %.17g; %.17g; 0.9];        %% objetivo id 1 (toma) en opt.objetivo\n' ...
+'end\n'], t_off, obj(1), obj(2));
 end

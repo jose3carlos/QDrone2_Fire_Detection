@@ -125,6 +125,12 @@ end
 if ~isempty(aviso)
     warning('qd2_cargar_config:modo', '%s', aviso);
 end
+% ---- Envolvente de las consignas xy (mision.limites_x / limites_y) ------------------
+if any(isfinite([P.env_x P.env_y]))
+    [lo, hi] = qd2_limites_xy(P);
+    fprintf('qd2_cargar_config: envolvente de consignas x [%.2f %.2f], y [%.2f %.2f] m (mision.limites_x / limites_y)\n', ...
+        lo(1), hi(1), lo(2), hi(2));
+end
 
 assignin('base', 'QD2CFG', cfg);
 assignin('base', 'QD2P', P);

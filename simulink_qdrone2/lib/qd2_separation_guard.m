@@ -33,6 +33,8 @@ function [spE_o, spR_o, guard_active, gs] = qd2_separation_guard(pE, pR, spE, sp
 %     un punto a D+3m de A, dentro de la arena, sin acercarse en el camino.
 %   - Si B está marcando, B no se mueve y A espera.
 %   - Respaldo final: si las consignas de salida quedan a < D, A espera.
+%   - En los ejes con envolvente (mision.limites_x / _y) las salidas (y el
+%     punto de espera de B) se recortan a ella (qd2_limites_xy).
 %   guard_active = 1 si alguno está siendo retenido o desviado.
 %   Poses o consignas NaN: se usan la última pose finita / la última
 %   salida; las salidas nunca son NaN.
@@ -190,6 +192,22 @@ else
     end
 end
 
+% ---------------- Envolvente ----------------------------------------------
+% El guard corre DESPUÉS de recortar_sp de qd2_mission_step: el punto de
+% espera de B es su pose medida (puede pasar del borde por sobretiro), así
+% que en los ejes con envolvente (p.env_x / p.env_y, como qd2_limites_xy)
+% las salidas se recortan aquí. Sin envolvente, igual que antes (el mock
+% recorta igual: _clamp_sp solo en los ejes con envolvente).
+[lo, hi] = qd2_limites_xy(p);
+env = [p.env_x; p.env_y];
+for i = 1:2
+    if isfinite(env(i,1)) && isfinite(env(i,2)) && env(i,1) < env(i,2)
+        gs.holdB(i) = min(max(gs.holdB(i), lo(i)), hi(i));
+        outA(i) = min(max(outA(i), lo(i)), hi(i));
+        outB(i) = min(max(outB(i), lo(i)), hi(i));
+    end
+end
+
 % ---------------- Respaldo: consignas a >= D -------------------------------
 if norm(outA(1:2) - outB(1:2)) < D && norm(prevA(1:2) - outB(1:2)) >= norm(outA(1:2) - outB(1:2))
     outA = [prevA(1) prevA(2) spA(3) spA(4)];
@@ -217,8 +235,7 @@ function c = evasion(pB, gB, pA, gA, look, prevA, d_seguro, d_espera, radio, p)
 %  - Preferencia: destino a >= d_seguro de la zona de A ([pA,gA] y
 %    [gA,look]) y camino sin cruzar esa zona -> el más cercano;
 %    si no hay, el que deje más holgura en el destino.
-lo = p.xy_lim(1) + p.xy_margen;
-hi = p.xy_lim(2) - p.xy_margen;
+[lo, hi] = qd2_limites_xy(p);                % envolvente por eje (1x2: [x y])
 [d_seg, q] = qd2_dist_punto_segmento(pB, pA, gA);
 d_ahora = min(d_seg, norm(pB - prevA));
 req = min(d_ahora, d_seguro) - 0.02;

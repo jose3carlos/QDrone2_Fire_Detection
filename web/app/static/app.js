@@ -1,5 +1,6 @@
 // Estación QDrone 2 — lógica de la interfaz (sin paso de compilación).
 import { Mapa2D } from './mapa2d.js';
+import { envolvente, limiteConsignas, recortarEnvolvente } from './marco.js';
 
 const $ = (id) => document.getElementById(id);
 // El texto del estado del dron (o+2) lo arma el servidor (protocol.fsm_info) según la versión y(3):
@@ -11,7 +12,10 @@ let S = null;            // último estado recibido
 let cfg = null;          // config/estacion.json
 let scene3d = null;
 let manualMode = false;
-let draftVerts = null;   // vértices en edición
+let draftVerts = null;   // ruta de vuelo en edición (pista.vertices)
+let draftTubos = null;   // tubos reales en edición (pista.tubos: lista de piezas [[x, y], ...])
+let baseTubos = null;    // JSON de pista.tubos del disco con el que se cargó draftTubos (detecta cambios externos)
+let pistaDestino = 'ruta';   // qué se edita/captura/guarda: 'ruta' o el índice (texto) de la pieza de draftTubos
 
 const map = new Mapa2D($('map'));
 
@@ -68,9 +72,8 @@ document.querySelectorAll('.tab').forEach((t) => t.addEventListener('click', () 
   document.querySelectorAll('.tab').forEach((x) => x.classList.toggle('on', x === t));
   document.querySelectorAll('.tabpane').forEach((p) => p.classList.toggle('on', p.id === 'tab-' + t.dataset.tab));
   if (t.dataset.tab === 'conexiones') loadNet();
-  if (t.dataset.tab === 'pista') { if (!draftVerts || !draftVerts.length) draftVerts = (cfg?.pista?.vertices || S?.pista || []).map((v) => [...v]); renderVerts(); }
-  else { map.draft = null; }
-  if (t.dataset.tab === 'pista') map.draft = draftVerts;
+  if (t.dataset.tab === 'pista') { pistaInit(); renderVerts(); }
+  else { map.draft = null; map.draftCtx = null; }
   map.draw();
 }));
 
@@ -96,12 +99,13 @@ function render(s) {
     `${b.uri}\n${b.connected ? 'conectado' : 'desconectado'}${b.error ? '\n' + b.error : ''}`);
   const c = s.camara || {};
   chip('chip-cam', c.conectada ? 'ok' : (c.fuente && c.fuente[0] === 'ninguna') ? '' : 'bad', `Video ${c.fps ?? 0} fps`,
-    `fuente: ${(c.fuente || []).join(' ')}${c.error ? '\n' + c.error : ''}`);
+    `fuente: ${(c.fuente || []).join(' ')}${c.dron ? `\ncámara en el dron ${c.dron} (camara.dron)` : ''}${c.error ? '\n' + c.error : ''}`);
   const v = s.vision || {};
   chip('chip-vision', v.detector && v.detector !== 'ninguno' ? (v.activo ? 'ok' : 'warn') : 'bad', 'Visión',
     `${v.detector}${v.detector_error ? '\n' + v.detector_error : ''}${v.activo ? '\n(detectando)' : '\n(en espera: solo en MISSION)'}`);
   $('chip-version').textContent = tel ? `Modelo ${tel.version_name}` : `Config ${s.version_config}`;
   renderModo(s);
+  if (draftVerts && $('tab-pista').classList.contains('on')) renderAvisoPista();   // la envolvente puede cambiar
   // estado de misión
   const ms = $('mstate');
   ms.textContent = tel ? `${tel.mission_state_es} · ${tel.mission_state_name}` : 'Sin telemetría';
@@ -164,11 +168,13 @@ function render(s) {
   $('k-queue-label').textContent = solo ? 'Detectados (sin respondedor)' : 'En cola';
   renderBotones(s);
   renderDrones(tel, s.actitud_explorador);
+  renderBateria(s);
   renderTargets(s);
   renderInfo(s);
   // eventos
   $('events').innerHTML = (s.eventos || []).map((e) => `<li><time>${esc(e.t)}</time>${esc(e.msg)}</li>`).join('');
-  $('cam-info').textContent = `${(c.fuente || []).join(' ')} · ${c.fps ?? 0} fps · ${v.detector || ''}`;
+  $('cam-info').textContent = `${c.dron ? `dron ${c.dron} (camara.dron)${c.coincide === false ? (c.explorador === c.dron ? ' · explorador ambiguo (misma x)' : ' ≠ explorador ' + c.explorador) : ''} · ` : ''}${(c.fuente || []).join(' ')} · ${c.fps ?? 0} fps · ${v.detector || ''}`;
+  $('cam-info').classList.toggle('bad', c.coincide === false);
   map.update(s);
   if (scene3d) scene3d.update(s);
 }
@@ -212,7 +218,8 @@ function renderDrones(tel, act) {
     if (solo && id !== S.modo.dron_solo) return dronNoUsado(id, d);
     const role = d.role === 1 ? '<span class="role e">EXPLORADOR</span>' : d.role === 2 ? '<span class="role r">RESPONDEDOR</span>' : '<span class="role">sin rol</span>';
     const rb = cfg?.optitrack?.[`rigid_body_dron${id}`];
-    return `<div class="dcard"><div class="dh"><span class="name">Dron ${id}</span>${role}</div>
+    const cam = S?.camara?.dron === id ? ` <span class="role cam" title="camara.dron: este dron lleva la RealSense (el video sale de aquí). Debe ser el explorador (en dual, el de menor x)">CÁMARA</span>` : '';
+    return `<div class="dcard"><div class="dh"><span class="name">Dron ${id}${cam}</span>${role}</div>
       <div class="flag ${d.tracked ? 'ok' : 'bad'}">${d.tracked ? '● rastreado' : '○ sin tracking'} (RB ${rb ?? '?'}) · <span class="flag ${d.comm_ok ? 'ok' : 'bad'}">${d.comm_ok ? 'comm ok' : 'sin comm'}</span></div>
       <div class="flag ${d.fsm_falla ? 'bad' : ''}" title="${tel.version === 2 ? 'FSM a bordo que reporta el dron (§3.2)' : 'Flight State del Flight Plan de tierra (el dron PID no reporta su FSM)'}">${esc(d.fsm_tipo || 'estado')}: ${d.fsm_state} · ${esc(d.fsm_texto || '')}</div>
       <table>
@@ -256,6 +263,116 @@ function actitudUsadaTxt(act) {
   return `<tr><td ${tip}>actitud usada</td><td>φ ${f2(act.usada[0], 1)}° · θ ${f2(act.usada[1], 1)}° (con signos/offset)</td></tr>`;
 }
 
+// ------------------------------------------------------------------ batería (app/bateria.py)
+// SOLO visualización: la estación no actúa por la batería. Las dos líneas son las referencias que YA existen:
+// 14.0 V = corte automático A BORDO del dron (>= 0.3 s -> AUTOLAND); 15.5 V = recomendación del checklist (no
+// automática). La historia (medias de 1 s, una cada 2 s, últimos 5 min) la lleva el servidor.
+const BAT_SIN = {
+  pid: 'Sin dato en vivo: el dron PID del Equipo2 no envía la batería a tierra. Revísala después del vuelo con simulink_qdrone2/bateria/qd2_bateria.m',
+  nan: 'Sin dato en vivo: battery_V llega como NaN (el dron no la está enviando a tierra).',
+  sin_tel: 'Sin telemetría del puente.',
+};
+function renderBateria(s) {
+  const b = s.bateria, box = $('bat-drones');
+  const ids = b && b.drones ? Object.keys(b.drones) : [];
+  if (!ids.length) { box.dataset.ids = ''; box.innerHTML = `<div class="bat-sin">${BAT_SIN.sin_tel}</div>`; return; }
+  if (box.dataset.ids !== ids.join(',')) {      // estructura fija: el canvas no se recrea en cada mensaje
+    box.dataset.ids = ids.join(',');
+    box.innerHTML = ids.map((id) => `<div class="bat-dron" id="bat-${id}">
+        <div class="bat-head"><span class="bat-name">Dron ${id}</span><b class="bat-v">—</b><span class="bat-estado"></span></div>
+        <div class="bat-sin" hidden></div>
+        <canvas class="bat-chart" aria-label="Voltaje de la batería del dron ${id} en los últimos minutos"></canvas>
+        <div class="bat-info"></div></div>`).join('');
+  }
+  const fresca = !!(s.puente || {}).fresh;
+  for (const id of ids) {
+    const f = b.drones[id], el = $('bat-' + id);
+    const d = s.tel && s.tel.drones ? s.tel.drones[id] : null;
+    const rol = d && d.role === 1 ? ' · explorador' : d && d.role === 2 ? ' · respondedor' : '';
+    el.querySelector('.bat-name').textContent = `Dron ${id}${rol}`;
+    const sin = f.v === null || f.v === undefined;
+    el.querySelector('.bat-v').textContent = sin ? '—' : f2(f.v, 2) + ' V';
+    el.querySelector('.bat-estado').textContent = f.estado + (s.tel && !fresca ? ' · telemetría vieja' : '');
+    const msg = el.querySelector('.bat-sin'), cv = el.querySelector('.bat-chart'), info = el.querySelector('.bat-info');
+    msg.hidden = !sin; cv.hidden = sin; info.hidden = sin;
+    if (sin) { msg.textContent = BAT_SIN[f.sin_dato] || BAT_SIN.nan; continue; }
+    info.innerHTML = `<span>Caída desde el despegue</span><b>${f.caida === null ? (f.en_aire ? '— (sin dato en tierra antes de este despegue)' : '— (sin despegue reciente)')
+      : `${f2(f.caida, 2)} V · desde ${f2(f.v_despegue, 2)} V ${f.ref_despegue === 'reposo' ? 'en reposo' : 'en tierra'}`}</b>
+      <span title="Estimación informativa: recta de las medias de 1 s del voltaje en vuelo (último minuto, sin los primeros 5 s tras despegar). No es un límite ni dispara nada.">Estimación</span><b>${batEstimacion(f)}</b>`;
+    dibujarBateria(cv, f, b.ref || {}, b.ventana_s || 300);
+  }
+}
+
+function batEstimacion(f) {
+  if (!f.en_aire) return '— (solo en el aire)';
+  if (f.pendiente_V_s === null || f.pendiente_V_s === undefined) {
+    return f.aire_s !== null && f.aire_s !== undefined && f.aire_s <= 20 ? `necesita > 20 s en el aire (${f2(f.aire_s, 0)} s)` : 'sin datos suficientes';
+  }
+  if (f.min_hasta_14 === null || f.min_hasta_14 === undefined) return 'sin descenso medible';
+  if (f.min_hasta_14 <= 0) return 'la tendencia ya está en 14.0 V o abajo (a bordo: aterrizaje automático si V ≤ 14.0 V dura ≥ 0.3 s)';
+  return `≈ ${f2(f.min_hasta_14, 1)} min hasta 14.0 V a este ritmo <small>(estimación; ${f2(f.pendiente_V_s * 60, 2)} V/min)</small>`;
+}
+
+function dibujarBateria(cv, f, ref, ventana) {
+  const W = cv.clientWidth, H = cv.clientHeight, dpr = window.devicePixelRatio || 1;
+  if (!W || !H) return;
+  if (cv.width !== Math.round(W * dpr) || cv.height !== Math.round(H * dpr)) { cv.width = Math.round(W * dpr); cv.height = Math.round(H * dpr); }
+  const ctx = cv.getContext('2d');
+  ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+  ctx.clearRect(0, 0, W, H);
+  const css = getComputedStyle(document.documentElement), col = (n) => css.getPropertyValue(n).trim();
+  const serie = f.serie || [];
+  const v14 = ref.v_aterrizaje_a_bordo ?? 14.0, v155 = ref.v_recomendada_despegue ?? 15.5, t14 = ref.t_aterrizaje_a_bordo_s ?? 0.3;
+  let lo = 13.6, hi = 16.8;
+  for (const p of serie) { lo = Math.min(lo, p[1] - 0.1); hi = Math.max(hi, p[1] + 0.1); }
+  const L = 34, R = 6, T = 6, B = 15;
+  const X = (t) => L + (W - L - R) * (1 + t / ventana), Y = (v) => T + (H - T - B) * (hi - v) / (hi - lo);
+  ctx.font = '10px "Segoe UI", system-ui, sans-serif';
+  // en el aire: banda tenue
+  ctx.fillStyle = col('--explorer'); ctx.globalAlpha = 0.10;
+  for (let i = 0; i < serie.length; i++) {
+    if (!serie[i][2]) continue;
+    const t0 = serie[i][0], t1 = i + 1 < serie.length ? Math.min(serie[i + 1][0], t0 + 3) : t0 + 1;
+    ctx.fillRect(X(t0), T, Math.max(1, X(t1) - X(t0)), H - T - B);
+  }
+  ctx.globalAlpha = 1;
+  // rejilla: cada 1 V y cada minuto
+  ctx.strokeStyle = col('--line'); ctx.lineWidth = 1; ctx.fillStyle = col('--muted');
+  ctx.textAlign = 'right'; ctx.textBaseline = 'middle';
+  for (let v = Math.ceil(lo); v <= hi; v++) {
+    ctx.beginPath(); ctx.moveTo(L, Y(v)); ctx.lineTo(W - R, Y(v)); ctx.stroke();
+    ctx.fillText(v + ' V', L - 4, Y(v));
+  }
+  ctx.textBaseline = 'alphabetic';
+  for (let m = 0; m * 60 <= ventana; m++) {
+    const x = X(-m * 60);
+    ctx.beginPath(); ctx.moveTo(x, T); ctx.lineTo(x, H - B); ctx.stroke();
+    ctx.textAlign = m === 0 ? 'right' : 'center';
+    ctx.fillText(m === 0 ? 'ahora' : `−${m} min`, m * 60 === ventana ? Math.max(x, L + 18) : x, H - 3);
+  }
+  // voltaje (medias de 1 s); se corta si faltan datos > 5 s
+  ctx.strokeStyle = col('--text'); ctx.lineWidth = 1.6; ctx.beginPath();
+  let prev = null;
+  for (const p of serie) {
+    if (p[0] < -ventana) continue;
+    if (prev === null || p[0] - prev > 5) ctx.moveTo(X(p[0]), Y(p[1])); else ctx.lineTo(X(p[0]), Y(p[1]));
+    prev = p[0];
+  }
+  ctx.stroke();
+  // referencias existentes (no son límites de esta estación)
+  const refs = [[v155, col('--warn'), `${f2(v155, 1)} V: mínimo recomendado para despegar (checklist)`],
+    [v14, col('--bad'), `${f2(v14, 1)} V: aterrizaje automático a bordo (${t14} s)`]];
+  for (const [v, c, txt] of refs) {
+    const y = Y(v);
+    ctx.strokeStyle = c; ctx.lineWidth = 1.2; ctx.setLineDash([5, 4]);
+    ctx.beginPath(); ctx.moveTo(L, y); ctx.lineTo(W - R, y); ctx.stroke(); ctx.setLineDash([]);
+    ctx.textAlign = 'left';
+    const w = ctx.measureText(txt).width;
+    ctx.fillStyle = col('--panel-2'); ctx.globalAlpha = 0.85; ctx.fillRect(L + 3, y - 13, w + 6, 12); ctx.globalAlpha = 1;
+    ctx.fillStyle = c; ctx.fillText(txt, L + 6, y - 3);
+  }
+}
+
 // Una línea discreta con el registro de vuelo (registro_vuelo.py): archivo del vuelo actual y líneas escritas.
 function registroVueloTxt(r) {
   if (!r) return '';
@@ -268,14 +385,25 @@ function registroVueloTxt(r) {
   return t;
 }
 
+// Objetivo fuera de la envolvente de consignas (mision.limites_x / limites_y): R no llega encima y lo marca desde el
+// punto más cercano dentro (recortar_xy de qd2_mission_step). Solo informa (en solo explorador nadie lo marca).
+function notaEnvolvente(env, t, solo) {
+  if (!env || solo || typeof t.x !== 'number' || typeof t.y !== 'number') return '';
+  const [x, y] = recortarEnvolvente(env, t.x, t.y);
+  if (Math.hypot(x - t.x, y - t.y) < 1e-3) return '';
+  return `<span class="nota-env" title="Fuera de la envolvente de consignas (x ${f2(env.x0)}…${f2(env.x1)}, y ${f2(env.y0)}…${f2(env.y1)} m): el respondedor la marca desde el punto más cercano dentro, a ${f2(Math.hypot(x - t.x, y - t.y))} m">se marca desde (${f2(x)}, ${f2(y)})</span>`;
+}
+
 function renderTargets(s) {
   const list = s.objetivos || [];
   $('tab-count').textContent = list.length;
   $('targets-empty').style.display = list.length ? 'none' : 'block';
   const ORIGEN = { estacion: 'estación', 'estacion+simulink': 'ambos', simulink: 'Simulink' };
+  const env = envolvente(s), solo = s.modo?.efectivo === 'solo_explorador';
+  $('lg-env').hidden = !env;
   $('tbl-targets').querySelector('tbody').innerHTML = list.map((t) => `<tr>
     <td>${t.id}${t.manual ? '*' : ''}</td><td>${t.clase === 'fuego' ? '🔥 fuego' : '🔧 toma'}</td><td>${f2(t.x)}</td><td>${f2(t.y)}</td>
-    <td>${f2(t.conf)}</td><td>${t.n ?? '—'}</td><td><span class="pill ${t.estado}">${t.estado}</span></td>
+    <td>${f2(t.conf)}</td><td>${t.n ?? '—'}</td><td><span class="pill ${t.estado}">${t.estado}</span>${notaEnvolvente(env, t, solo)}</td>
     <td><span class="origen ${t.origen === 'simulink' ? 'simulink' : ''}"${t.alias_de ? ` title="En Simulink es el objetivo #${t.alias_de}: guardó el id #${t.id} de la estación como alias (mismo lugar)"` : ''}>${ORIGEN[t.origen] || esc(t.origen)}${t.alias_de ? ` (= #${t.alias_de})` : ''}</span></td></tr>`).join('');
   $('registro-vuelo').textContent = registroVueloTxt(s.registro_vuelo);
   const v = s.vision || {};
@@ -302,7 +430,7 @@ function renderInfo(s) {
     <span>Edad telemetría</span><b>${b.rx_age_s ?? '—'} s</b>
     <span>Reconexiones</span><b>${b.reconnects}</b>
     ${b.error ? `<span>Error</span><b>${esc(b.error)}</b>` : ''}
-    <span>Video</span><b>${esc((c.fuente || []).join(' '))} · ${c.conectada ? 'conectado' : 'sin video'}</b>
+    <span>Video</span><b>${c.dron ? `dron ${c.dron} (camara.dron) · ` : ''}${esc((c.fuente || []).join(' '))} · ${c.conectada ? 'conectado' : 'sin video'}</b>
     ${c.error ? `<span>Error video</span><b>${esc(c.error)}</b>` : ''}`;
 }
 
@@ -371,7 +499,8 @@ async function loadConfig(full = false) {
   const capSel = $('cap-dron').value;
   $('cap-dron').innerHTML = [1, 2].map((i) => `<option value="${i}">Dron ${i} (RB ${ot['rigid_body_dron' + i]})</option>`).join('');
   if (capSel) $('cap-dron').value = capSel;
-  if ($('tab-pista').classList.contains('on') && (!draftVerts || !draftVerts.length)) { draftVerts = cfg.pista.vertices.map((v) => [...v]); renderVerts(); }
+  if ($('tab-pista').classList.contains('on') && (!draftVerts || !draftVerts.length || !draftTubos)) { pistaInit(); renderVerts(); }
+  else refrescarTubos();
   if (!full) return;
   $('ot-folder').value = $('ot-folder').value || ot.carpeta || '';
   $('ot-cal-path').value = ot.archivo_cal || ''; $('ot-motive-path').value = ot.archivo_motive || '';
@@ -406,7 +535,7 @@ async function loadCmds() {
       ${rows(d, 'quarc_run', 'Lanzar el modelo ' + esc(r.modelo) + ' en el dron')}
       ${rows(d, 'quarc_stop', 'Detener')}
       ${rows(d, 'ext_mode_args', 'Alternativa desde MATLAB (External mode)')}
-      ${rows(d, 'ssh_camara', 'Cámara (solo el explorador; en el Jetson)')}</div>`;
+      ${rows(d, 'ssh_camara', `Cámara (solo el dron con la RealSense: camara.dron = ${S?.camara?.dron ?? 1}; en el Jetson)`)}</div>`;
   }).join('');
 }
 $('btn-net').addEventListener('click', loadNet);
@@ -459,40 +588,181 @@ $('btn-ot-save').addEventListener('click', async () => {
 });
 
 // --- Pista
+// Dos arreglos distintos de estacion.json, que se editan, capturan y guardan por separado (selector "Qué se edita"):
+// * pista.vertices = RUTA DE VUELO que compila Simulink (requiere recompilar): debe quedar dentro de la zona con
+//   rastreo (límite de consignas = envolvente mision.limites_x/_y o limites_xy -/+ 0.15). Fuera: aviso amarillo.
+// * pista.tubos = posición REAL de los tubos en el piso (solo estación: filtro de tomas y dibujo), una lista de
+//   puntos por pieza (>= 2). Puede quedar fuera de la zona con rastreo (el dron en el piso sí se rastrea).
+const MAX_VERTICES_RUTA = 16;   // = p.max_vertices de qd2_params.m
+const MAX_PUNTOS_PIEZA = 32;    // = MAX_PUNTOS_PIEZA de server.py
+const esRuta = () => pistaDestino === 'ruta';
+const copiaPts = (P) => (Array.isArray(P) ? P : []).filter((p) => Array.isArray(p) && p.length === 2).map((p) => [...p]);
+const tubosDeCfg = () => (Array.isArray(cfg?.pista?.tubos) ? cfg.pista.tubos : []).filter(Array.isArray).map(copiaPts);
+function pistaInit() {
+  if (!draftVerts || !draftVerts.length) draftVerts = copiaPts(cfg?.pista?.vertices || S?.pista);
+  if (!draftTubos && cfg) { draftTubos = tubosDeCfg(); baseTubos = JSON.stringify(draftTubos); }
+}
+// pista.tubos cambió en el disco (ajustar_tubos.py --aplicar, otra pestaña o laptop, a mano): un borrador SIN cambios
+// propios se recarga solo; uno con cambios se conserva y "Guardar tubos" pide confirmar antes de pisar el disco
+function refrescarTubos() {
+  if (!draftTubos || !cfg || JSON.stringify(tubosDeCfg()) === baseTubos || JSON.stringify(draftTubos) !== baseTubos) return;
+  const enPista = $('tab-pista').classList.contains('on');
+  if (enPista && $('tbl-verts').contains(document.activeElement)) return;   // editando una celda: en la próxima lectura
+  draftTubos = tubosDeCfg(); baseTubos = JSON.stringify(draftTubos);
+  if (enPista) renderVerts();
+}
+// primera pieza que el servidor rechazaría (mismas reglas que POST /api/config/pista), numerada como el selector
+// (con las piezas vacías, que se descartan al guardar); -1 si todas sirven
+const TUBO_COORD_MAX = 3.0;     // = TUBO_COORD_MAX de server.py
+const piezaInvalida = (T) => T.findIndex((P) => P.length && (P.length < 2 || P.length > MAX_PUNTOS_PIEZA
+  || P.some((p) => p.some((c) => !(Math.abs(c) <= TUBO_COORD_MAX)))));
+// arreglo en edición (la ruta o la pieza elegida)
+function draftActivo() {
+  if (esRuta()) return draftVerts || (draftVerts = []);
+  draftTubos = draftTubos || [];
+  const k = Number(pistaDestino);
+  if (!draftTubos[k]) draftTubos[k] = [];
+  return draftTubos[k];
+}
+function renderDestino() {
+  const sel = $('pista-destino'), T = draftTubos || [];
+  sel.innerHTML = '<option value="ruta">Ruta de vuelo (pista.vertices · requiere recompilar)</option>'
+    + T.map((P, k) => `<option value="${k}">Tubo real (pista.tubos) — pieza ${k + 1} (${P.length} punto${P.length === 1 ? '' : 's'})</option>`).join('')
+    + '<option value="nueva">Tubo real (pista.tubos) — pieza nueva</option>';
+  if (!esRuta() && !(Number(pistaDestino) < T.length)) pistaDestino = 'ruta';
+  sel.value = pistaDestino;
+  const ruta = esRuta(), k = Number(pistaDestino) + 1;
+  $('pista-titulo').textContent = ruta ? 'Ruta de vuelo: pista.vertices (m, marco OptiTrack)'
+    : `Tubo real: pista.tubos, pieza ${k} (m, marco OptiTrack)`;
+  $('pista-nota').innerHTML = ruta
+    ? 'Ruta que vuela el explorador. Máximo 16 vértices (límite de Simulink). Simulink la lee <b>al compilar</b> / iniciar'
+      + ' el modelo (InitFcn): después de guardar, recompila el modelo de tierra (o vuelve a correr el simulador).'
+      + ' <b>La ruta debe quedar dentro de la zona con rastreo (envolvente, punteado violeta en el mapa)</b>; los tubos'
+      + ' reales pueden quedar más afuera.'
+    : 'Posición REAL de los tubos en el piso: solo la usa la estación (filtro de tomas "lejos del tubo" y dibujo);'
+      + ' Simulink no la lee, no hay que recompilar. Una pieza = un tubo continuo, con sus puntos en orden (≥ 2).'
+      + ` Guardar escribe todas las piezas (${(draftTubos || []).filter((P) => P.length).length}); una pieza vacía se descarta.`;
+  $('cap-ayuda').textContent = ruta
+    ? 'Ruta: coloca el dron (apagado) en el punto por donde debe pasar la ruta, dentro de la zona con rastreo (envolvente),'
+      + ' y captura. Para medir los tubos elige "Tubo real" arriba. Requiere telemetría del puente.'
+    : 'Tubo: coloca el dron (apagado) en el piso sobre cada extremo/esquina del tubo, en orden a lo largo de la pieza,'
+      + ' y captura. Requiere telemetría del puente.';
+  $('btn-v-add').textContent = ruta ? '+ vértice' : '+ punto';
+  $('btn-v-save').textContent = ruta ? 'Guardar ruta' : 'Guardar tubos';
+}
+// aviso amarillo (no bloquea): vértices de la ruta fuera del límite de consignas / pieza de tubo incompleta
+function renderAvisoPista() {
+  const box = $('pista-aviso'), v = draftActivo();
+  let fuera = [], msg = '';
+  if (esRuta()) {
+    const L = limiteConsignas(S), env = envolvente(S);
+    v.forEach(([x, y], i) => { if (!(x >= L.x0 - 1e-9 && x <= L.x1 + 1e-9 && y >= L.y0 - 1e-9 && y <= L.y1 + 1e-9)) fuera.push(i); });
+    if (fuera.length) {
+      msg = `${fuera.length === 1 ? 'El vértice' : 'Los vértices'} ${fuera.map((i) => '#' + (i + 1)).join(', ')} de la RUTA`
+        + ` ${fuera.length === 1 ? 'queda' : 'quedan'} fuera de la zona con rastreo (${env ? 'envolvente mision.limites_x/_y' : 'mision.limites_xy − 0.15'}:`
+        + ` x ${f2(L.x0)}…${f2(L.x1)}, y ${f2(L.y0)}…${f2(L.y1)} m). Simulink recorta la consigna: si el vértice queda`
+        + ` a más de tol_xy (${f2(cfg?.mision?.tol_xy ?? 0.12)} m) de ese límite, el explorador no lo alcanza y se queda en hover ahí`
+        + ' (MISSION no avanza); OptiTrack puede perderlo. Muévelos dentro. Si son los extremos del tubo, captúralos en'
+        + ' "Tubo real".';
+    }
+  } else if (v.length < 2) {
+    msg = `La pieza ${Number(pistaDestino) + 1} tiene ${v.length} punto${v.length === 1 ? '' : 's'}: necesita al menos 2 (sus extremos)`
+      + (v.length ? ' para guardarse.' : '; vacía, se descarta al guardar.');
+  }
+  box.hidden = !msg; box.textContent = msg;
+  $('tbl-verts').querySelectorAll('tbody tr').forEach((tr, i) => tr.classList.toggle('fuera', fuera.includes(i)));
+}
 function renderVerts() {
-  const v = draftVerts || [];
+  renderDestino();
+  const v = draftActivo(), ruta = esRuta();
   $('tbl-verts').querySelector('tbody').innerHTML = v.map(([x, y], i) => `<tr>
     <td>${i + 1}</td><td><input data-vi="${i}" data-vk="0" value="${x}"></td><td><input data-vi="${i}" data-vk="1" value="${y}"></td>
     <td><button class="btn sm ghost" data-vup="${i}" title="Subir">↑</button><button class="btn sm ghost" data-vdel="${i}" title="Borrar">✕</button></td></tr>`).join('');
   const sel = $('cap-target'), keep = sel.value;
-  sel.innerHTML = '<option value="-1">agregar al final</option>' + v.map((_, i) => `<option value="${i}">reemplazar vértice ${i + 1}</option>`).join('');
+  sel.innerHTML = '<option value="-1">agregar al final</option>'
+    + v.map((_, i) => `<option value="${i}">reemplazar ${ruta ? 'vértice' : 'punto'} ${i + 1}</option>`).join('');
   sel.value = [...sel.options].some((o) => o.value === keep) ? keep : '-1';
-  map.draft = draftVerts; map.draw();
+  renderAvisoPista();
+  const k = Number(pistaDestino);
+  map.draft = v; map.draftTipo = ruta ? 'ruta' : 'tubo';
+  map.draftCtx = ruta
+    ? { tubos: (draftTubos || []).some((P) => P.length >= 2) ? draftTubos : (S?.tubos || []) }
+    : { ruta: draftVerts || [], tubos: (draftTubos || []).filter((_, i) => i !== k) };
+  map.draw();
 }
+$('pista-destino').addEventListener('change', (ev) => {
+  let d = ev.target.value;
+  if (d === 'nueva') {
+    draftTubos = draftTubos || [];
+    const vacia = draftTubos.findIndex((P) => !P.length);   // reutiliza una pieza vacía en vez de apilar otra
+    d = String(vacia >= 0 ? vacia : draftTubos.push([]) - 1);
+  }
+  pistaDestino = d; $('cap-target').value = '-1'; $('cap-msg').textContent = '';
+  renderVerts();
+});
 $('tbl-verts').addEventListener('input', (ev) => {
   const i = ev.target.dataset.vi; if (i === undefined) return;
-  const val = parseFloat(ev.target.value); if (!Number.isNaN(val)) { draftVerts[i][ev.target.dataset.vk] = val; map.draw(); }
+  const val = parseFloat(ev.target.value); if (!Number.isNaN(val)) { draftActivo()[i][ev.target.dataset.vk] = val; renderAvisoPista(); map.draw(); }
 });
 $('tbl-verts').addEventListener('click', (ev) => {
-  const d = ev.target.dataset;
-  if (d.vdel !== undefined) { draftVerts.splice(Number(d.vdel), 1); renderVerts(); }
-  if (d.vup !== undefined && Number(d.vup) > 0) { const k = Number(d.vup); [draftVerts[k - 1], draftVerts[k]] = [draftVerts[k], draftVerts[k - 1]]; renderVerts(); }
+  const d = ev.target.dataset, v = draftActivo();
+  if (d.vdel !== undefined) { v.splice(Number(d.vdel), 1); renderVerts(); }
+  if (d.vup !== undefined && Number(d.vup) > 0) { const k = Number(d.vup); [v[k - 1], v[k]] = [v[k], v[k - 1]]; renderVerts(); }
 });
-$('btn-v-add').addEventListener('click', () => { if (draftVerts.length >= 16) { toast('Máximo 16 vértices (límite de Simulink)', true); return; } const l = draftVerts[draftVerts.length - 1] || [0, 0]; draftVerts.push([l[0], l[1]]); renderVerts(); });
-$('btn-v-reload').addEventListener('click', async () => { await loadConfig(true); draftVerts = cfg.pista.vertices.map((v) => [...v]); renderVerts(); });
+$('btn-v-add').addEventListener('click', () => {
+  const v = draftActivo(), max = esRuta() ? MAX_VERTICES_RUTA : MAX_PUNTOS_PIEZA;
+  if (v.length >= max) { toast(esRuta() ? 'Máximo 16 vértices (límite de Simulink)' : `Máximo ${max} puntos por pieza`, true); return; }
+  const l = v[v.length - 1] || [0, 0]; v.push([l[0], l[1]]); renderVerts();
+});
+$('btn-v-reload').addEventListener('click', async () => {
+  await loadConfig(true);
+  if (esRuta()) draftVerts = copiaPts(cfg.pista.vertices); else { draftTubos = tubosDeCfg(); baseTubos = JSON.stringify(draftTubos); }
+  renderVerts();
+});
 $('btn-v-save').addEventListener('click', async () => {
-  try { const r = await api('/api/config/pista', { vertices: draftVerts }); draftVerts = r.vertices.map((v) => [...v]); renderVerts(); await loadConfig(); toast('Pista guardada en estacion.json'); }
-  catch (e) { toast(e.message, true); }
+  try {
+    if (esRuta()) {
+      const r = await api('/api/config/pista', { destino: 'vertices', vertices: draftVerts });
+      draftVerts = copiaPts(r.vertices); renderVerts(); await loadConfig();
+      const n = (r.fuera_envolvente || []).length;
+      toast(`Ruta guardada en estacion.json (pista.vertices): recompila el modelo de tierra.${n ? ` Aviso: ${n} vértice${n === 1 ? '' : 's'} fuera de la zona con rastreo.` : ''}`);
+    } else {
+      await loadConfig();   // pista.tubos del disco ahora (un borrador sin cambios propios se recarga aquí)
+      const mala = piezaInvalida(draftTubos || []);
+      if (mala >= 0) {
+        pistaDestino = String(mala); renderVerts();
+        toast(`La pieza ${mala + 1} no se puede guardar: necesita entre 2 y ${MAX_PUNTOS_PIEZA} puntos dentro de ±${TUBO_COORD_MAX} m`
+          + ' (vacíala para descartarla)', true);
+        return;
+      }
+      if (JSON.stringify(tubosDeCfg()) !== baseTubos && !confirm('pista.tubos cambió en estacion.json desde que se cargó este'
+        + ' borrador (ajustar_tubos.py --aplicar, otra pestaña o a mano). Guardar lo reemplaza con TODAS las piezas del borrador'
+        + ' y esos cambios se pierden. ("Restaurar" carga los del disco.) ¿Guardar de todos modos?')) return;
+      const enviar = (draftTubos || []).filter((P) => P.length);
+      if (!enviar.length && !confirm('No queda ninguna pieza: se quitan los tubos reales (pista.tubos = []) y el filtro'
+        + ' "lejos del tubo" vuelve a usar la ruta (pista.vertices partida en tramos_sin_tubo). ¿Continuar?')) return;
+      const k = Number(pistaDestino);
+      const r = await api('/api/config/pista', { destino: 'tubos', tubos: enviar });
+      const nuevo = (draftTubos || []).slice(0, k).filter((P) => P.length).length;   // índice de la pieza sin las vacías
+      draftTubos = r.tubos.map(copiaPts); baseTubos = JSON.stringify(draftTubos);
+      pistaDestino = draftTubos.length ? String(Math.min(nuevo, draftTubos.length - 1)) : 'ruta';
+      renderVerts(); await loadConfig();
+      toast(r.tubos.length ? `Tubos reales guardados en estacion.json (pista.tubos: ${r.tubos.length} pieza${r.tubos.length === 1 ? '' : 's'}); no hay que recompilar`
+        : 'Tubos reales quitados (pista.tubos = []): el filtro vuelve a usar la ruta; no hay que recompilar');
+    }
+  } catch (e) { toast(e.message, true); }
 });
 $('cap-dron').addEventListener('change', () => { capDronTocado = true; });
 $('btn-cap').addEventListener('click', async () => {
   try {
     const r = await api('/api/pista/capturar', { dron: Number($('cap-dron').value) });
-    const k = Number($('cap-target').value);
+    const k = Number($('cap-target').value), v = draftActivo();
     const p = [Number(r.x.toFixed(3)), Number(r.y.toFixed(3))];
-    if (k >= 0) draftVerts[k] = p; else draftVerts.push(p);
+    if (k >= 0) v[k] = p; else v.push(p);
     renderVerts();
-    $('cap-msg').textContent = `Capturado del dron ${r.dron} (RB ${r.rigid_body}): (${p[0]}, ${p[1]}), z = ${r.z.toFixed(3)} m. Recuerda “Guardar pista”.`;
+    const dest = esRuta() ? 'la ruta de vuelo' : `la pieza ${Number(pistaDestino) + 1} del tubo`;
+    $('cap-msg').textContent = `Capturado del dron ${r.dron} (RB ${r.rigid_body}) en ${dest}: (${p[0]}, ${p[1]}), z = ${r.z.toFixed(3)} m.`
+      + ` Recuerda “${esRuta() ? 'Guardar ruta' : 'Guardar tubos'}”.`;
   } catch (e) { toast(e.message, true); }
 });
 
@@ -529,6 +799,7 @@ function renderBotones(s) {
   let motivo = '';
   if (!tel) motivo = 'Sin telemetría del puente';
   else if (md.coincide === false) motivo = 'El modo de la config local no coincide con el del modelo de tierra (copia estacion.json a la PC y recompila)';
+  else if ((s.camara || {}).coincide === false) motivo = s.camara.msg || 'El explorador no es el dron con la cámara (camara.dron)';
   else if (solo && !(tel.drones[n] || {}).tracked) motivo = `El dron ${n} (solo explorador) no está rastreado por OptiTrack`;
   else if (tel.mission_state !== 2) motivo = 'START solo se acepta en ASSIGN_ROLES (roles asignados)';
   st.disabled = !!motivo;
